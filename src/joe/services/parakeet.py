@@ -231,4 +231,6 @@ class ParakeetReduxService:
         self._model = None
         self._processor = None
         self._backend = None
+        self._device = "cpu"
         self._loaded_preference = None
+        self._backend_note = ""
