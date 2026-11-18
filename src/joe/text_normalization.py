@@ -116,7 +116,10 @@ _DATE_PATTERN = re.compile(r"(?<!\d)(\d{1,2})[/-](\d{1,2})[/-](\d{4})(?!\d)")
 _ISO_DATE_PATTERN = re.compile(r"(?<!\d)(\d{4})-(\d{1,2})-(\d{1,2})(?!\d)")
 _TIME_PATTERN = re.compile(r"(?<!\w)([01]?\d|2[0-3]):([0-5]\d)(?!\w)")
 _PERCENT_PATTERN = re.compile(r"(?<![\w./-])([+-]?\d+(?:[.,]\d+)*)(\s*%)(?!\w)")
-_CURRENCY_PATTERN = re.compile(r"(?<!\w)R\$\s*([0-9](?:[0-9.,]*[0-9])?)(?![\w]|[.,]\d)", re.IGNORECASE)
+_CURRENCY_PATTERN = re.compile(
+    r"(?<!\w)R\$\s*([0-9](?:[0-9.,]*[0-9])?)(?!\w|[.,]\d)",
+    re.IGNORECASE,
+)
 _NUMBER_PATTERN = re.compile(r"(?<![\w/])([+-]?\d+(?:[.,]\d+)*)(?![\w/]|[.,]\d)")
 _ACRONYM_PATTERN = re.compile(r"(?<!\w)([A-Z]{2,6})(?!\w)")
 
