@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+import shutil
 import sys
+import tempfile
 import traceback
 from collections.abc import Callable
 from pathlib import Path
@@ -12,7 +14,7 @@ import torch  # noqa: F401
 # isort: split
 from PySide6.QtCore import (
     QObject, QRunnable, QSettings, QStandardPaths, QThreadPool,
-    QTime, QTimer, QUrl, Signal,
+    QTime, QTimer, QUrl, Qt, Signal,
 )
 from PySide6.QtGui import QAction, QDesktopServices
 from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
@@ -70,6 +72,134 @@ class FunctionWorker(QRunnable):
             self.signals.failed.emit(f"{exc}\n\n{details}")
 
 
+class HotkeyBridge(QObject):
+    activated = Signal()
+
+
+class ClipboardAudioDialog(QDialog):
+    """Compact playback window for audio generated from the system clipboard."""
+
+    closed = Signal()
+
+    def __init__(
+        self,
+        player: QMediaPlayer,
+        output_directory: str,
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self.player = player
+        self.output_directory = output_directory
+        self.temp_dir: Path | None = None
+        self.audio_path: Path | None = None
+        self.is_closing = False
+
+        self.setWindowTitle("Joe — Texto copiado para áudio")
+        self.setWindowFlags(self.windowFlags() | Qt.WindowType.Tool)
+        self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
+        self.resize(430, 250)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(18, 16, 18, 16)
+        layout.setSpacing(10)
+
+        self.preview_label = QLabel("Texto copiado")
+        self.preview_label.setWordWrap(True)
+        self.preview_label.setObjectName("muted")
+        layout.addWidget(self.preview_label)
+
+        self.status_label = QLabel("Gerando áudio…")
+        self.status_label.setWordWrap(True)
+        layout.addWidget(self.status_label)
+
+        buttons = QHBoxLayout()
+        self.play_button = QPushButton("Reproduzir")
+        self.play_button.setObjectName("primaryButton")
+        self.play_button.setEnabled(False)
+        self.play_button.clicked.connect(self._play)
+        self.pause_button = QPushButton("Pausar")
+        self.pause_button.setEnabled(False)
+        self.pause_button.clicked.connect(self._pause)
+        self.save_button = QPushButton("Salvar áudio…")
+        self.save_button.setEnabled(False)
+        self.save_button.clicked.connect(self._save)
+        self.close_button = QPushButton("Fechar")
+        self.close_button.clicked.connect(self.close)
+
+        buttons.addWidget(self.play_button)
+        buttons.addWidget(self.pause_button)
+        buttons.addWidget(self.save_button)
+        buttons.addWidget(self.close_button)
+        layout.addLayout(buttons)
+
+    def set_text_preview(self, text: str) -> None:
+        compact = " ".join(text.split())
+        if len(compact) > 260:
+            compact = compact[:257].rstrip() + "…"
+        self.preview_label.setText(compact)
+
+    def set_ready(self, audio_path: Path) -> None:
+        self.audio_path = audio_path
+        self.status_label.setText("Áudio pronto. Você pode reproduzir ou salvar uma cópia.")
+        self.play_button.setEnabled(True)
+        self.save_button.setEnabled(True)
+
+    def set_failed(self, message: str) -> None:
+        self.status_label.setText(f"Não foi possível gerar o áudio: {message}")
+        self.play_button.setEnabled(False)
+        self.pause_button.setEnabled(False)
+        self.save_button.setEnabled(False)
+
+    def _play(self) -> None:
+        if not self.audio_path or not self.audio_path.is_file():
+            return
+        self.player.setSource(QUrl.fromLocalFile(str(self.audio_path.resolve())))
+        self.player.play()
+        self.pause_button.setEnabled(True)
+
+    def _pause(self) -> None:
+        self.player.pause()
+        self.pause_button.setEnabled(False)
+
+    def _save(self) -> None:
+        if not self.audio_path or not self.audio_path.is_file():
+            return
+
+        initial_directory = Path(self.output_directory).expanduser()
+        if not initial_directory.is_dir():
+            initial_directory = Path.home()
+        suggested = initial_directory / "joe_clipboard_audio.wav"
+        output, _ = QFileDialog.getSaveFileName(
+            self,
+            "Salvar áudio gerado",
+            str(suggested),
+            "Áudio WAV (*.wav)",
+        )
+        if not output:
+            return
+        if not output.lower().endswith(".wav"):
+            output += ".wav"
+
+        destination = Path(output).expanduser()
+        try:
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(self.audio_path, destination)
+        except OSError as exc:
+            QMessageBox.critical(self, "Erro ao salvar áudio", str(exc))
+            return
+        self.status_label.setText(f"Cópia salva em:\n{destination}")
+
+    def closeEvent(self, event) -> None:
+        self.is_closing = True
+        if self.audio_path:
+            current_source = self.player.source().toLocalFile()
+            if current_source == str(self.audio_path.resolve()):
+                self.player.stop()
+                self.player.setSource(QUrl())
+        self.closed.emit()
+        super().closeEvent(event)
+
+
 class JoeWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
@@ -83,6 +213,12 @@ class JoeWindow(QMainWindow):
         self.thread_pool = QThreadPool(self)
         self.thread_pool.setMaxThreadCount(1)
         self.active_worker: FunctionWorker | None = None
+        self.clipboard_generation_worker: FunctionWorker | None = None
+        self.clipboard_audio_window: ClipboardAudioDialog | None = None
+        self.clipboard_temp_dir: Path | None = None
+        self.hotkey_listener = None
+        self.hotkey_bridge = HotkeyBridge(self)
+        self.hotkey_bridge.activated.connect(self._generate_audio_from_clipboard)
 
         # Health checks monitor connectivity only; they do not keep Colab awake.
         self.colab_monitor_pool = QThreadPool(self)
@@ -105,6 +241,7 @@ class JoeWindow(QMainWindow):
         self._build_ui()
         self.setStyleSheet(self._stylesheet())
         self.statusBar().showMessage("Pronto — os modelos serão carregados sob demanda.")
+        self._start_global_hotkey()
         self._update_colab_monitoring()
 
     def _build_ui(self) -> None:
@@ -127,6 +264,12 @@ class JoeWindow(QMainWindow):
         exit_action = QAction("Sair", self)
         exit_action.triggered.connect(self.close)
         file_menu.addAction(exit_action)
+
+        clipboard_action = QAction(
+            "Gerar áudio do texto copiado (Ctrl+Shift+Espaço)", self
+        )
+        clipboard_action.triggered.connect(self._generate_audio_from_clipboard)
+        file_menu.addAction(clipboard_action)
 
         help_menu = self.menuBar().addMenu("Ajuda")
         about_action = QAction("Sobre o Joe", self)
@@ -337,7 +480,8 @@ class JoeWindow(QMainWindow):
         title = QLabel("Transforme texto em fala")
         title.setObjectName("pageTitle")
         description = QLabel(
-            "Gere um arquivo WAV localmente com o Kyutai Pocket TTS."
+            "Gere WAV com o Kyutai Pocket TTS. Atalho global: "
+            "Ctrl+Shift+Espaço transforma o texto copiado em áudio imediatamente."
         )
         description.setObjectName("muted")
 
@@ -894,6 +1038,142 @@ class JoeWindow(QMainWindow):
             self.transcript_segments = []
             self.save_srt_button.setEnabled(False)
 
+    def _start_global_hotkey(self) -> None:
+        try:
+            from pynput import keyboard
+
+            listener = keyboard.GlobalHotKeys(
+                {"<ctrl>+<shift>+<space>": self.hotkey_bridge.activated.emit}
+            )
+            listener.start()
+            self.hotkey_listener = listener
+            self.statusBar().showMessage(
+                "Atalho global ativo: Ctrl+Shift+Espaço", 6000
+            )
+        except Exception as exc:  # noqa: BLE001
+            self.hotkey_listener = None
+            self.statusBar().showMessage(
+                "Atalho global indisponível. Use Arquivo → Gerar áudio do texto copiado. "
+                f"Detalhe: {str(exc).splitlines()[0]}",
+                12000,
+            )
+
+    @staticmethod
+    def _remove_clipboard_temp_dir(directory: Path | None) -> None:
+        if directory is not None:
+            shutil.rmtree(directory, ignore_errors=True)
+
+    def _clipboard_dialog_closed(self, dialog: ClipboardAudioDialog) -> None:
+        if self.clipboard_audio_window is dialog:
+            self.clipboard_audio_window = None
+        if self.clipboard_generation_worker is None:
+            self._remove_clipboard_temp_dir(dialog.temp_dir)
+            if self.clipboard_temp_dir == dialog.temp_dir:
+                self.clipboard_temp_dir = None
+            dialog.temp_dir = None
+
+    def _generate_audio_from_clipboard(self) -> None:
+        if self.clipboard_generation_worker is not None:
+            if self.clipboard_audio_window is not None:
+                self.clipboard_audio_window.raise_()
+                self.clipboard_audio_window.activateWindow()
+            self.statusBar().showMessage("A geração do texto copiado já está em andamento.", 4000)
+            return
+
+        if self.active_worker is not None:
+            self.statusBar().showMessage(
+                "Aguarde a tarefa atual terminar antes de gerar outro áudio.", 5000
+            )
+            return
+
+        copied_text = QApplication.clipboard().text().strip()
+        if not copied_text:
+            self.statusBar().showMessage(
+                "O clipboard está vazio. Copie um texto e pressione Ctrl+Shift+Espaço.",
+                6000,
+            )
+            return
+
+        if self.clipboard_audio_window is not None:
+            self.clipboard_audio_window.close()
+
+        language = str(self.tts_language.currentData())
+        try:
+            speech_text = self._prepared_speech_text(copied_text, language)
+            remote = (
+                self._colab_client()
+                if self.processing_mode.currentData() == "colab"
+                else None
+            )
+        except Exception as exc:  # noqa: BLE001
+            self.statusBar().showMessage(f"Não foi possível iniciar o TTS: {exc}", 8000)
+            return
+
+        try:
+            temp_dir = Path(tempfile.mkdtemp(prefix="joe-clipboard-audio-"))
+        except OSError as exc:
+            self.statusBar().showMessage(f"Não foi possível criar áudio temporário: {exc}", 8000)
+            return
+
+        destination = temp_dir / "clipboard_audio.wav"
+        voice = self.voice_path.text().strip() or None
+        if remote is not None:
+            def generate_clipboard_audio() -> Path:
+                audio_data = remote.generate_audio(speech_text, language, voice)
+                destination.write_bytes(audio_data)
+                return destination
+        else:
+            def generate_clipboard_audio() -> Path:
+                return self.tts.generate(
+                    speech_text, language, str(destination), voice
+                )
+
+        dialog = ClipboardAudioDialog(
+            self.player,
+            self.tts_output_directory.text().strip(),
+            self,
+        )
+        dialog.temp_dir = temp_dir
+        dialog.set_text_preview(copied_text)
+        dialog.closed.connect(lambda: self._clipboard_dialog_closed(dialog))
+        self.clipboard_audio_window = dialog
+        self.clipboard_temp_dir = temp_dir
+        dialog.show()
+        dialog.raise_()
+        dialog.activateWindow()
+
+        worker = FunctionWorker(generate_clipboard_audio)
+        self.clipboard_generation_worker = worker
+
+        def finished(result: object) -> None:
+            self.clipboard_generation_worker = None
+            if dialog.is_closing:
+                self._remove_clipboard_temp_dir(temp_dir)
+                dialog.temp_dir = None
+                if self.clipboard_temp_dir == temp_dir:
+                    self.clipboard_temp_dir = None
+                return
+            dialog.set_ready(Path(result))
+            self.statusBar().showMessage("Áudio do clipboard gerado.", 5000)
+
+        def failed(message: str) -> None:
+            self.clipboard_generation_worker = None
+            detail = message.split("\n\n", 1)[0].strip() or "Erro desconhecido"
+            if dialog.is_closing:
+                self._remove_clipboard_temp_dir(temp_dir)
+                dialog.temp_dir = None
+            else:
+                dialog.set_failed(detail)
+                self._remove_clipboard_temp_dir(temp_dir)
+                dialog.temp_dir = None
+            if self.clipboard_temp_dir == temp_dir:
+                self.clipboard_temp_dir = None
+            self.statusBar().showMessage(f"Falha ao gerar áudio do clipboard: {detail}", 8000)
+
+        worker.signals.finished.connect(finished)
+        worker.signals.failed.connect(failed)
+        self.thread_pool.start(worker)
+
     def _generate_audio(self) -> None:
         text = self.tts_text.toPlainText().strip()
         if not text:
@@ -1162,11 +1442,21 @@ class JoeWindow(QMainWindow):
 
     def closeEvent(self, event) -> None:
         self.colab_monitor_timer.stop()
+        if self.hotkey_listener is not None:
+            try:
+                self.hotkey_listener.stop()
+            except Exception:  # noqa: BLE001
+                pass
+            self.hotkey_listener = None
+        if self.clipboard_audio_window is not None:
+            self.clipboard_audio_window.close()
         if self.colab_monitor_pool.activeThreadCount():
             self.colab_monitor_pool.waitForDone(5000)
         if self.thread_pool.activeThreadCount():
             self.statusBar().showMessage("Aguardando a tarefa atual terminar…")
             self.thread_pool.waitForDone(-1)
+        self._remove_clipboard_temp_dir(self.clipboard_temp_dir)
+        self.clipboard_temp_dir = None
         self.player.stop()
         self.asr.close()
         self.tts.close()
