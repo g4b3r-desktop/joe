@@ -29,10 +29,12 @@ A API autenticada oferece:
 | Método | Endpoint | Função |
 |---|---|---|
 | GET | `/health` | Estado da sessão, CUDA e modelos carregados |
-| POST | `/v1/tts` | Formulário multipart com `text`, `language` e `voice` opcional; retorna WAV |
-| POST | `/v1/transcribe` | Upload multipart `audio` e `timestamps` (`none`, `segment` ou `word`); retorna JSON |
+| POST | `/v1/jobs/tts` | Multipart com `text`, `language` e `voice` opcional; retorna um ID de tarefa |
+| POST | `/v1/jobs/transcribe` | Multipart com `audio` e `timestamps`; retorna um ID de tarefa |
+| GET | `/v1/jobs/{job_id}` | Consulta o estado da inferência |
+| GET | `/v1/jobs/{job_id}/result` | Retorna WAV ou JSON quando a tarefa termina |
 
-Todas as rotas exigem `Authorization: Bearer <token>`. A API não habilita páginas públicas Swagger/OpenAPI e limita uploads de áudio a 80 MB e texto a 20.000 caracteres.
+Todas as rotas exigem `Authorization: Bearer <token>`. A inferência usa uma fila assíncrona (um worker de modelo e até duas tarefas ativas), então o cliente consulta o estado em vez de manter uma requisição aberta durante a geração/transcrição. Resultados não resgatados expiram após 30 minutos. A API não habilita páginas públicas Swagger/OpenAPI e limita uploads de áudio a 80 MB e texto a 20.000 caracteres.
 
 ### Limitações e segurança
 
