@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+import tempfile
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -51,3 +53,33 @@ def build_audio_output_path(
         candidate = output_dir / f"{safe_prefix}_{date_part}_{suffix:03d}.wav"
         suffix += 1
     return candidate
+
+
+
+def write_bytes_atomically(
+    destination: str | Path,
+    content: bytes,
+) -> Path:
+    """Replace a file only after its new contents have been completely written."""
+    target = Path(destination).expanduser()
+    target.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f".{target.stem}.",
+        suffix=target.suffix or ".tmp",
+        dir=target.parent,
+    )
+    temporary = Path(temporary_name)
+    try:
+        with os.fdopen(descriptor, "wb") as stream:
+            stream.write(content)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, target)
+        return target
+    except BaseException:
+        try:
+            os.close(descriptor)
+        except OSError:
+            pass
+        temporary.unlink(missing_ok=True)
+        raise

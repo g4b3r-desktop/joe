@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import tempfile
 from pathlib import Path
 
 DEFAULT_VOICE = "hf://kyutai/tts-voices/alba-mackenna/casual.wav"
@@ -53,9 +54,7 @@ class PocketTTSService:
         samples = audio.detach().cpu().numpy()
 
         destination = Path(output_path).expanduser()
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        sf.write(destination, samples, int(model.sample_rate), subtype="PCM_16")
-        return destination
+        return _write_wav_atomically(sf, samples, int(model.sample_rate), destination)
 
     def export_voice_state(
         self,
@@ -105,3 +104,32 @@ class PocketTTSService:
     def close(self) -> None:
         self._voice_states.clear()
         self._models.clear()
+
+
+
+def _write_wav_atomically(soundfile_module, samples, sample_rate: int, destination: Path) -> Path:
+    destination = Path(destination).expanduser()
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    temporary_file = tempfile.NamedTemporaryFile(
+        prefix=f".{destination.stem}.",
+        suffix=".wav",
+        dir=destination.parent,
+        delete=False,
+    )
+    temporary_path = Path(temporary_file.name)
+    temporary_file.close()
+    try:
+        soundfile_module.write(
+            temporary_path,
+            samples,
+            int(sample_rate),
+            subtype="PCM_16",
+        )
+        info = soundfile_module.info(temporary_path)
+        if info.frames <= 0 or info.samplerate <= 0:
+            raise RuntimeError("O Pocket TTS produziu um WAV vazio ou inválido.")
+        temporary_path.replace(destination)
+    except BaseException:
+        temporary_path.unlink(missing_ok=True)
+        raise
+    return destination

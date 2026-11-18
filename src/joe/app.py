@@ -70,7 +70,7 @@ from joe.voice_favorites import (
     load_voice_favorites,
     serialize_voice_favorites,
 )
-from joe.utils import build_srt, build_audio_output_path
+from joe.utils import build_srt, build_audio_output_path, write_bytes_atomically
 
 
 class WorkerSignals(QObject):
@@ -2197,7 +2197,7 @@ class JoeWindow(QMainWindow):
         if remote is not None:
             def generate_clipboard_chunk(chunk_text: str, output_path: Path) -> Path:
                 audio_data = remote.generate_audio(chunk_text, language, voice)
-                output_path.write_bytes(audio_data)
+                write_bytes_atomically(output_path, audio_data)
                 return output_path
         else:
             def generate_clipboard_chunk(chunk_text: str, output_path: Path) -> Path:
@@ -2337,7 +2337,7 @@ class JoeWindow(QMainWindow):
 
             def generate_audio() -> Path:
                 audio_data = remote.generate_audio(speech_text, language, voice)
-                destination.write_bytes(audio_data)
+                write_bytes_atomically(destination, audio_data)
                 return destination
 
             status = "Gerando áudio pela API remota…"

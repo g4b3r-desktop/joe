@@ -52,3 +52,39 @@ def test_build_audio_output_path_sanitizes_prefix(tmp_path):
     )
 
     assert result.name == "Meu_áudio_teste_20261118_123045.wav"
+
+
+
+def test_write_bytes_atomically_replaces_complete_file(tmp_path):
+    from joe.utils import write_bytes_atomically
+
+    destination = tmp_path / "audio.wav"
+    destination.write_bytes(b"old audio")
+
+    result = write_bytes_atomically(destination, b"RIFF-new-wave")
+
+    assert result == destination
+    assert destination.read_bytes() == b"RIFF-new-wave"
+    assert sorted(path.name for path in tmp_path.iterdir()) == ["audio.wav"]
+
+
+def test_write_bytes_atomically_preserves_old_file_when_replace_fails(tmp_path, monkeypatch):
+    import os
+
+    import pytest
+
+    from joe.utils import write_bytes_atomically
+
+    destination = tmp_path / "audio.wav"
+    destination.write_bytes(b"old audio")
+
+    def fail_replace(_source, _target):
+        raise OSError("simulated disk failure")
+
+    monkeypatch.setattr(os, "replace", fail_replace)
+
+    with pytest.raises(OSError, match="simulated disk failure"):
+        write_bytes_atomically(destination, b"new audio")
+
+    assert destination.read_bytes() == b"old audio"
+    assert sorted(path.name for path in tmp_path.iterdir()) == ["audio.wav"]
