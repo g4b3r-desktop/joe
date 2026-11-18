@@ -60,6 +60,7 @@ from joe.audio_performance import (
     wav_duration_seconds,
 )
 from joe.local_ipc import LocalCommandServer, send_local_command
+from joe.playback import decide_playback_action
 from joe.services.colab_api import ColabAPIClient
 from joe.services.parakeet import ParakeetReduxService
 from joe.services.pocket_tts import PocketTTSService
@@ -1937,10 +1938,24 @@ class JoeWindow(QMainWindow):
                 "Para ouvir a referência, selecione o WAV/MP3 original."
             )
             return
-        if self.player.playbackState() == QMediaPlayer.PlaybackState.PlayingState:
+        source = QUrl.fromLocalFile(str(path.resolve()))
+        action = decide_playback_action(
+            self.player.source().toLocalFile(),
+            path,
+            is_playing=(
+                self.player.playbackState() == QMediaPlayer.PlaybackState.PlayingState
+            ),
+            is_paused=(
+                self.player.playbackState() == QMediaPlayer.PlaybackState.PausedState
+            ),
+        )
+        if action == "stop":
             self.player.stop()
             return
-        self.player.setSource(QUrl.fromLocalFile(str(path.resolve())))
+        if action == "resume":
+            self.player.play()
+            return
+        self.player.setSource(source)
         self.player.play()
 
     def _prepare_voice_state(self) -> None:
@@ -2383,10 +2398,24 @@ class JoeWindow(QMainWindow):
     def _play_generated_audio(self) -> None:
         if not self.generated_audio or not self.generated_audio.is_file():
             return
-        if self.player.source().isValid() and self.player.playbackState() == QMediaPlayer.PlaybackState.PlayingState:
+        source = QUrl.fromLocalFile(str(self.generated_audio.resolve()))
+        action = decide_playback_action(
+            self.player.source().toLocalFile(),
+            self.generated_audio,
+            is_playing=(
+                self.player.playbackState() == QMediaPlayer.PlaybackState.PlayingState
+            ),
+            is_paused=(
+                self.player.playbackState() == QMediaPlayer.PlaybackState.PausedState
+            ),
+        )
+        if action == "stop":
             self.player.stop()
             return
-        self.player.setSource(QUrl.fromLocalFile(str(self.generated_audio.resolve())))
+        if action == "resume":
+            self.player.play()
+            return
+        self.player.setSource(source)
         self.player.play()
 
     def _transcribe_audio(self) -> None:

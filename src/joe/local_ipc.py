@@ -1,11 +1,16 @@
 """Single-instance local IPC used by the desktop hotkey helper."""
 from __future__ import annotations
 
+import logging
 import os
 import socket
+import stat
 import threading
 from pathlib import Path
 from typing import Callable
+
+
+logger = logging.getLogger(__name__)
 
 
 def command_socket_path() -> Path:
@@ -54,13 +59,28 @@ class LocalCommandServer:
 
         server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         server.settimeout(0.4)
+        bound_inode: tuple[int, int] | None = None
         try:
             server.bind(str(self.path))
+            bound_stat = self.path.lstat()
+            bound_inode = (bound_stat.st_dev, bound_stat.st_ino)
             self.path.chmod(0o600)
             server.listen(8)
         except Exception:
             server.close()
-            self.path.unlink(missing_ok=True)
+            if bound_inode is not None:
+                try:
+                    current_stat = self.path.lstat()
+                    is_same_socket = (
+                        stat.S_ISSOCK(current_stat.st_mode)
+                        and (current_stat.st_dev, current_stat.st_ino) == bound_inode
+                    )
+                    if is_same_socket:
+                        self.path.unlink()
+                except FileNotFoundError:
+                    pass
+                except OSError:
+                    logger.exception("Falha ao limpar socket IPC após erro de inicialização")
             raise
         self._server = server
         self._thread = threading.Thread(target=self._serve, name="joe-local-command-server", daemon=True)
@@ -81,7 +101,10 @@ class LocalCommandServer:
                 try:
                     command = connection.recv(256).decode("utf-8").strip()
                     if command:
-                        self.handler(command)
+                        try:
+                            self.handler(command)
+                        except Exception:  # noqa: BLE001
+                            logger.exception("O handler do comando IPC do Joe falhou")
                 except (OSError, UnicodeError):
                     continue
 
