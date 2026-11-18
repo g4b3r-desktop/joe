@@ -6,9 +6,9 @@ Todas as etapas serão implementadas nesta branch de trabalho, preservando a bra
 
 - [x] Criar branch isolada feature/joe-studio-roadmap.
 - [x] Separar o gerenciamento da fila TTS em módulo testável, sem dependência de Qt.
-- [ ] Fila FIFO integrada à tela Texto → Áudio.
-- [ ] Visualizar estados da fila, remover itens ainda não iniciados e cancelar a tarefa atual de forma cooperativa.
-- [ ] Continuar as tarefas seguintes após conclusão ou falha da tarefa anterior.
+- [x] Fila FIFO integrada à tela Texto → Áudio.
+- [x] Visualizar estados da fila, remover itens ainda não iniciados e cancelar a tarefa atual de forma cooperativa.
+- [x] Continuar as tarefas seguintes após conclusão ou falha da tarefa anterior.
 - [ ] Separar gradualmente as telas e controladores que ainda vivem em app.py.
 - [ ] Revisar concorrência entre geração manual, atalho do clipboard e transcrição.
 

@@ -151,6 +151,9 @@ O Joe grava automaticamente, enquanto você digita ou altera os campos, os texto
 
 ### Texto → Áudio
 1. Digite ou cole o texto. A caixa de texto mantém o conteúdo original.
+2. Clique em **Gerar áudio WAV** para iniciar imediatamente ou **Adicionar à fila** para colocar outra geração na sequência. O botão **Fila (N)** abre a lista de tarefas, permite remover itens que ainda não começaram e solicitar o cancelamento da geração atual.
+3. Cada tarefa guarda as opções de voz, idioma, backend e destino escolhidas no momento em que foi adicionada. As tarefas são processadas uma de cada vez.
+4. O cancelamento é cooperativo: uma chamada de inferência já iniciada não é interrompida à força. O Joe aguarda essa chamada retornar, descarta o resultado daquela tarefa e segue para a próxima. Fechar o app com tarefas na fila pede confirmação; tarefas ainda não iniciadas serão descartadas.
 2. Use **⚙ Configurações** na aba Texto → Áudio para acessar as opções menos usadas. Elas ficam separadas da tela principal e são salvas automaticamente.
 3. Em **Texto e pronúncia**, ative ou desative a normalização de números, datas, horários, porcentagens, valores em reais, abreviações e siglas. Use **Prévia do texto falado** para conferir a cópia preparada sem alterar o texto original.
 4. Em **Texto e pronúncia → Dicionário de pronúncia**, cadastre, edite ou remova palavras e expressões personalizadas. As regras são aplicadas antes das regras automáticas.
@@ -181,9 +184,9 @@ python -m pytest
 ruff check .
 ~~~
 
-## Estado
+## Roadmap
 
-MVP inicial: interface desktop, geração WAV, transcrição de arquivo, cópia/salvamento de texto, exportação SRT quando o backend fornece timestamps, seleção local CPU/CUDA e integração com API do Google Colab. Gravação direta do microfone, fila de tarefas e empacotamento AppImage/DEB ficam para etapas posteriores.
+Consulte [docs/ROADMAP.md](docs/ROADMAP.md) para acompanhar a evolução por fases. A Fase 1 já inclui fila TTS, cancelamento cooperativo e testes; histórico avançado, waveform, perfis de voz e empacotamento continuam planejados.
 
 ## Licenças dos modelos
 

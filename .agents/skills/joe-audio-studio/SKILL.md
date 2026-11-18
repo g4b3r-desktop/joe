@@ -76,6 +76,8 @@ See [references/development-workflow.md](references/development-workflow.md) for
 
 ## Feature behavior and constraints
 
+- A aba Texto → Áudio possui fila FIFO em memória, visualização de estados, remoção de itens ainda não iniciados e cancelamento cooperativo da tarefa atual. Não interromper à força uma inferência ativa; aguardar o retorno e descartar o arquivo se houver pedido de cancelamento.
+
 Read [references/feature-reference.md](references/feature-reference.md) before modifying voice handling, the clipboard shortcut, TTS performance, or the Colab integration.
 
 Important invariants:

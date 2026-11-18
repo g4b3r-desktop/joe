@@ -32,11 +32,22 @@ O texto original não deve ser alterado pela normalização. A geração deve us
 - A persistência dos favoritos fica separada em `src/joe/voice_favorites.py`; mantenha caminhos estáveis e ignore dados corrompidos sem derrubar o app.
 - Preparar uma gravação de referência com Pocket TTS exporta um arquivo `.safetensors`. Ele pode ser carregado como estado local; não é reproduzível como áudio.
 
+## Fila TTS e cancelamento
+
+- A geração manual da tela Texto → Áudio usa uma fila FIFO em memória, separada da UI no módulo src/joe/tts_queue.py.
+- Cada item guarda texto preparado, idioma, voz, backend e caminho de saída capturados no momento em que foi enfileirado.
+- Apenas uma geração TTS é executada por vez. Uma falha não deve impedir o processamento das próximas tarefas.
+- Itens ainda não iniciados podem ser removidos. A tarefa atual aceita solicitação de cancelamento.
+- Cancelamento é cooperativo: não matar à força threads de modelo ou chamadas HTTP. Se a inferência já começou, aguardar o retorno, descartar o WAV da tarefa cancelada e só então avançar.
+- A fila não é persistida após fechar o aplicativo nesta fase; o fechamento avisa e pede confirmação.
+- A tela mostra contagem e uma janela de fila com estado e destino de saída.
+
 ## TTS local e geração por blocos
 
 - O backend local é Pocket TTS, com geração WAV.
 - A referência de voz condiciona a voz gerada. O serviço mantém cache do modelo e de estados de voz para evitar reprocessamento desnecessário.
 - O atalho usa divisão de texto por sentenças/palavras e gera trechos sequencialmente.
+- A fila manual e o worker do clipboard compartilham o pool serial; não iniciar uma tarefa manual enquanto o worker do atalho estiver ativo.
 - O áudio progressivo deve permitir ouvir trechos já gerados, enquanto a geração pode continuar. Ao terminar, o app pode usar o WAV combinado.
 - A união de WAV normaliza sample rate e número de canais e pode inserir uma pausa curta entre blocos.
 - Não exclua os arquivos temporários antes de o player/worker terminar de usá-los.
