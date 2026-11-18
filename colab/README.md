@@ -46,7 +46,7 @@ O notebook cria um token aleatório novo a cada sessão. Não grave o token em c
 O notebook espera o arquivo compactado:
 
 ~~~text
-Meu Drive/3d_models_ia/JOE_MODELS.zip
+Meu Drive/3d_models_ia/modelos-voz/JOE_MODELS.zip
 ~~~
 
 Dentro do ZIP, mantenha esta estrutura (ela pode estar diretamente na raiz ou dentro de uma pasta `JOE_MODELS/`):
