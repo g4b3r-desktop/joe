@@ -195,6 +195,14 @@ class JoeWindow(QMainWindow):
 
         self.timestamps_check = QCheckBox("Incluir tempos dos segmentos (quando disponível)")
         self.timestamps_check.setChecked(True)
+        self.asr_device = QComboBox()
+        self.asr_device.addItem("CPU (preserva a VRAM)", "cpu")
+        self.asr_device.addItem("NVIDIA GPU (CUDA)", "cuda")
+
+        asr_options = QHBoxLayout()
+        asr_options.addWidget(self.timestamps_check, 1)
+        asr_options.addWidget(QLabel("Dispositivo:"))
+        asr_options.addWidget(self.asr_device)
 
         self.asr_button = QPushButton("Transcrever")
         self.asr_button.setObjectName("primaryButton")
@@ -230,7 +238,7 @@ class JoeWindow(QMainWindow):
         layout.addWidget(title)
         layout.addWidget(description)
         layout.addLayout(file_row)
-        layout.addWidget(self.timestamps_check)
+        layout.addLayout(asr_options)
         layout.addLayout(buttons)
         layout.addWidget(self.transcript, 1)
         layout.addWidget(self.asr_info)
@@ -393,9 +401,10 @@ class JoeWindow(QMainWindow):
             return
 
         want_timestamps = self.timestamps_check.isChecked()
+        device_preference = str(self.asr_device.currentData())
         self._run_task(
             "Carregando Parakeet Redux e transcrevendo…",
-            lambda: self.asr.transcribe(source, want_timestamps),
+            lambda: self.asr.transcribe(source, want_timestamps, device_preference),
             self._transcription_finished,
         )
 
@@ -495,6 +504,8 @@ class JoeWindow(QMainWindow):
             self.voice_button,
             self.audio_choose_button,
             self.asr_button,
+            self.asr_device,
+            self.timestamps_check,
         ):
             widget.setEnabled(not busy)
         if busy:
