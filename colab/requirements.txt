@@ -4,3 +4,5 @@ python-multipart>=0.0.9
 pocket-tts
 moondream>=2.4.1
 soundfile>=0.12
+transformers>=4.57
+scipy>=1.13
