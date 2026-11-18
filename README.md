@@ -75,11 +75,33 @@ Crie o ambiente e instale a build CPU do PyTorch:
 bash scripts/install-linux.sh
 ~~~
 
+Ao concluir, o instalador registra automaticamente **Joe Audio Studio** no menu de aplicativos do seu usuário, criando `~/.local/share/applications/joe.desktop`. Você poderá abrir o programa pelo menu do Linux Mint, sem precisar abrir um terminal.
+
+Para também criar um ícone `joe.desktop` na área de trabalho:
+
+~~~bash
+bash scripts/install-linux.sh --desktop
+~~~
+
 Para usar a RTX 3060 na transcrição Parakeet (PyTorch CUDA 13.2), use:
 
 ~~~bash
 bash scripts/install-linux.sh cuda
 ~~~
+
+O atalho pode ser instalado ou recriado sem reinstalar as dependências:
+
+~~~bash
+bash scripts/install-desktop.sh
+~~~
+
+Para criar também o ícone na área de trabalho, use `bash scripts/install-desktop.sh --desktop`. Para remover somente os atalhos do menu e da área de trabalho, sem apagar o programa ou os modelos:
+
+~~~bash
+bash scripts/install-desktop.sh --uninstall
+~~~
+
+O lançador chama o `run.sh` da pasta onde o repositório foi instalado, usando o ambiente virtual `.venv`. Se você mover a pasta do Joe, execute novamente `bash scripts/install-desktop.sh` para atualizar o caminho do `joe.desktop`.
 
 O Pocket TTS continua na CPU. Na aba Áudio → Texto, selecione **NVIDIA GPU (CUDA)** para usar a RTX; escolha **CPU (preserva a VRAM)** quando estiver executando outros modelos. A instalação CUDA ocupa mais espaço em disco.
 
