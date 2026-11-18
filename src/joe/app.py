@@ -206,14 +206,36 @@ class VoiceLibraryDialog(QDialog):
         self.player = player
         self.initial_selected_path = selected_path
         self.selected_path: Path | None = None
+        self.total_files = 0
+        self.restore_warning = ""
         self.setWindowTitle("Biblioteca de vozes")
-        self.resize(720, 520)
+        self.resize(760, 560)
         layout = QVBoxLayout(self)
         layout.addWidget(QLabel(f"Pasta: {root}"))
+
+        filters = QHBoxLayout()
         self.search = QLineEdit()
-        self.search.setPlaceholderText("Filtrar por nome ou caminho…")
+        self.search.setPlaceholderText("Buscar por nome ou caminho…")
         self.search.textChanged.connect(self._filter_items)
-        layout.addWidget(self.search)
+        filters.addWidget(self.search, 1)
+
+        self.type_filter = QComboBox()
+        self.type_filter.addItem("Todos os formatos", "*")
+        self.type_filter.addItem("WAV (*.wav)", ".wav")
+        self.type_filter.addItem("MP3 (*.mp3)", ".mp3")
+        self.type_filter.addItem("FLAC (*.flac)", ".flac")
+        self.type_filter.addItem("M4A (*.m4a)", ".m4a")
+        self.type_filter.addItem("OGG (*.ogg)", ".ogg")
+        self.type_filter.addItem("AAC (*.aac)", ".aac")
+        self.type_filter.addItem("Estado de voz (*.safetensors)", ".safetensors")
+        self.type_filter.setMinimumWidth(190)
+        self.type_filter.setToolTip("Mostrar somente arquivos do formato selecionado")
+        self.type_filter.currentIndexChanged.connect(
+            lambda: self._filter_items(self.search.text())
+        )
+        filters.addWidget(self.type_filter)
+        layout.addLayout(filters)
+
         self.files = QListWidget()
         self.files.itemDoubleClicked.connect(lambda _item: self._accept_selection())
         layout.addWidget(self.files, 1)
@@ -255,11 +277,9 @@ class VoiceLibraryDialog(QDialog):
             item.setData(Qt.ItemDataRole.UserRole, str(path))
             item.setToolTip(str(path))
             self.files.addItem(item)
-        self.status.setText(
-            f"{len(found)} arquivo(s) encontrado(s), incluindo todas as subpastas. "
-            ".safetensors não contém áudio para prévia."
-        )
+        self.total_files = len(found)
         self._restore_selection()
+        self._filter_items(self.search.text())
 
     def _restore_selection(self) -> None:
         if self.initial_selected_path is None:
@@ -281,21 +301,52 @@ class VoiceLibraryDialog(QDialog):
                     f"Voz selecionada anteriormente: {item.text()}"
                 )
                 return
-        self.status.setText(
-            f"{self.files.count()} arquivo(s) encontrado(s). "
+        self.restore_warning = (
             "A voz selecionada anteriormente não está nesta pasta."
         )
 
-    def _filter_items(self, query: str) -> None:
+    def _filter_items(self, query: str = "") -> None:
+        """Combine the name/path search with the selected file extension."""
         query = query.casefold().strip()
+        extension = str(self.type_filter.currentData())
+        visible_count = 0
+
         for index in range(self.files.count()):
             item = self.files.item(index)
-            full_path = str(item.data(Qt.ItemDataRole.UserRole)).casefold()
-            item.setHidden(query not in item.text().casefold() and query not in full_path)
+            raw_path = str(item.data(Qt.ItemDataRole.UserRole))
+            full_path = raw_path.casefold()
+            matches_query = (
+                not query
+                or query in item.text().casefold()
+                or query in full_path
+            )
+            matches_type = (
+                extension == "*"
+                or Path(raw_path).suffix.casefold() == extension
+            )
+            hidden = not (matches_query and matches_type)
+            item.setHidden(hidden)
+            if hidden and self.files.currentItem() is item:
+                self.files.setCurrentRow(-1)
+            if not hidden:
+                visible_count += 1
+
+        self.status.setText(
+            f"Exibindo {visible_count} de {self.total_files} arquivo(s). "
+            f"Tipo: {self.type_filter.currentText()}."
+        )
+        if self.restore_warning:
+            self.status.setText(f"{self.status.text()} {self.restore_warning}")
+        if visible_count == 0:
+            self.status.setText(
+                f"Nenhum arquivo encontrado para: {self.type_filter.currentText()}."
+            )
 
     def _current_path(self) -> Path | None:
         item = self.files.currentItem()
-        return Path(item.data(Qt.ItemDataRole.UserRole)) if item else None
+        if item is None or item.isHidden():
+            return None
+        return Path(item.data(Qt.ItemDataRole.UserRole))
 
     def _preview(self) -> None:
         path = self._current_path()
