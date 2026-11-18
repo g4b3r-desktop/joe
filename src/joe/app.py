@@ -437,8 +437,6 @@ class FavoriteVoicesDialog(QDialog):
         layout.addWidget(description)
 
         self.files = QListWidget()
-        self.files.itemClicked.connect(self._preview_item)
-        self.files.currentItemChanged.connect(self._preview_selection_changed)
         self.files.itemDoubleClicked.connect(lambda _item: self._accept_selection())
         layout.addWidget(self.files, 1)
 
@@ -483,6 +481,10 @@ class FavoriteVoicesDialog(QDialog):
                 "Use Configurações → Idioma e voz para adicionar a voz selecionada."
             )
 
+        # Connect after restoring the first row so opening the dialog stays silent.
+        self.files.itemClicked.connect(self._preview_item)
+        self.files.currentItemChanged.connect(self._preview_selection_changed)
+
     def _preview_selection_changed(self, current, _previous) -> None:
         if current is not None:
             self._preview_item(current)
@@ -510,6 +512,7 @@ class FavoriteVoicesDialog(QDialog):
             self.player.source() == source
             and self.player.playbackState() == QMediaPlayer.PlaybackState.PlayingState
         ):
+            self.status.setText(f"Reproduzindo: {path.name}")
             return
         self.player.setSource(source)
         self.player.play()
@@ -1192,7 +1195,7 @@ class JoeWindow(QMainWindow):
         """Create less frequently changed TTS options in a separate dialog."""
         dialog = QDialog(self)
         dialog.setWindowTitle("Configurações — Texto para áudio")
-        dialog.resize(760, 680)
+        dialog.resize(760, 760)
         self.tts_settings_dialog = dialog
 
         dialog_layout = QVBoxLayout(dialog)
