@@ -179,6 +179,7 @@ class ClipboardAudioDialog(QDialog):
         self.generation_finished = False
         self.play_requested = False
         self.waiting_for_chunk = False
+        self.playing_final_audio = False
         self.is_closing = False
 
         self.setWindowTitle("Joe — Texto copiado para áudio")
@@ -267,11 +268,22 @@ class ClipboardAudioDialog(QDialog):
     def _play(self) -> None:
         if not self.chunk_paths:
             return
-        self.play_requested = True
         if self.player.playbackState() == QMediaPlayer.PlaybackState.PausedState:
+            self.play_requested = not self.playing_final_audio
             self.player.play()
             self.pause_button.setEnabled(True)
             return
+        if self.generation_finished and self.audio_path and self.audio_path.is_file():
+            self.play_requested = False
+            self.waiting_for_chunk = False
+            self.playing_final_audio = True
+            self.current_chunk_path = None
+            self.player.setSource(QUrl.fromLocalFile(str(self.audio_path.resolve())))
+            self.player.play()
+            self.pause_button.setEnabled(True)
+            self.status_label.setText("Reproduzindo o WAV completo unido, sem troca entre trechos…")
+            return
+        self.play_requested = True
         if self.current_chunk_path and self.player.source().isValid() and (
             self.player.mediaStatus() != QMediaPlayer.MediaStatus.EndOfMedia
         ):
@@ -314,7 +326,13 @@ class ClipboardAudioDialog(QDialog):
         self.player.setSource(QUrl())
 
     def _on_media_status_changed(self, status) -> None:
-        if status == QMediaPlayer.MediaStatus.EndOfMedia and self.play_requested:
+        if status != QMediaPlayer.MediaStatus.EndOfMedia:
+            return
+        if self.playing_final_audio:
+            self.playing_final_audio = False
+            self.pause_button.setEnabled(False)
+            self.status_label.setText("Reprodução concluída.")
+        elif self.play_requested:
             self._play_next_chunk()
 
     def _pause(self) -> None:
