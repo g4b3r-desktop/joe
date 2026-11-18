@@ -8,7 +8,6 @@ import subprocess
 import sys
 import tempfile
 import time
-import traceback
 from collections.abc import Callable
 from pathlib import Path
 
@@ -17,7 +16,7 @@ import torch  # noqa: F401
 
 # isort: split
 from PySide6.QtCore import (
-    QObject, QRunnable, QSettings, QStandardPaths, QThreadPool,
+    QObject, QSettings, QStandardPaths, QThreadPool,
     QTime, QTimer, QUrl, Qt, Signal,
 )
 from PySide6.QtGui import QAction, QDesktopServices, QIcon
@@ -70,130 +69,7 @@ from joe.voice_favorites import (
     serialize_voice_favorites,
 )
 from joe.utils import build_srt, build_audio_output_path
-
-
-class WorkerSignals(QObject):
-    finished = Signal(object)
-    failed = Signal(str)
-
-
-class FunctionWorker(QRunnable):
-    """Run a blocking model call away from the GUI thread."""
-
-    def __init__(self, function: Callable[[], object]) -> None:
-        super().__init__()
-        self.function = function
-        self.signals = WorkerSignals()
-
-    def run(self) -> None:
-        try:
-            self.signals.finished.emit(self.function())
-        except Exception as exc:  # noqa: BLE001
-            details = traceback.format_exc()
-            self.signals.failed.emit(f"{exc}\n\n{details}")
-
-
-class ChunkWorkerSignals(QObject):
-    chunk_ready = Signal(int, str, int)
-    progress = Signal(str)
-    finished = Signal(object)
-    failed = Signal(str)
-    cancelled = Signal()
-
-
-class ClipboardChunkWorker(QRunnable):
-    """Gera blocos de fala, mede o tempo no desktop e une o WAV final."""
-
-    def __init__(
-        self,
-        chunks,
-        generator,
-        output_directory: Path,
-        final_path: Path,
-        remote: bool = False,
-    ):
-        super().__init__()
-        import threading
-
-        self.chunks = list(chunks)
-        self.generator = generator
-        self.output_directory = output_directory
-        self.final_path = final_path
-        self.remote = remote
-        self.cancel_event = threading.Event()
-        self.signals = ChunkWorkerSignals()
-
-    def cancel(self) -> None:
-        self.cancel_event.set()
-
-    def run(self) -> None:
-        started_at = time.perf_counter()
-        generated: list[Path] = []
-        total = len(self.chunks)
-
-        try:
-            for index, text in enumerate(self.chunks, start=1):
-                if self.cancel_event.is_set():
-                    self.signals.cancelled.emit()
-                    return
-
-                destination = self.output_directory / f"part_{index:03d}.wav"
-                self.signals.progress.emit(f"Gerando trecho {index} de {total}…")
-                result = self._generate_chunk(index, total, text, destination)
-
-                if self.cancel_event.is_set():
-                    self.signals.cancelled.emit()
-                    return
-
-                generated.append(result)
-                self.signals.chunk_ready.emit(index, str(result), total)
-
-            if self.cancel_event.is_set():
-                self.signals.cancelled.emit()
-                return
-
-            self.signals.progress.emit("Unindo os trechos em um único WAV…")
-            merged = merge_wav_files(generated, self.final_path)
-            performance = AudioPerformance(
-                elapsed_seconds=max(time.perf_counter() - started_at, 0.000001),
-                audio_duration_seconds=wav_duration_seconds(merged),
-                character_count=sum(len(chunk) for chunk in self.chunks),
-                remote=self.remote,
-            )
-            self.signals.finished.emit(
-                {"path": str(merged), "performance": performance}
-            )
-        except Exception as exc:  # noqa: BLE001
-            self.signals.failed.emit(str(exc))
-
-    def _generate_chunk(
-        self,
-        index: int,
-        total: int,
-        text: str,
-        destination: Path,
-    ) -> Path:
-        """Tenta cada bloco duas vezes antes de interromper a tarefa."""
-        last_error = None
-
-        for attempt in range(2):
-            try:
-                if destination.exists():
-                    destination.unlink()
-                result = Path(self.generator(text, destination))
-                if not result.is_file() or result.stat().st_size == 0:
-                    raise RuntimeError("O serviço TTS não produziu um WAV válido.")
-                return result
-            except Exception as exc:  # noqa: BLE001
-                last_error = exc
-                if attempt == 0:
-                    self.signals.progress.emit(
-                        f"Trecho {index}: falha temporária; tentando novamente…"
-                    )
-
-        raise RuntimeError(
-            f"Falha no trecho {index} de {total} após duas tentativas: {last_error}"
-        ) from last_error
+from joe.workers import ClipboardChunkWorker, FunctionWorker
 
 
 class VoiceLibraryDialog(QDialog):
@@ -836,7 +712,7 @@ class JoeWindow(QMainWindow):
         self.thread_pool = QThreadPool(self)
         self.thread_pool.setMaxThreadCount(1)
         self.active_worker: FunctionWorker | None = None
-        self.clipboard_generation_worker: FunctionWorker | None = None
+        self.clipboard_generation_worker: ClipboardChunkWorker | None = None
         self.clipboard_audio_window: ClipboardAudioDialog | None = None
         self.clipboard_temp_dir: Path | None = None
         self.hotkey_listener = None
@@ -898,6 +774,14 @@ class JoeWindow(QMainWindow):
         self.setStatusBar(bar)
         self.status_label = QLabel("Pronto")
         bar.addPermanentWidget(self.status_label)
+        self.cancel_task_button = QPushButton("Cancelar tarefa")
+        self.cancel_task_button.setToolTip(
+            "Solicita o cancelamento da tarefa ativa. Uma inferência já iniciada "
+            "será encerrada quando o backend devolver o controle."
+        )
+        self.cancel_task_button.clicked.connect(self._cancel_active_task)
+        self.cancel_task_button.setVisible(False)
+        bar.addPermanentWidget(self.cancel_task_button)
 
         file_menu = self.menuBar().addMenu("Arquivo")
         exit_action = QAction("Sair", self)
@@ -2213,6 +2097,7 @@ class JoeWindow(QMainWindow):
             remote=remote is not None,
         )
         self.clipboard_generation_worker = worker
+        self._refresh_cancel_button()
 
         def chunk_ready(index: int, path: str, total: int) -> None:
             if not dialog.is_closing:
@@ -2232,6 +2117,7 @@ class JoeWindow(QMainWindow):
 
         def finished(result: object) -> None:
             self.clipboard_generation_worker = None
+            self._refresh_cancel_button()
             if dialog.is_closing:
                 cleanup_closed_dialog()
                 return
@@ -2242,6 +2128,7 @@ class JoeWindow(QMainWindow):
 
         def failed(message: str) -> None:
             self.clipboard_generation_worker = None
+            self._refresh_cancel_button()
             detail = message.split("\n\n", 1)[0].strip() or "Erro desconhecido"
             if dialog.is_closing:
                 cleanup_closed_dialog()
@@ -2253,7 +2140,19 @@ class JoeWindow(QMainWindow):
 
         def cancelled() -> None:
             self.clipboard_generation_worker = None
-            cleanup_closed_dialog()
+            self._refresh_cancel_button()
+            if dialog.is_closing:
+                cleanup_closed_dialog()
+                return
+            self.player.stop()
+            self._remove_clipboard_temp_dir(temp_dir)
+            dialog.temp_dir = None
+            if self.clipboard_temp_dir == temp_dir:
+                self.clipboard_temp_dir = None
+            dialog.set_failed("Geração cancelada pelo usuário.")
+            self.statusBar().showMessage("Geração do clipboard cancelada.", 5000)
+            if self.clipboard_only_mode:
+                QTimer.singleShot(0, dialog.close)
 
         worker.signals.chunk_ready.connect(chunk_ready)
         worker.signals.progress.connect(progress)
@@ -2509,6 +2408,38 @@ class JoeWindow(QMainWindow):
             return
         self.statusBar().showMessage(f"Legendas salvas: {path}", 5000)
 
+    def _refresh_cancel_button(self) -> None:
+        if not hasattr(self, "cancel_task_button"):
+            return
+        clipboard_active = self.clipboard_generation_worker is not None
+        task_active = self.active_worker is not None
+        active = clipboard_active or task_active
+        self.cancel_task_button.setVisible(active)
+        if clipboard_active:
+            self.cancel_task_button.setText("Cancelar geração")
+            self.cancel_task_button.setEnabled(True)
+        else:
+            self.cancel_task_button.setText("Cancelar tarefa")
+            self.cancel_task_button.setEnabled(task_active)
+
+    def _cancel_active_task(self) -> None:
+        if self.clipboard_generation_worker is not None:
+            self.clipboard_generation_worker.cancel()
+            self.cancel_task_button.setEnabled(False)
+            self.statusBar().showMessage(
+                "Cancelamento solicitado. O trecho em processamento será concluído antes da parada.",
+                8000,
+            )
+            return
+
+        if self.active_worker is not None:
+            self.active_worker.cancel()
+            self.cancel_task_button.setEnabled(False)
+            self.statusBar().showMessage(
+                "Cancelamento solicitado. Uma inferência já iniciada precisa retornar do backend.",
+                8000,
+            )
+
     def _run_task(
         self,
         status: str,
@@ -2518,14 +2449,17 @@ class JoeWindow(QMainWindow):
         self._set_busy(True, status)
         worker = FunctionWorker(function)
         self.active_worker = worker
+        self._refresh_cancel_button()
 
         def finished(result: object) -> None:
-            self.active_worker = None
+            if self.active_worker is worker:
+                self.active_worker = None
             self._set_busy(False, "Concluído")
             on_success(result)
 
         def failed(message: str) -> None:
-            self.active_worker = None
+            if self.active_worker is worker:
+                self.active_worker = None
             if self.tts_generation_started_at is not None:
                 self.tts_elapsed_timer.stop()
                 self.tts_generation_started_at = None
@@ -2535,8 +2469,21 @@ class JoeWindow(QMainWindow):
             self._set_busy(False, "Falha")
             QMessageBox.critical(self, "Falha no processamento", message)
 
+        def cancelled() -> None:
+            if self.active_worker is worker:
+                self.active_worker = None
+            if self.tts_generation_started_at is not None:
+                self.tts_elapsed_timer.stop()
+                self.tts_generation_started_at = None
+                self.tts_speed_info.setText("Geração cancelada; o resultado foi descartado.")
+            self._set_busy(False, "Cancelado")
+            self.statusBar().showMessage(
+                "Tarefa cancelada. Nenhum resultado parcial foi salvo.", 6000
+            )
+
         worker.signals.finished.connect(finished)
         worker.signals.failed.connect(failed)
+        worker.signals.cancelled.connect(cancelled)
         self.thread_pool.start(worker)
 
     def _set_busy(self, busy: bool, message: str) -> None:
@@ -2576,6 +2523,7 @@ class JoeWindow(QMainWindow):
         self._update_mode_widgets()
         self.status_label.setText(message)
         self.statusBar().showMessage(message)
+        self._refresh_cancel_button()
 
     def _show_about(self) -> None:
         QMessageBox.about(

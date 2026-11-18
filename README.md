@@ -189,3 +189,8 @@ MVP inicial: interface desktop, geração WAV, transcrição de arquivo, cópia/
 
 - Código do Pocket TTS: MIT no repositório oficial; confira também a licença CC-BY-4.0 indicada para os pesos do modelo.
 - Parakeet Redux: CC-BY-4.0, conforme o model card. Preserve atribuição e avisos de licença ao redistribuir pesos.
+
+
+## Cancelamento de tarefas
+
+O botão **Cancelar tarefa** na barra inferior solicita o cancelamento da geração ou transcrição ativa. Operações em espera e tarefas de blocos param nos próximos pontos seguros. Uma inferência já iniciada dentro do modelo ou uma chamada HTTP síncrona não pode ser interrompida à força pela interface; nesse caso, o Joe aguarda o backend retornar e descarta o resultado em vez de salvá-lo como concluído. O cancelamento não encerra o runtime do Colab.
