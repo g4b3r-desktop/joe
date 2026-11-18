@@ -237,17 +237,19 @@ class VoiceLibraryDialog(QDialog):
         layout.addLayout(filters)
 
         self.files = QListWidget()
+        self.files.itemClicked.connect(lambda _item: self._preview())
         self.files.itemDoubleClicked.connect(lambda _item: self._accept_selection())
+        self.files.setToolTip(
+            "Clique uma vez em um áudio para ouvir. Dê duplo clique ou use "
+            "“Usar esta voz” para selecionar a voz."
+        )
         layout.addWidget(self.files, 1)
         self.status = QLabel("Procurando arquivos nas subpastas…")
         self.status.setObjectName("muted")
         layout.addWidget(self.status)
         actions = QHBoxLayout()
-        preview = QPushButton("▶ Reproduzir prévia")
-        preview.clicked.connect(self._preview)
-        stop = QPushButton("Parar")
+        stop = QPushButton("Parar reprodução")
         stop.clicked.connect(self.player.stop)
-        actions.addWidget(preview)
         actions.addWidget(stop)
         actions.addStretch(1)
         layout.addLayout(actions)
