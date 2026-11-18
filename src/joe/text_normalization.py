@@ -117,7 +117,7 @@ _ISO_DATE_PATTERN = re.compile(r"(?<!\d)(\d{4})-(\d{1,2})-(\d{1,2})(?!\d)")
 _TIME_PATTERN = re.compile(r"(?<!\w)([01]?\d|2[0-3]):([0-5]\d)(?!\w)")
 _PERCENT_PATTERN = re.compile(r"(?<![\w./-])([+-]?\d+(?:[.,]\d+)*)(\s*%)(?!\w)")
 _CURRENCY_PATTERN = re.compile(r"(?<!\w)R\$\s*([0-9][0-9.,]*)(?!\w)", re.IGNORECASE)
-_NUMBER_PATTERN = re.compile(r"(?<![\w./-])([+-]?\d+(?:[.,]\d+)*)(?![\w./-])")
+_NUMBER_PATTERN = re.compile(r"(?<![\\w./-])([+-]?\\d+(?:[.,]\\d+)*)(?![\\w/-])")
 _ACRONYM_PATTERN = re.compile(r"(?<!\w)([A-Z]{2,6})(?!\w)")
 
 
@@ -130,7 +130,8 @@ def _number_to_words(value: int, language: str) -> str:
             "Atualize as dependências do Joe com pip install -e ."
         ) from exc
 
-    return str(num2words(value, lang=LANGUAGE_LOCALES.get(language, "pt_BR")))
+    words = str(num2words(value, lang=LANGUAGE_LOCALES.get(language, "pt_BR")))
+    return re.sub(r",\\s*", " ", words).strip()
 
 
 def _split_number(raw: str, language: str) -> tuple[str, str | None, bool]:
