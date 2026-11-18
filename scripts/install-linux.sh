@@ -33,6 +33,8 @@ fi
 
 source .venv/bin/activate
 python -m pip install --upgrade pip wheel
+# Ensure switching between CPU and CUDA modes replaces the previous wheel.
+python -m pip uninstall -y torch || true
 
 case "$TORCH_MODE" in
   cpu)
