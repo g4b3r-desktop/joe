@@ -16,8 +16,8 @@ class ColabAPIClient:
     def __init__(self, base_url: str, token: str, timeout: float = 300.0) -> None:
         self.base_url = base_url.strip().rstrip("/")
         self.token = token.strip()
-        if not self.base_url.startswith(("https://", "http://")):
-            raise ValueError("Informe a URL HTTPS exibida pelo notebook do Colab.")
+        if not self.base_url.startswith("https://"):
+            raise ValueError("A API remota exige a URL HTTPS trycloudflare exibida pelo notebook.")
         if not self.token:
             raise ValueError("Informe o token de acesso gerado pelo notebook do Colab.")
         self.timeout = httpx.Timeout(timeout, connect=20.0)
