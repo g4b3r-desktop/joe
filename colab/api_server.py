@@ -4,6 +4,9 @@ import hmac
 import os
 import tempfile
 import threading
+import time
+import uuid
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 
@@ -12,8 +15,6 @@ import soundfile as sf
 import torch
 from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, UploadFile
 from fastapi.responses import Response
-from starlette.concurrency import run_in_threadpool
-
 from pocket_tts import TTSModel
 
 API_TOKEN = os.environ.get("JOE_API_TOKEN", "")
@@ -40,6 +41,11 @@ _asr_context: Any = None
 _asr_model: Any = None
 _asr_processor: Any = None
 _asr_backend = "não carregado"
+_JOB_EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="joe-inference")
+_JOB_LOCK = threading.Lock()
+_JOBS: dict[str, dict[str, Any]] = {}
+_MAX_ACTIVE_JOBS = 2
+_JOB_TTL_SECONDS = 1800
 
 
 def require_token(authorization: str | None = Header(default=None)) -> None:
@@ -180,61 +186,133 @@ def health(_: None = Depends(require_token)) -> dict[str, Any]:
     }
 
 
-@app.post("/v1/tts", dependencies=[Depends(require_token)])
-async def text_to_speech(
+def _run_job(job_id: str, function: Any, args: tuple[Any, ...]) -> None:
+    with _JOB_LOCK:
+        _JOBS[job_id]["status"] = "running"
+    try:
+        result = function(*args)
+    except Exception as exc:
+        with _JOB_LOCK:
+            _JOBS[job_id]["status"] = "failed"
+            _JOBS[job_id]["error"] = str(exc)
+    else:
+        with _JOB_LOCK:
+            _JOBS[job_id]["status"] = "completed"
+            _JOBS[job_id]["result"] = result
+
+
+def _submit_job(kind: str, function: Any, *args: Any) -> str:
+    now = time.monotonic()
+    with _JOB_LOCK:
+        expired = [
+            job_id for job_id, job in _JOBS.items()
+            if job["status"] in {"completed", "failed"}
+            and now - job["created_at"] > _JOB_TTL_SECONDS
+        ]
+        for job_id in expired:
+            _JOBS.pop(job_id, None)
+        active = sum(job["status"] in {"queued", "running"} for job in _JOBS.values())
+        if active >= _MAX_ACTIVE_JOBS:
+            raise HTTPException(status_code=429, detail="Fila de inferência cheia. Tente novamente mais tarde.")
+        job_id = uuid.uuid4().hex
+        _JOBS[job_id] = {
+            "kind": kind,
+            "status": "queued",
+            "created_at": now,
+            "result": None,
+            "error": None,
+        }
+    _JOB_EXECUTOR.submit(_run_job, job_id, function, args)
+    return job_id
+
+
+def _generate_tts_job(
+    text: str, language: str, voice_data: bytes | None, voice_suffix: str
+) -> bytes:
+    with tempfile.TemporaryDirectory(prefix="joe-tts-job-") as temp_dir:
+        voice_path = None
+        if voice_data is not None:
+            voice_path = str(Path(temp_dir) / f"voice{voice_suffix}")
+            Path(voice_path).write_bytes(voice_data)
+        return _generate_tts(text, language, voice_path)
+
+
+def _transcribe_job(audio_data: bytes, suffix: str, timestamps: str) -> dict[str, Any]:
+    with tempfile.TemporaryDirectory(prefix="joe-asr-job-") as temp_dir:
+        audio_path = Path(temp_dir) / f"input{suffix}"
+        audio_path.write_bytes(audio_data)
+        return _transcribe(str(audio_path), timestamps)
+
+
+@app.post("/v1/jobs/tts", status_code=202, dependencies=[Depends(require_token)])
+async def submit_tts_job(
     text: str = Form(...),
     language: str = Form("portuguese"),
     voice: UploadFile | None = File(default=None),
-) -> Response:
+) -> dict[str, str]:
     text = text.strip()
     if not text:
         raise HTTPException(status_code=400, detail="O texto não pode ficar vazio.")
     if len(text) > MAX_TEXT_CHARS:
         raise HTTPException(status_code=413, detail="Texto excede o limite de 20.000 caracteres.")
-
     allowed_languages = {
         "english", "french", "german", "portuguese",
         "italian", "spanish", "dutch",
     }
     if language not in allowed_languages:
         raise HTTPException(status_code=422, detail="Idioma não suportado pelo Pocket TTS.")
-
-    voice_path = None
-    with tempfile.TemporaryDirectory(prefix="joe-tts-") as temp_dir:
-        if voice is not None:
-            voice_data = await _read_upload(voice)
-            voice_path = str(Path(temp_dir) / f"voice{_safe_suffix(voice.filename)}")
-            Path(voice_path).write_bytes(voice_data)
-        try:
-            wav_data = await run_in_threadpool(
-                _generate_tts, text, language, voice_path
-            )
-        except Exception as exc:
-            raise HTTPException(status_code=500, detail=f"Falha no Pocket TTS: {exc}") from exc
-
-    return Response(
-        content=wav_data,
-        media_type="audio/wav",
-        headers={"Content-Disposition": 'attachment; filename="joe-generated.wav"'},
-    )
+    voice_data = await _read_upload(voice) if voice is not None else None
+    suffix = _safe_suffix(voice.filename) if voice is not None else ".wav"
+    job_id = _submit_job("tts", _generate_tts_job, text, language, voice_data, suffix)
+    return {"job_id": job_id, "status": "queued"}
 
 
-@app.post("/v1/transcribe", dependencies=[Depends(require_token)])
-async def speech_to_text(
+@app.post("/v1/jobs/transcribe", status_code=202, dependencies=[Depends(require_token)])
+async def submit_transcription_job(
     audio: UploadFile = File(...),
     timestamps: str = Form("segment"),
-) -> dict[str, Any]:
+) -> dict[str, str]:
     if timestamps not in {"none", "segment", "word"}:
         raise HTTPException(status_code=422, detail="timestamps deve ser none, segment ou word.")
     audio_data = await _read_upload(audio)
+    suffix = _safe_suffix(audio.filename)
+    job_id = _submit_job("transcription", _transcribe_job, audio_data, suffix, timestamps)
+    return {"job_id": job_id, "status": "queued"}
 
-    with tempfile.TemporaryDirectory(prefix="joe-asr-") as temp_dir:
-        audio_path = Path(temp_dir) / f"input{_safe_suffix(audio.filename)}"
-        audio_path.write_bytes(audio_data)
-        try:
-            return await run_in_threadpool(_transcribe, str(audio_path), timestamps)
-        except Exception as exc:
-            raise HTTPException(
-                status_code=500,
-                detail=f"Falha na transcrição Parakeet Redux: {exc}",
-            ) from exc
+
+@app.get("/v1/jobs/{job_id}", dependencies=[Depends(require_token)])
+def get_job_status(job_id: str) -> dict[str, Any]:
+    with _JOB_LOCK:
+        job = _JOBS.get(job_id)
+        if job is None:
+            raise HTTPException(status_code=404, detail="Tarefa não encontrada ou expirada.")
+        return {
+            "job_id": job_id,
+            "kind": job["kind"],
+            "status": job["status"],
+            "error": job["error"],
+        }
+
+
+@app.get("/v1/jobs/{job_id}/result", dependencies=[Depends(require_token)])
+def get_job_result(job_id: str) -> Any:
+    with _JOB_LOCK:
+        job = _JOBS.get(job_id)
+        if job is None:
+            raise HTTPException(status_code=404, detail="Tarefa não encontrada ou expirada.")
+        if job["status"] in {"queued", "running"}:
+            raise HTTPException(status_code=409, detail="A tarefa ainda está em andamento.")
+        if job["status"] == "failed":
+            message = job["error"] or "Falha desconhecida na inferência."
+            _JOBS.pop(job_id, None)
+            raise HTTPException(status_code=500, detail=message)
+        kind = job["kind"]
+        result = job["result"]
+        _JOBS.pop(job_id, None)
+    if kind == "tts":
+        return Response(
+            content=result,
+            media_type="audio/wav",
+            headers={"Content-Disposition": 'attachment; filename="joe-generated.wav"'},
+        )
+    return result
