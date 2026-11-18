@@ -8,6 +8,8 @@ DESKTOP_FILE="$APPLICATIONS_DIR/joe.desktop"
 ICON_SOURCE="$ROOT_DIR/src/joe/resources/joe.png"
 ICON_DIR="$USER_DATA_DIR/icons/hicolor/64x64/apps"
 ICON_FILE="$ICON_DIR/joe.png"
+HOTKEY_PROPERTY="/commands/custom/<Primary><Shift>space"
+HOTKEY_COMMAND="/usr/bin/bash \"$ROOT_DIR/run.sh\" --clipboard-audio"
 MODE="install"
 CREATE_DESKTOP=0
 
@@ -21,7 +23,7 @@ Uso: bash scripts/install-desktop.sh [--desktop] [--uninstall]
 
 Instala o Joe no menu de aplicativos do usuário.
   --desktop    Também cria joe.desktop na área de trabalho.
-  --uninstall  Remove os lançadores e o ícone instalados pelo Joe.
+  --uninstall  Remove os lançadores, o ícone e o atalho do Xfce instalados pelo Joe.
 HELP
       exit 0
       ;;
@@ -56,6 +58,13 @@ if [[ "$MODE" == "uninstall" ]]; then
   fi
   if is_joe_launcher "$DESKTOP_COPY"; then
     rm -f "$DESKTOP_COPY"
+  fi
+  if command -v xfconf-query >/dev/null 2>&1; then
+    current_hotkey="$(xfconf-query --channel xfce4-keyboard-shortcuts --property "$HOTKEY_PROPERTY" 2>/dev/null || true)"
+    if [[ "$current_hotkey" == "$HOTKEY_COMMAND" ]]; then
+      xfconf-query --channel xfce4-keyboard-shortcuts --property "$HOTKEY_PROPERTY" --reset >/dev/null 2>&1 || true
+      echo "Atalho Ctrl+Shift+Espaço removido do Xfce."
+    fi
   fi
   rm -f "$ICON_FILE"
   rmdir "$ICON_DIR" 2>/dev/null || true
@@ -134,6 +143,24 @@ if [[ "$CREATE_DESKTOP" -eq 1 ]]; then
   chmod 755 "$DESKTOP_COPY"
   echo "Atalho criado na área de trabalho: $DESKTOP_COPY"
   echo "Caso o Xfce peça confirmação, escolha 'Permitir iniciar'."
+fi
+
+if command -v xfconf-query >/dev/null 2>&1; then
+  existing_hotkey="$(xfconf-query --channel xfce4-keyboard-shortcuts --property "$HOTKEY_PROPERTY" 2>/dev/null || true)"
+  if [[ -z "$existing_hotkey" ]]; then
+    if xfconf-query --channel xfce4-keyboard-shortcuts --property "$HOTKEY_PROPERTY" --create --type string --set "$HOTKEY_COMMAND" >/dev/null 2>&1; then
+      echo "Atalho global Ctrl+Shift+Espaço registrado no Xfce."
+    else
+      echo "Aviso: não foi possível registrar o atalho no Xfce; o Joe tentará usar pynput."
+    fi
+  elif [[ "$existing_hotkey" == "$HOTKEY_COMMAND" ]]; then
+    echo "Atalho global Ctrl+Shift+Espaço já está registrado no Xfce."
+  else
+    echo "Aviso: Ctrl+Shift+Espaço já pertence a outro comando no Xfce; não foi alterado."
+    echo "O Joe tentará usar pynput como alternativa."
+  fi
+else
+  echo "xfconf-query não encontrado; o Joe usará pynput como alternativa."
 fi
 
 if command -v update-desktop-database >/dev/null 2>&1; then

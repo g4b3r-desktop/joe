@@ -2,6 +2,14 @@
 
 Aplicativo desktop para **texto → áudio** e **áudio → texto**, com interface em português e dois modos de execução: **Local** ou **Google Colab (API remota)**.
 
+## Atalho global de texto para áudio
+
+No Linux Mint/Xfce, o instalador registra `Ctrl+Shift+Espaço` como atalho nativo do Xfce. Ele funciona com a janela do Joe minimizada ou em segundo plano: o comando abre um processo auxiliar, envia a solicitação à instância aberta por um socket local privado e encerra o auxiliar. O áudio é gerado na janela compacta do Joe.
+
+O Joe mantém o listener global `pynput` como alternativa quando o atalho nativo do Xfce não está instalado. O listener é monitorado; se encerrar, o status informa a falha e **Arquivo → Reativar atalho global** permite tentar novamente. Em Wayland, a captura global pelo `pynput` é limitada; o atalho nativo do desktop é preferível.
+
+O instalador não substitui um comando existente em `Ctrl+Shift+Espaço`. Para registrar novamente o atalho após atualizar, execute `bash scripts/install-desktop.sh`. Para remover somente o atalho criado pelo Joe, use `bash scripts/install-desktop.sh --uninstall`; comandos que não pertencem ao Joe são preservados.
+
 ## Modelos
 
 - **TTS — [Kyutai Pocket TTS](https://github.com/kyutai-labs/pocket-tts):** gera WAV localmente, roda na CPU e inclui suporte a português, espanhol, francês, italiano, alemão e neerlandês, além de inglês. Instala o extra `quantize` recomendado pelo projeto e permite usar uma gravação própria como referência de voz.
