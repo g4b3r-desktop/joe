@@ -67,3 +67,22 @@ def test_normalizer_does_not_change_source_string():
     normalize_text_for_tts(original)
 
     assert original == "Tenho 2 gatos e uso GPU."
+
+
+
+def test_english_decimal_point_is_not_treated_as_thousands_separator():
+    result = normalize_text_for_tts("The value is 1.234.", language="english")
+
+    assert "one point two three four" in result
+
+
+def test_portuguese_accepts_mixed_thousands_and_decimal_separators():
+    result = normalize_text_for_tts("O valor é 1,234.56.")
+
+    assert "mil duzentos e trinta e quatro vírgula cinco seis" in result
+
+
+def test_invalid_numeric_grouping_is_preserved():
+    result = normalize_text_for_tts("Código 1.234.5.")
+
+    assert "1.234.5" in result
