@@ -13,9 +13,9 @@ Não há envio de áudio para serviços de nuvem. Na primeira execução, os pes
 
 O aplicativo foi pensado para Linux desktop e também pode ser executado em Windows/macOS com Python compatível.
 
-**Perfil de referência: Linux Mint, Core i5-2400, 16 GB RAM e RTX 3060.** O Pocket TTS roda na CPU. Para ASR, o Joe usa Photon quando o processador oferece AVX-512 VNNI; caso contrário, usa a implementação de referência Transformers e escolhe CUDA/FP16 automaticamente quando há PyTorch com CUDA disponível. Sem CUDA disponível, usa CPU.
+**Perfil de referência: Linux Mint, Core i5-2400, 16 GB RAM e RTX 3060.** O Pocket TTS roda na CPU. Para ASR, o Joe oferece seleção explícita entre CPU e NVIDIA GPU. No modo CPU, usa Photon se o processador for compatível; caso contrário, usa Transformers. No modo CUDA, usa a implementação de referência Transformers em FP16 quando a build CUDA do PyTorch está instalada.
 
-A implementação Photon do Parakeet Redux usa kernels AVX-512 VNNI em x86. O i5-2400 oferece AVX, mas não AVX-512; por isso, para aproveitar sua RTX 3060, instale o modo CUDA. A implementação de referência do Parakeet também documenta execução em CUDA com FP16.
+A implementação Photon do Parakeet Redux usa kernels AVX-512 VNNI em x86. O i5-2400 oferece AVX, mas não AVX-512; por isso, selecione NVIDIA GPU (CUDA) para usar a RTX 3060. O modelo também documenta execução em CUDA com FP16. O modo CPU é útil quando outros modelos já estão ocupando VRAM.
 
 ## Instalação no Linux Mint / Ubuntu
 
@@ -40,7 +40,7 @@ Para usar a RTX 3060 na transcrição Parakeet (PyTorch CUDA 13.2), use:
 bash scripts/install-linux.sh cuda
 ~~~
 
-O Pocket TTS continua na CPU; o Parakeet usa CUDA/FP16 automaticamente quando disponível. A instalação CUDA ocupa mais espaço em disco.
+O Pocket TTS continua na CPU. Na aba Áudio → Texto, selecione **NVIDIA GPU (CUDA)** para usar a RTX; escolha **CPU (preserva a VRAM)** quando estiver executando outros modelos. A instalação CUDA ocupa mais espaço em disco.
 
 Inicie:
 
