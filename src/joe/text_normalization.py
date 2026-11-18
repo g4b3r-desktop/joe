@@ -112,6 +112,7 @@ _PT_WORD_LIKE_BRANDS = {
 }
 
 _DATE_PATTERN = re.compile(r"(?<!\d)(\d{1,2})[/-](\d{1,2})[/-](\d{4})(?!\d)")
+_ISO_DATE_PATTERN = re.compile(r"(?<!\d)(\d{4})-(\d{1,2})-(\d{1,2})(?!\d)")
 _TIME_PATTERN = re.compile(r"(?<!\w)([01]?\d|2[0-3]):([0-5]\d)(?!\w)")
 _PERCENT_PATTERN = re.compile(r"(?<![\w./-])([+-]?\d+(?:[.,]\d+)*)(\s*%)(?!\w)")
 _CURRENCY_PATTERN = re.compile(r"(?<!\w)R\$\s*([0-9][0-9.,]*)(?!\w)", re.IGNORECASE)
@@ -211,7 +212,13 @@ def _replace_dates(text: str, language: str) -> str:
             return f"{day_words} {month_name} {year_words}"
         return f"{day_words} de {month_name} de {year_words}"
 
-    return _DATE_PATTERN.sub(replace, text)
+    text = _DATE_PATTERN.sub(replace, text)
+
+    def replace_iso(match: re.Match[str]) -> str:
+        year, month, day = (int(part) for part in match.groups())
+        return replace(type("DateMatch", (), {"groups": lambda self: (str(day), str(month), str(year)), "group": lambda self, index: match.group(index)})())
+
+    return _ISO_DATE_PATTERN.sub(replace_iso, text)
 
 
 def _replace_times(text: str, language: str) -> str:
@@ -300,7 +307,7 @@ def normalize_text_for_tts(
         result = _number_to_words(amount, "portuguese")
         if negative:
             result = f"menos {result}"
-        result += " real" if amount == 1 and not fractional else " reais"
+        result += " real" if amount == 1 else " reais"
         if fractional:
             cents = int(fractional.ljust(2, "0")[:2])
             if cents:
