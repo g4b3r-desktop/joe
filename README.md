@@ -106,8 +106,11 @@ python -m pip install torch --index-url https://download.pytorch.org/whl/cu132
 ## Uso
 
 ### Texto → Áudio
-1. Digite ou cole o texto.
-2. Selecione o idioma da voz (português é o padrão).
+1. Digite ou cole o texto. A caixa de texto mantém o conteúdo original.
+2. Por padrão, o Joe normaliza números, datas, horários, porcentagens, valores em reais, abreviações e siglas antes de enviar uma cópia ao Pocket TTS. A normalização pode ser desativada.
+3. Use **Prévia do texto falado** para conferir a cópia preparada sem alterar o texto original.
+4. Use **Dicionário de pronúncia** para cadastrar, editar ou remover palavras e expressões personalizadas. As regras são salvas nas configurações do usuário e são aplicadas antes das regras automáticas.
+5. Selecione o idioma da voz (português é o padrão).
 3. Opcionalmente, selecione um WAV/MP3 de referência para clonagem de voz.
 4. A pasta padrão já é **Música/Joe**. Você pode alterá-la uma vez no campo Pasta para salvar; o Joe memoriza a escolha para as próximas execuções.
 5. A opção **Salvar automaticamente com nome genérico** fica ativada por padrão. Os arquivos recebem nomes como `joe_audio_20261118_123045.wav`, sem abrir uma janela para escolher nome ou local a cada geração. Nomes repetidos no mesmo segundo recebem um sufixo para não sobrescrever arquivos.
