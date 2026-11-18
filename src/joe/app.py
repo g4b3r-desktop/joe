@@ -1083,7 +1083,18 @@ class JoeWindow(QMainWindow):
         tabs.currentChanged.connect(
             lambda index: self.app_settings.setValue("last_tab", index)
         )
-        self.setCentralWidget(tabs)
+        central = QWidget()
+        central_layout = QVBoxLayout(central)
+        central_layout.setContentsMargins(0, 0, 0, 0)
+        central_layout.setSpacing(0)
+        central_layout.addWidget(tabs, 1)
+
+        player_group = QGroupBox("Player de áudio")
+        player_layout = QVBoxLayout(player_group)
+        player_layout.setContentsMargins(10, 6, 10, 6)
+        player_layout.addWidget(self.audio_player)
+        central_layout.addWidget(player_group)
+        self.setCentralWidget(central)
 
         bar = QStatusBar()
         self.setStatusBar(bar)
@@ -1624,11 +1635,6 @@ class JoeWindow(QMainWindow):
         layout.addWidget(description)
         layout.addWidget(self.tts_text, 1)
         layout.addLayout(action_row)
-        player_group = QGroupBox("Player de áudio")
-        player_layout = QVBoxLayout(player_group)
-        player_layout.setContentsMargins(10, 8, 10, 8)
-        player_layout.addWidget(self.audio_player)
-        layout.addWidget(player_group)
         layout.addWidget(self.tts_info)
         layout.addWidget(self.tts_speed_info)
         return page
@@ -2121,6 +2127,43 @@ class JoeWindow(QMainWindow):
                 "transcript_text", self.transcript.toPlainText()
             )
         )
+        self.transcript.textChanged.connect(self._sync_segment_table_from_editor)
+
+        self.segments_group = QGroupBox("Segmentos com timestamps")
+        segments_layout = QVBoxLayout(self.segments_group)
+        self.segments_table = QTableWidget(0, 3)
+        self.segments_table.setHorizontalHeaderLabels(["Início", "Fim", "Texto do segmento"])
+        self.segments_table.setSelectionBehavior(
+            QAbstractItemView.SelectionBehavior.SelectRows
+        )
+        self.segments_table.setSelectionMode(
+            QAbstractItemView.SelectionMode.SingleSelection
+        )
+        self.segments_table.setEditTriggers(
+            QAbstractItemView.EditTrigger.DoubleClicked
+            | QAbstractItemView.EditTrigger.EditKeyPressed
+        )
+        self.segments_table.horizontalHeader().setSectionResizeMode(
+            0, QHeaderView.ResizeMode.ResizeToContents
+        )
+        self.segments_table.horizontalHeader().setSectionResizeMode(
+            1, QHeaderView.ResizeMode.ResizeToContents
+        )
+        self.segments_table.horizontalHeader().setSectionResizeMode(
+            2, QHeaderView.ResizeMode.Stretch
+        )
+        self.segments_table.setMinimumHeight(125)
+        self.segments_table.setMaximumHeight(210)
+        self.segments_table.cellChanged.connect(self._transcript_segment_cell_changed)
+        segments_layout.addWidget(self.segments_table)
+        segment_actions = QHBoxLayout()
+        self.play_segment_button = QPushButton("▶ Reproduzir segmento selecionado")
+        self.play_segment_button.clicked.connect(self._play_selected_transcript_segment)
+        segment_actions.addWidget(self.play_segment_button)
+        segment_actions.addStretch(1)
+        segments_layout.addLayout(segment_actions)
+        self.segments_group.setVisible(False)
+        self.player.positionChanged.connect(self._highlight_transcript_segment)
 
         self.copy_button = QPushButton("Copiar texto")
         self.copy_button.clicked.connect(self._copy_transcript)
@@ -2154,6 +2197,7 @@ class JoeWindow(QMainWindow):
         layout.addLayout(asr_options)
         layout.addLayout(buttons)
         layout.addWidget(self.transcript, 1)
+        layout.addWidget(self.segments_group)
         layout.addWidget(self.asr_info)
         return page
 
@@ -2579,8 +2623,12 @@ class JoeWindow(QMainWindow):
             self.audio_path.setText(path)
             self.transcript.clear()
             self.transcript_segments = []
+            self._populate_transcript_segment_table()
+            self.segments_table.setRowCount(0)
             self.save_srt_button.setEnabled(False)
             self.save_vtt_button.setEnabled(False)
+            self.audio_player.set_audio_path(path)
+            self.player.setSource(QUrl.fromLocalFile(str(Path(path).expanduser().resolve())))
 
     @staticmethod
     def _xfce_hotkey_property() -> str:
@@ -3149,6 +3197,12 @@ class JoeWindow(QMainWindow):
             return
 
         want_timestamps = self.timestamps_check.isChecked()
+        audio_file = Path(source).expanduser()
+        if audio_file.is_file():
+            audio_url = QUrl.fromLocalFile(str(audio_file.resolve()))
+            if self.player.source() != audio_url:
+                self.audio_player.set_audio_path(audio_file)
+                self.player.setSource(audio_url)
         if self.processing_mode.currentData() == "colab":
             try:
                 remote = self._colab_client()
@@ -3168,6 +3222,92 @@ class JoeWindow(QMainWindow):
                 self._transcription_finished,
             )
 
+    def _populate_transcript_segment_table(self) -> None:
+        self.segments_table.blockSignals(True)
+        self.segments_table.setRowCount(len(self.transcript_segments))
+        for row, segment in enumerate(self.transcript_segments):
+            start = float(segment.get("start", 0.0))
+            end = float(segment.get("end", 0.0))
+            start_item = QTableWidgetItem(format_duration(start))
+            end_item = QTableWidgetItem(format_duration(end))
+            start_item.setFlags(start_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+            end_item.setFlags(end_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+            text_item = QTableWidgetItem(str(segment.get("text", "")).strip())
+            self.segments_table.setItem(row, 0, start_item)
+            self.segments_table.setItem(row, 1, end_item)
+            self.segments_table.setItem(row, 2, text_item)
+        self.segments_table.blockSignals(False)
+        self.segments_group.setVisible(bool(self.transcript_segments))
+        self.play_segment_button.setEnabled(bool(self.transcript_segments))
+
+    def _sync_segment_table_from_editor(self) -> None:
+        if not self.transcript_segments or not hasattr(self, "segments_table"):
+            return
+        lines = [
+            line.strip()
+            for line in self.transcript.toPlainText().splitlines()
+            if line.strip()
+        ]
+        if len(lines) != len(self.transcript_segments):
+            return
+        self.segments_table.blockSignals(True)
+        for row, line in enumerate(lines):
+            item = self.segments_table.item(row, 2)
+            if item is not None and item.text() != line:
+                item.setText(line)
+        self.segments_table.blockSignals(False)
+
+    def _transcript_segment_cell_changed(self, row: int, column: int) -> None:
+        if column != 2 or not (0 <= row < self.segments_table.rowCount()):
+            return
+        texts = []
+        for index in range(self.segments_table.rowCount()):
+            item = self.segments_table.item(index, 2)
+            text = item.text().replace("\\n", " ").strip() if item else ""
+            texts.append(text)
+        self.transcript.setPlainText("\\n".join(texts))
+
+    def _play_selected_transcript_segment(self) -> None:
+        row = self.segments_table.currentRow()
+        if row < 0 or row >= len(self.transcript_segments):
+            return
+        source = Path(self.audio_path.text().strip()).expanduser()
+        if not source.is_file():
+            QMessageBox.warning(
+                self, "Áudio não encontrado",
+                "Selecione novamente o arquivo de áudio usado na transcrição.",
+            )
+            return
+        segment = self.transcript_segments[row]
+        try:
+            start_ms = max(0, round(float(segment.get("start", 0.0)) * 1000))
+        except (TypeError, ValueError):
+            start_ms = 0
+
+        source_url = QUrl.fromLocalFile(str(source.resolve()))
+        if self.player.source() != source_url:
+            self.audio_player.set_audio_path(source)
+            self.player.setSource(source_url)
+        self.player.setPosition(start_ms)
+        self.player.play()
+
+    def _highlight_transcript_segment(self, position_ms: int) -> None:
+        if not self.transcript_segments or not self.segments_table.isVisible():
+            return
+        seconds = position_ms / 1000
+        active_row = -1
+        for row, segment in enumerate(self.transcript_segments):
+            try:
+                start = float(segment.get("start", 0.0))
+                end = float(segment.get("end", 0.0))
+            except (TypeError, ValueError):
+                continue
+            if start <= seconds <= end:
+                active_row = row
+                break
+        if active_row >= 0 and self.segments_table.currentRow() != active_row:
+            self.segments_table.selectRow(active_row)
+
     def _transcription_finished(self, result: object) -> None:
         data = result if isinstance(result, dict) else {}
         self.transcript_segments = [
@@ -3181,6 +3321,7 @@ class JoeWindow(QMainWindow):
             )
         else:
             visible_text = str(data.get("text", ""))
+        self._populate_transcript_segment_table()
         self.transcript.setPlainText(visible_text)
         self.transcription_backend = str(data.get("backend", "Parakeet Redux"))
         note = str(data.get("note", ""))
