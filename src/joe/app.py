@@ -33,6 +33,7 @@ from PySide6.QtWidgets import (
     QHeaderView,
     QInputDialog,
     QFormLayout,
+    QGroupBox,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -891,6 +892,7 @@ class JoeWindow(QMainWindow):
         QDesktopServices.openUrl(QUrl(url))
 
     def _build_tts_tab(self) -> QWidget:
+        """Build the frequent text-to-speech workflow."""
         page = QWidget()
         layout = QVBoxLayout(page)
         layout.setContentsMargins(24, 22, 24, 22)
@@ -898,22 +900,88 @@ class JoeWindow(QMainWindow):
 
         title = QLabel("Transforme texto em fala")
         title.setObjectName("pageTitle")
+
         description = QLabel(
-            "Gere WAV com o Kyutai Pocket TTS. Atalho global: "
-            "Ctrl+Shift+Espaço transforma o texto copiado em áudio imediatamente."
+            "Digite ou cole o texto e gere o áudio. "
+            "Ctrl+Shift+Espaço converte diretamente o texto copiado."
         )
         description.setObjectName("muted")
+        description.setWordWrap(True)
 
         self.tts_text = QTextEdit()
         self.tts_text.setPlaceholderText(
             "Digite ou cole aqui o texto que deseja transformar em áudio..."
         )
         self.tts_text.setPlainText(str(self.app_settings.value("tts_text", "")))
-        self.tts_text.setMinimumHeight(240)
+        self.tts_text.setMinimumHeight(280)
         self.tts_text.textChanged.connect(
             lambda: self._save_text_setting("tts_text", self.tts_text.toPlainText())
         )
 
+        self.tts_generate_button = QPushButton("Gerar áudio WAV")
+        self.tts_generate_button.setObjectName("primaryButton")
+        self.tts_generate_button.clicked.connect(self._generate_audio)
+
+        self.tts_play_button = QPushButton("Reproduzir último áudio")
+        self.tts_play_button.setEnabled(False)
+        self.tts_play_button.clicked.connect(self._play_generated_audio)
+
+        self.tts_settings_button = QPushButton("⚙ Configurações")
+        self.tts_settings_button.setToolTip(
+            "Idioma, voz, pronúncia, pasta de saída e opções do atalho"
+        )
+        self.tts_settings_button.clicked.connect(self._open_tts_settings)
+
+        action_row = QHBoxLayout()
+        action_row.addWidget(self.tts_generate_button)
+        action_row.addWidget(self.tts_play_button)
+        action_row.addStretch(1)
+        action_row.addWidget(self.tts_settings_button)
+
+        self.tts_info = QLabel(
+            "O texto original permanece intacto. As opções de voz e pronúncia "
+            "podem ser alteradas em Configurações."
+        )
+        self.tts_info.setObjectName("muted")
+        self.tts_info.setWordWrap(True)
+
+        self.tts_speed_info = QLabel(
+            "A medição é feita pelo Joe neste computador. "
+            "Após gerar, serão exibidos tempo total, duração do WAV e velocidade efetiva."
+        )
+        self.tts_speed_info.setObjectName("muted")
+        self.tts_speed_info.setWordWrap(True)
+
+        self._build_tts_settings_dialog()
+
+        layout.addWidget(title)
+        layout.addWidget(description)
+        layout.addWidget(self.tts_text, 1)
+        layout.addLayout(action_row)
+        layout.addWidget(self.tts_info)
+        layout.addWidget(self.tts_speed_info)
+        return page
+
+    def _build_tts_settings_dialog(self) -> None:
+        """Create less frequently changed TTS options in a separate dialog."""
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Configurações — Texto para áudio")
+        dialog.resize(760, 680)
+        self.tts_settings_dialog = dialog
+
+        dialog_layout = QVBoxLayout(dialog)
+        dialog_layout.setContentsMargins(22, 20, 22, 18)
+        dialog_layout.setSpacing(14)
+
+        intro = QLabel(
+            "Ajuste aqui as opções que normalmente precisam ser configuradas apenas uma vez. "
+            "As alterações são salvas automaticamente."
+        )
+        intro.setObjectName("muted")
+        intro.setWordWrap(True)
+        dialog_layout.addWidget(intro)
+
+        # Text preparation and pronunciation.
         self.tts_normalization_enabled = QCheckBox(
             "Normalizar números, datas, siglas e abreviações para a fala"
         )
@@ -929,11 +997,86 @@ class JoeWindow(QMainWindow):
         self.tts_preview_button = QPushButton("Prévia do texto falado")
         self.tts_preview_button.clicked.connect(self._preview_tts_text)
 
-        speech_tools_row = QHBoxLayout()
-        speech_tools_row.addWidget(self.tts_normalization_enabled, 1)
-        speech_tools_row.addWidget(self.tts_dictionary_button)
-        speech_tools_row.addWidget(self.tts_preview_button)
+        pronunciation_group = QGroupBox("Texto e pronúncia")
+        pronunciation_layout = QVBoxLayout(pronunciation_group)
+        pronunciation_layout.addWidget(self.tts_normalization_enabled)
+        pronunciation_actions = QHBoxLayout()
+        pronunciation_actions.addWidget(self.tts_dictionary_button)
+        pronunciation_actions.addWidget(self.tts_preview_button)
+        pronunciation_actions.addStretch(1)
+        pronunciation_layout.addLayout(pronunciation_actions)
+        dialog_layout.addWidget(pronunciation_group)
 
+        # Language and voice selection.
+        self.tts_language = QComboBox()
+        self.tts_language.addItem("Português", "portuguese")
+        self.tts_language.addItem("Inglês", "english")
+        self.tts_language.addItem("Espanhol", "spanish")
+        self.tts_language.addItem("Francês", "french")
+        self.tts_language.addItem("Italiano", "italian")
+        self.tts_language.addItem("Alemão", "german")
+        self.tts_language.addItem("Neerlandês", "dutch")
+        saved_language = str(self.app_settings.value("tts_language", "portuguese"))
+        language_index = self.tts_language.findData(saved_language)
+        self.tts_language.setCurrentIndex(max(0, language_index))
+        self.tts_language.currentIndexChanged.connect(
+            lambda: self.app_settings.setValue(
+                "tts_language", self.tts_language.currentData()
+            )
+        )
+
+        self.voice_path = QLineEdit(str(self.app_settings.value("voice_path", "")))
+        self.voice_path.setReadOnly(True)
+        self.voice_path.setPlaceholderText("Voz padrão do Pocket TTS")
+        self.voice_path.textChanged.connect(
+            lambda value: self._save_text_setting("voice_path", value)
+        )
+
+        self.voice_library_directory = QLineEdit(
+            str(self.app_settings.value("voice_library_directory", ""))
+        )
+        self.voice_library_directory.setPlaceholderText(
+            "Pasta principal; a busca inclui todas as subpastas"
+        )
+        self.voice_library_directory.textChanged.connect(
+            lambda value: self._save_text_setting("voice_library_directory", value)
+        )
+
+        self.voice_library_button = QPushButton("Escolher pasta…")
+        self.voice_library_button.clicked.connect(self._choose_voice_library_directory)
+
+        library_row = QWidget()
+        library_layout = QHBoxLayout(library_row)
+        library_layout.setContentsMargins(0, 0, 0, 0)
+        library_layout.addWidget(self.voice_library_directory, 1)
+        library_layout.addWidget(self.voice_library_button)
+
+        self.voice_button = QPushButton("Biblioteca…")
+        self.voice_button.clicked.connect(self._choose_voice)
+        self.voice_preview_button = QPushButton("▶ Ouvir voz")
+        self.voice_preview_button.clicked.connect(self._preview_selected_voice)
+        self.voice_prepare_button = QPushButton("Preparar voz (.safetensors)…")
+        self.voice_prepare_button.setToolTip(
+            "Converte o áudio de referência em um estado de voz reutilizável do Pocket TTS."
+        )
+        self.voice_prepare_button.clicked.connect(self._prepare_voice_state)
+
+        voice_row = QWidget()
+        voice_layout = QHBoxLayout(voice_row)
+        voice_layout.setContentsMargins(0, 0, 0, 0)
+        voice_layout.addWidget(self.voice_path, 1)
+        voice_layout.addWidget(self.voice_button)
+        voice_layout.addWidget(self.voice_preview_button)
+        voice_layout.addWidget(self.voice_prepare_button)
+
+        voice_group = QGroupBox("Idioma e voz")
+        voice_form = QFormLayout(voice_group)
+        voice_form.addRow("Idioma da fala", self.tts_language)
+        voice_form.addRow("Pasta da biblioteca", library_row)
+        voice_form.addRow("Voz padrão / referência", voice_row)
+        dialog_layout.addWidget(voice_group)
+
+        # Output folder and clipboard shortcut settings.
         default_output_dir = QStandardPaths.writableLocation(
             QStandardPaths.StandardLocation.MusicLocation
         )
@@ -943,6 +1086,7 @@ class JoeWindow(QMainWindow):
         saved_output_dir = str(
             self.app_settings.value("tts_output_directory", default_output_dir)
         )
+
         self.tts_output_directory = QLineEdit(saved_output_dir)
         self.tts_output_directory.setPlaceholderText("Pasta onde os WAV serão salvos")
         self.tts_output_directory.textChanged.connect(self._save_tts_output_settings)
@@ -965,63 +1109,6 @@ class JoeWindow(QMainWindow):
         )
         self.tts_auto_filename.toggled.connect(self._save_tts_output_settings)
 
-        self.tts_language = QComboBox()
-        self.tts_language.addItem("Português", "portuguese")
-        self.tts_language.addItem("Inglês", "english")
-        self.tts_language.addItem("Espanhol", "spanish")
-        self.tts_language.addItem("Francês", "french")
-        self.tts_language.addItem("Italiano", "italian")
-        self.tts_language.addItem("Alemão", "german")
-        self.tts_language.addItem("Neerlandês", "dutch")
-        saved_language = str(self.app_settings.value("tts_language", "portuguese"))
-        language_index = self.tts_language.findData(saved_language)
-        self.tts_language.setCurrentIndex(max(0, language_index))
-        self.tts_language.currentIndexChanged.connect(
-            lambda: self.app_settings.setValue(
-                "tts_language", self.tts_language.currentData()
-            )
-        )
-
-        self.voice_path = QLineEdit(
-            str(self.app_settings.value("voice_path", ""))
-        )
-        self.voice_path.setReadOnly(True)
-        self.voice_path.setPlaceholderText("Voz padrão do Pocket TTS")
-        self.voice_path.textChanged.connect(
-            lambda value: self._save_text_setting("voice_path", value)
-        )
-        self.voice_library_directory = QLineEdit(
-            str(self.app_settings.value("voice_library_directory", ""))
-        )
-        self.voice_library_directory.setPlaceholderText(
-            "Pasta principal; a busca inclui todas as subpastas"
-        )
-        self.voice_library_directory.textChanged.connect(
-            lambda value: self._save_text_setting("voice_library_directory", value)
-        )
-        self.voice_library_button = QPushButton("Escolher pasta…")
-        self.voice_library_button.clicked.connect(self._choose_voice_library_directory)
-        library_row = QWidget()
-        library_layout = QHBoxLayout(library_row)
-        library_layout.setContentsMargins(0, 0, 0, 0)
-        library_layout.addWidget(self.voice_library_directory, 1)
-        library_layout.addWidget(self.voice_library_button)
-
-        self.voice_button = QPushButton("Biblioteca…")
-        self.voice_button.clicked.connect(self._choose_voice)
-        self.voice_preview_button = QPushButton("▶ Ouvir voz")
-        self.voice_preview_button.clicked.connect(self._preview_selected_voice)
-        self.voice_prepare_button = QPushButton("Preparar voz (.safetensors)…")
-        self.voice_prepare_button.setToolTip(
-            "Converte o áudio de referência em um estado de voz reutilizável do Pocket TTS."
-        )
-        self.voice_prepare_button.clicked.connect(self._prepare_voice_state)
-
-        options = QFormLayout()
-        options.addRow("Pasta para salvar", output_folder_row)
-        options.addRow("", self.tts_auto_filename)
-        options.addRow("Idioma da fala", self.tts_language)
-
         self.clipboard_chunk_size = QComboBox()
         for size in (180, 280, 420, 560):
             self.clipboard_chunk_size.addItem(f"{size} caracteres", size)
@@ -1035,55 +1122,24 @@ class JoeWindow(QMainWindow):
                 "clipboard_chunk_size", self.clipboard_chunk_size.currentData()
             )
         )
-        options.addRow("Tamanho dos blocos do atalho", self.clipboard_chunk_size)
 
-        voice_row = QWidget()
-        voice_layout = QHBoxLayout(voice_row)
-        voice_layout.setContentsMargins(0, 0, 0, 0)
-        voice_layout.addWidget(self.voice_path, 1)
-        voice_layout.addWidget(self.voice_button)
-        voice_layout.addWidget(self.voice_preview_button)
-        voice_layout.addWidget(self.voice_prepare_button)
-        options.addRow("Pasta da biblioteca de vozes", library_row)
-        options.addRow("Voz padrão / referência", voice_row)
+        output_group = QGroupBox("Arquivos e atalho de texto copiado")
+        output_form = QFormLayout(output_group)
+        output_form.addRow("Pasta para salvar", output_folder_row)
+        output_form.addRow("", self.tts_auto_filename)
+        output_form.addRow("Tamanho dos blocos do atalho", self.clipboard_chunk_size)
+        dialog_layout.addWidget(output_group)
 
-        self.tts_generate_button = QPushButton("Gerar áudio WAV")
-        self.tts_generate_button.setObjectName("primaryButton")
-        self.tts_generate_button.clicked.connect(self._generate_audio)
+        footer = QHBoxLayout()
+        footer.addStretch(1)
+        close_button = QPushButton("Fechar")
+        close_button.clicked.connect(dialog.accept)
+        footer.addWidget(close_button)
+        dialog_layout.addLayout(footer)
 
-        self.tts_play_button = QPushButton("Reproduzir último áudio")
-        self.tts_play_button.setEnabled(False)
-        self.tts_play_button.clicked.connect(self._play_generated_audio)
-
-        action_row = QHBoxLayout()
-        action_row.addWidget(self.tts_generate_button)
-        action_row.addWidget(self.tts_play_button)
-        action_row.addStretch(1)
-
-        self.tts_info = QLabel(
-            "A normalização prepara uma cópia do texto para o Pocket TTS. "
-            "O texto original permanece intacto na caixa acima. Você pode cadastrar "
-            "pronúncias próprias no dicionário."
-        )
-        self.tts_info.setObjectName("muted")
-        self.tts_info.setWordWrap(True)
-
-        self.tts_speed_info = QLabel(
-            "A medição é feita pelo Joe neste computador. "
-            "Após gerar, serão exibidos tempo total, duração do WAV e velocidade efetiva."
-        )
-        self.tts_speed_info.setObjectName("muted")
-        self.tts_speed_info.setWordWrap(True)
-
-        layout.addWidget(title)
-        layout.addWidget(description)
-        layout.addWidget(self.tts_text, 1)
-        layout.addLayout(speech_tools_row)
-        layout.addLayout(options)
-        layout.addLayout(action_row)
-        layout.addWidget(self.tts_info)
-        layout.addWidget(self.tts_speed_info)
-        return page
+    def _open_tts_settings(self) -> None:
+        """Open the TTS settings popup without rebuilding its saved controls."""
+        self.tts_settings_dialog.exec()
 
     def _build_asr_tab(self) -> QWidget:
         page = QWidget()
@@ -1219,6 +1275,19 @@ class JoeWindow(QMainWindow):
         }
         QLabel#muted {
             color: #a5adbc;
+        }
+        QGroupBox {
+            border: 1px solid #3a4150;
+            border-radius: 8px;
+            margin-top: 10px;
+            padding: 12px 10px 10px;
+            font-weight: 600;
+        }
+        QGroupBox::title {
+            subcontrol-origin: margin;
+            left: 12px;
+            padding: 0 5px;
+            color: #cbd1dc;
         }
         QTextEdit, QLineEdit, QComboBox {
             background: #20242d;
@@ -2130,6 +2199,10 @@ class JoeWindow(QMainWindow):
         for widget in (
             self.tts_generate_button,
             self.tts_play_button,
+            self.tts_settings_button,
+            self.tts_language,
+            self.clipboard_chunk_size,
+            self.voice_path,
             self.voice_button,
             self.voice_preview_button,
             self.voice_library_directory,
