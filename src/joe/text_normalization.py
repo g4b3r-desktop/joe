@@ -107,8 +107,8 @@ _PT_ACRONYMS = {
     "VRAM": "vê érre ã ême",
 }
 _PT_WORD_LIKE_BRANDS = {
-    "BLENDER", "COLAB", "JOE", "LINUX", "NVIDIA", "OPENAI",
-    "POCKET", "PYTHON", "QWEN", "STEAM",
+    "BLENDER", "BOM", "COLAB", "FIM", "JOE", "LINUX", "NAO", "NÃO",
+    "NVIDIA", "OK", "OPENAI", "POCKET", "PYTHON", "QWEN", "SIM", "STEAM",
 }
 
 _DATE_PATTERN = re.compile(r"(?<!\d)(\d{1,2})[/-](\d{1,2})[/-](\d{4})(?!\d)")
@@ -145,14 +145,15 @@ def _split_number(raw: str, language: str) -> tuple[str, str | None, bool]:
 
     integer_part = value
     fractional_part = None
-    if decimal_separator in value:
-        if group_separator in value:
-            integer_part, fractional_part = value.rsplit(decimal_separator, 1)
-            integer_part = integer_part.replace(group_separator, "")
-        elif value.count(decimal_separator) == 1:
+    if decimal_separator in value and group_separator in value:
+        last_decimal = max(value.rfind(decimal_separator), value.rfind(group_separator))
+        integer_part = value[:last_decimal].replace(decimal_separator, "").replace(
+            group_separator, ""
+        )
+        fractional_part = value[last_decimal + 1:]
+    elif decimal_separator in value:
+        if value.count(decimal_separator) == 1:
             left, right = value.split(decimal_separator, 1)
-            # In comma-decimal languages, a single dot followed by three digits
-            # is conventionally a thousands separator, e.g. 1.250.
             if decimal_separator == "," or len(right) != 3:
                 integer_part, fractional_part = left, right
             else:
@@ -179,8 +180,11 @@ def _numeric_words(raw: str, language: str) -> str:
     integer, fractional, negative = _split_number(raw, language)
     words = _number_to_words(int(integer or "0"), language)
     if negative:
-        minus = "menos" if language == "portuguese" else "minus"
-        words = f"{minus} {words}"
+        minus_words = {
+            "portuguese": "menos", "spanish": "menos", "french": "moins",
+            "german": "minus", "italian": "meno", "dutch": "min",
+        }
+        words = f"{minus_words.get(language, 'minus')} {words}"
     if fractional:
         decimal_word = _DECIMAL_WORDS.get(language, "vírgula")
         digit_words = " ".join(_number_to_words(int(digit), language) for digit in fractional)
@@ -209,7 +213,9 @@ def _replace_dates(text: str, language: str) -> str:
             return f"{month_name} {ordinal}, {year_words}"
         if language == "german":
             return f"{day_words} {month_name} {year_words}"
-        return f"{day_words} de {month_name} de {year_words}"
+        if language in {"portuguese", "spanish"}:
+            return f"{day_words} de {month_name} de {year_words}"
+        return f"{day_words} {month_name} {year_words}"
 
     def replace_dmy(match: re.Match[str]) -> str:
         day, month, year = (int(part) for part in match.groups())
@@ -224,20 +230,28 @@ def _replace_dates(text: str, language: str) -> str:
 
 
 def _replace_times(text: str, language: str) -> str:
+    units = {
+        "portuguese": "horas", "english": "hours", "spanish": "horas",
+        "french": "heures", "german": "Uhr", "italian": "ore", "dutch": "uur",
+    }
+    conjunctions = {
+        "portuguese": "e", "english": "and", "spanish": "y",
+        "french": "et", "german": "und", "italian": "e", "dutch": "en",
+    }
+
     def replace(match: re.Match[str]) -> str:
         hour = int(match.group(1))
         minute = int(match.group(2))
         hour_words = _number_to_words(hour, language)
+        unit = units.get(language, "")
         if minute == 0:
-            if language == "portuguese":
-                return f"{hour_words} horas"
-            return f"{hour_words} hours" if language == "english" else hour_words
+            return f"{hour_words} {unit}".strip()
         minute_words = _number_to_words(minute, language)
-        if language == "portuguese":
-            return f"{hour_words} horas e {minute_words} minutos"
-        if language == "english":
-            return f"{hour_words} hours and {minute_words} minutes"
-        return f"{hour_words} {minute_words}"
+        if language == "german":
+            return f"{hour_words} {unit} {minute_words}"
+        conjunction = conjunctions.get(language, "e")
+        minute_unit = "minutos" if language == "portuguese" else ""
+        return f"{hour_words} {unit} {conjunction} {minute_words} {minute_unit}".strip()
 
     return _TIME_PATTERN.sub(replace, text)
 
@@ -301,7 +315,13 @@ def normalize_text_for_tts(
         number_words = _numeric_words(match.group(1), language)
         return f"{number_words} {_PERCENT_WORDS.get(language, 'por cento')}"
 
-    normalized = _PERCENT_PATTERN.sub(replace_percent, normalized)
+    def safe_percent(match: re.Match[str]) -> str:
+        try:
+            return replace_percent(match)
+        except ValueError:
+            return match.group(0)
+
+    normalized = _PERCENT_PATTERN.sub(safe_percent, normalized)
 
     def replace_currency(match: re.Match[str]) -> str:
         integer, fractional, negative = _split_number(match.group(1), "portuguese")
@@ -313,13 +333,25 @@ def normalize_text_for_tts(
         if fractional:
             cents = int(fractional.ljust(2, "0")[:2])
             if cents:
-                result += f" e {_number_to_words(cents, 'portuguese')} centavos"
+                cent_label = "centavo" if cents == 1 else "centavos"
+                result += f" e {_number_to_words(cents, 'portuguese')} {cent_label}"
         return result
 
-    normalized = _CURRENCY_PATTERN.sub(replace_currency, normalized)
-    normalized = _NUMBER_PATTERN.sub(
-        lambda match: _numeric_words(match.group(1), language), normalized
-    )
+    def safe_currency(match: re.Match[str]) -> str:
+        try:
+            return replace_currency(match)
+        except ValueError:
+            return match.group(0)
+
+    normalized = _CURRENCY_PATTERN.sub(safe_currency, normalized)
+
+    def replace_number(match: re.Match[str]) -> str:
+        try:
+            return _numeric_words(match.group(1), language)
+        except ValueError:
+            return match.group(0)
+
+    normalized = _NUMBER_PATTERN.sub(replace_number, normalized)
 
     for placeholder, pronunciation in protected.items():
         normalized = normalized.replace(placeholder, pronunciation)
