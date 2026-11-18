@@ -111,12 +111,12 @@ _PT_WORD_LIKE_BRANDS = {
     "POCKET", "PYTHON", "QWEN", "STEAM",
 }
 
-_DATE_PATTERN = re.compile(r"(?<!\\d)(\\d{1,2})[/-](\\d{1,2})[/-](\\d{4})(?!\\d)")
-_TIME_PATTERN = re.compile(r"(?<!\\w)([01]?\\d|2[0-3]):([0-5]\\d)(?!\\w)")
-_PERCENT_PATTERN = re.compile(r"(?<![\\w./-])([+-]?\\d+(?:[.,]\\d+)*)(\\s*%)(?!\\w)")
-_CURRENCY_PATTERN = re.compile(r"(?<!\\w)R\\$\\s*([0-9][0-9.,]*)(?!\\w)", re.IGNORECASE)
-_NUMBER_PATTERN = re.compile(r"(?<![\\w./-])([+-]?\\d+(?:[.,]\\d+)*)(?![\\w./-])")
-_ACRONYM_PATTERN = re.compile(r"(?<!\\w)([A-Z]{2,6})(?!\\w)")
+_DATE_PATTERN = re.compile(r"(?<!\d)(\d{1,2})[/-](\d{1,2})[/-](\d{4})(?!\d)")
+_TIME_PATTERN = re.compile(r"(?<!\w)([01]?\d|2[0-3]):([0-5]\d)(?!\w)")
+_PERCENT_PATTERN = re.compile(r"(?<![\w./-])([+-]?\d+(?:[.,]\d+)*)(\s*%)(?!\w)")
+_CURRENCY_PATTERN = re.compile(r"(?<!\w)R\$\s*([0-9][0-9.,]*)(?!\w)", re.IGNORECASE)
+_NUMBER_PATTERN = re.compile(r"(?<![\w./-])([+-]?\d+(?:[.,]\d+)*)(?![\w./-])")
+_ACRONYM_PATTERN = re.compile(r"(?<!\w)([A-Z]{2,6})(?!\w)")
 
 
 def _number_to_words(value: int, language: str) -> str:
@@ -235,7 +235,7 @@ def _replace_times(text: str, language: str) -> str:
 
 def _replace_portuguese_abbreviations(text: str) -> str:
     for abbreviation, spoken in _PT_ABBREVIATIONS.items():
-        pattern = re.compile(rf"(?<!\\w){re.escape(abbreviation)}\\.?(?!\\w)", re.IGNORECASE)
+        pattern = re.compile(rf"(?<!\w){re.escape(abbreviation)}\.?(?!\w)", re.IGNORECASE)
         text = pattern.sub(spoken, text)
     return text
 
@@ -275,8 +275,8 @@ def normalize_text_for_tts(
         pronunciation = str(pronunciation).strip()
         if not term or not pronunciation:
             continue
-        placeholder = f"\\uE000{index}\\uE001"
-        pattern = re.compile(rf"(?<!\\w){re.escape(term)}(?!\\w)", re.IGNORECASE)
+        placeholder = f"\uE000{index}\uE001"
+        pattern = re.compile(rf"(?<!\w){re.escape(term)}(?!\w)", re.IGNORECASE)
         if pattern.search(normalized):
             normalized = pattern.sub(lambda _match, key=placeholder: key, normalized)
             protected[placeholder] = pronunciation
