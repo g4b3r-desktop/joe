@@ -35,6 +35,8 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QListWidget,
+    QListWidgetItem,
     QMainWindow,
     QMessageBox,
     QPushButton,
@@ -150,6 +152,111 @@ class ClipboardChunkWorker(QRunnable):
             self.signals.finished.emit(merged)
         except Exception as exc:  # noqa: BLE001
             self.signals.failed.emit(str(exc))
+
+
+class VoiceLibraryDialog(QDialog):
+    """Recursive voice-file browser with audio preview."""
+
+    AUDIO_SUFFIXES = {".wav", ".mp3", ".flac", ".m4a", ".ogg", ".aac"}
+    VOICE_SUFFIXES = AUDIO_SUFFIXES | {".safetensors"}
+
+    def __init__(self, root: Path, player: QMediaPlayer, parent=None):
+        super().__init__(parent)
+        self.root = root
+        self.player = player
+        self.selected_path: Path | None = None
+        self.setWindowTitle("Biblioteca de vozes")
+        self.resize(720, 520)
+        layout = QVBoxLayout(self)
+        layout.addWidget(QLabel(f"Pasta: {root}"))
+        self.search = QLineEdit()
+        self.search.setPlaceholderText("Filtrar por nome ou caminho…")
+        self.search.textChanged.connect(self._filter_items)
+        layout.addWidget(self.search)
+        self.files = QListWidget()
+        self.files.itemDoubleClicked.connect(lambda _item: self._accept_selection())
+        layout.addWidget(self.files, 1)
+        self.status = QLabel("Procurando arquivos nas subpastas…")
+        self.status.setObjectName("muted")
+        layout.addWidget(self.status)
+        actions = QHBoxLayout()
+        preview = QPushButton("▶ Reproduzir prévia")
+        preview.clicked.connect(self._preview)
+        stop = QPushButton("Parar")
+        stop.clicked.connect(self.player.stop)
+        actions.addWidget(preview)
+        actions.addWidget(stop)
+        actions.addStretch(1)
+        layout.addLayout(actions)
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+        buttons.button(QDialogButtonBox.StandardButton.Ok).setText("Usar esta voz")
+        buttons.accepted.connect(self._accept_selection)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+        self._scan()
+
+    def _scan(self) -> None:
+        found = []
+        try:
+            for path in self.root.rglob("*"):
+                try:
+                    if path.is_file() and path.suffix.lower() in self.VOICE_SUFFIXES:
+                        found.append(path)
+                except OSError:
+                    continue
+        except OSError as exc:
+            self.status.setText(f"Não foi possível ler a pasta: {exc}")
+            return
+        for path in sorted(found, key=lambda item: str(item).casefold()):
+            item = QListWidgetItem(str(path.relative_to(self.root)))
+            item.setData(Qt.ItemDataRole.UserRole, str(path))
+            item.setToolTip(str(path))
+            self.files.addItem(item)
+        self.status.setText(
+            f"{len(found)} arquivo(s) encontrado(s), incluindo todas as subpastas. "
+            ".safetensors não contém áudio para prévia."
+        )
+
+    def _filter_items(self, query: str) -> None:
+        query = query.casefold().strip()
+        for index in range(self.files.count()):
+            item = self.files.item(index)
+            full_path = str(item.data(Qt.ItemDataRole.UserRole)).casefold()
+            item.setHidden(query not in item.text().casefold() and query not in full_path)
+
+    def _current_path(self) -> Path | None:
+        item = self.files.currentItem()
+        return Path(item.data(Qt.ItemDataRole.UserRole)) if item else None
+
+    def _preview(self) -> None:
+        path = self._current_path()
+        if path is None:
+            self.status.setText("Selecione um arquivo primeiro.")
+        elif path.suffix.lower() == ".safetensors":
+            self.status.setText(
+                "Este é um estado de voz, não uma gravação. Selecione WAV/MP3 para ouvir."
+            )
+        else:
+            self.player.setSource(QUrl.fromLocalFile(str(path.resolve())))
+            self.player.play()
+            self.status.setText(f"Reproduzindo: {path.name}")
+
+    def _accept_selection(self) -> None:
+        path = self._current_path()
+        if path is None:
+            self.status.setText("Selecione um arquivo de voz.")
+            return
+        self.selected_path = path
+        self.player.stop()
+        self.player.setSource(QUrl())
+        self.accept()
+
+    def reject(self) -> None:
+        self.player.stop()
+        self.player.setSource(QUrl())
+        super().reject()
 
 
 class HotkeyBridge(QObject):
@@ -767,8 +874,27 @@ class JoeWindow(QMainWindow):
         self.voice_path.textChanged.connect(
             lambda value: self._save_text_setting("voice_path", value)
         )
-        self.voice_button = QPushButton("Escolher voz…")
+        self.voice_library_directory = QLineEdit(
+            str(self.app_settings.value("voice_library_directory", ""))
+        )
+        self.voice_library_directory.setPlaceholderText(
+            "Pasta principal; a busca inclui todas as subpastas"
+        )
+        self.voice_library_directory.textChanged.connect(
+            lambda value: self._save_text_setting("voice_library_directory", value)
+        )
+        self.voice_library_button = QPushButton("Escolher pasta…")
+        self.voice_library_button.clicked.connect(self._choose_voice_library_directory)
+        library_row = QWidget()
+        library_layout = QHBoxLayout(library_row)
+        library_layout.setContentsMargins(0, 0, 0, 0)
+        library_layout.addWidget(self.voice_library_directory, 1)
+        library_layout.addWidget(self.voice_library_button)
+
+        self.voice_button = QPushButton("Biblioteca…")
         self.voice_button.clicked.connect(self._choose_voice)
+        self.voice_preview_button = QPushButton("▶ Ouvir voz")
+        self.voice_preview_button.clicked.connect(self._preview_selected_voice)
         self.voice_prepare_button = QPushButton("Preparar voz (.safetensors)…")
         self.voice_prepare_button.setToolTip(
             "Converte o áudio de referência em um estado de voz reutilizável do Pocket TTS."
@@ -800,7 +926,9 @@ class JoeWindow(QMainWindow):
         voice_layout.setContentsMargins(0, 0, 0, 0)
         voice_layout.addWidget(self.voice_path, 1)
         voice_layout.addWidget(self.voice_button)
+        voice_layout.addWidget(self.voice_preview_button)
         voice_layout.addWidget(self.voice_prepare_button)
+        options.addRow("Pasta da biblioteca de vozes", library_row)
         options.addRow("Voz padrão / referência", voice_row)
 
         self.tts_generate_button = QPushButton("Gerar áudio WAV")
@@ -1233,17 +1361,48 @@ class JoeWindow(QMainWindow):
             self.tts_output_directory.setText(directory)
             self._save_tts_output_settings()
 
-    def _choose_voice(self) -> None:
-        path, _ = QFileDialog.getOpenFileName(
-            self,
-            "Selecionar voz ou estado de voz",
-            str(Path.home()),
-            "Voz Pocket TTS (*.safetensors *.wav *.mp3 *.flac *.m4a);;"
-            "Estados de voz (*.safetensors);;Áudios (*.wav *.mp3 *.flac *.m4a);;"
-            "Todos os arquivos (*)",
+    def _choose_voice_library_directory(self) -> None:
+        current = self.voice_library_directory.text().strip() or str(Path.home())
+        directory = QFileDialog.getExistingDirectory(
+            self, "Escolher pasta principal da biblioteca de vozes", current
         )
-        if path:
-            self.voice_path.setText(path)
+        if directory:
+            self.voice_library_directory.setText(directory)
+            self._save_text_setting("voice_library_directory", directory)
+
+    def _choose_voice(self) -> None:
+        root_text = self.voice_library_directory.text().strip()
+        if not root_text:
+            self._choose_voice_library_directory()
+            root_text = self.voice_library_directory.text().strip()
+        root = Path(root_text).expanduser() if root_text else None
+        if root is None or not root.is_dir():
+            QMessageBox.information(
+                self, "Biblioteca não definida",
+                "Escolha uma pasta principal válida para procurar as vozes."
+            )
+            return
+        dialog = VoiceLibraryDialog(root, self.player, self)
+        if dialog.exec() == QDialog.DialogCode.Accepted and dialog.selected_path:
+            self.voice_path.setText(str(dialog.selected_path))
+
+    def _preview_selected_voice(self) -> None:
+        path = Path(self.voice_path.text().strip()).expanduser()
+        if not path.is_file():
+            QMessageBox.information(self, "Voz não selecionada", "Selecione uma voz primeiro.")
+            return
+        if path.suffix.lower() == ".safetensors":
+            QMessageBox.information(
+                self, "Estado de voz",
+                "O .safetensors contém o estado processado da voz, não áudio reproduzível. "
+                "Para ouvir a referência, selecione o WAV/MP3 original."
+            )
+            return
+        if self.player.playbackState() == QMediaPlayer.PlaybackState.PlayingState:
+            self.player.stop()
+            return
+        self.player.setSource(QUrl.fromLocalFile(str(path.resolve())))
+        self.player.play()
 
     def _prepare_voice_state(self) -> None:
         source = Path(self.voice_path.text().strip()).expanduser()
@@ -1791,6 +1950,9 @@ class JoeWindow(QMainWindow):
             self.tts_generate_button,
             self.tts_play_button,
             self.voice_button,
+            self.voice_preview_button,
+            self.voice_library_directory,
+            self.voice_library_button,
             self.voice_prepare_button,
             self.tts_output_directory,
             self.tts_browse_output_button,

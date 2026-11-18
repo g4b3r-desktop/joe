@@ -88,6 +88,11 @@ class ColabAPIClient:
         try:
             if voice_path:
                 path = Path(voice_path)
+                if path.suffix.lower() == ".safetensors":
+                    raise ColabAPIError(
+                        "O modo remoto ainda espera uma gravação WAV/MP3 como referência. "
+                        "Selecione o áudio original; .safetensors é um estado preparado para uso local."
+                    )
                 opened = path.open("rb")
                 files = [("voice", (path.name, opened, "application/octet-stream"))]
             response = self._request("POST", "/v1/jobs/tts", data=data, files=files)
@@ -97,7 +102,15 @@ class ColabAPIClient:
         job_id = response.json().get("job_id")
         if not job_id:
             raise ColabAPIError("A API não retornou o identificador da tarefa TTS.")
-        return self._wait_for_result(job_id).content
+        audio = self._wait_for_result(job_id).content
+        if not audio.startswith(b"RIFF") or audio[8:12] != b"WAVE":
+            raise ColabAPIError(
+                "A API remota não retornou um WAV válido (cabeçalho RIFF/WAVE ausente). "
+                "Confira o erro da tarefa no Colab e o formato da voz enviada. "
+                "Para clonagem remota, use o áudio original WAV/MP3; .safetensors "
+                "é um estado de voz e não uma gravação."
+            )
+        return audio
 
     def transcribe(
         self,
