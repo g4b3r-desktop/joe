@@ -107,7 +107,7 @@ python -m pip install torch --index-url https://download.pytorch.org/whl/cu132
 
 ### Texto → Áudio
 1. Digite ou cole o texto. A caixa de texto mantém o conteúdo original.
-2. Por padrão, o Joe normaliza números, datas, horários, porcentagens, valores em reais, abreviações e siglas antes de enviar uma cópia ao Pocket TTS. A normalização pode ser desativada.
+2. Por padrão, o Joe normaliza números, datas, horários, porcentagens, valores em reais, abreviações e siglas antes de enviar uma cópia ao Pocket TTS. Essa normalização automática pode ser desativada sem desligar o dicionário personalizado.
 3. Use **Prévia do texto falado** para conferir a cópia preparada sem alterar o texto original.
 4. Use **Dicionário de pronúncia** para cadastrar, editar ou remover palavras e expressões personalizadas. As regras são salvas nas configurações do usuário e são aplicadas antes das regras automáticas.
 5. Selecione o idioma da voz (português é o padrão).
