@@ -27,6 +27,28 @@ def build_srt(segments: list[dict[str, Any]]) -> str:
     return "\n\n".join(blocks) + ("\n" if blocks else "")
 
 
+def format_vtt_time(seconds: float) -> str:
+    """Convert seconds to WebVTT timestamp format HH:MM:SS.mmm."""
+    total_ms = max(0, round(float(seconds) * 1000))
+    hours, remainder = divmod(total_ms, 3_600_000)
+    minutes, remainder = divmod(remainder, 60_000)
+    secs, milliseconds = divmod(remainder, 1000)
+    return f"{hours:02d}:{minutes:02d}:{secs:02d}.{milliseconds:03d}"
+
+
+def build_vtt(segments: list[dict[str, Any]]) -> str:
+    """Build a WebVTT document from timestamped transcription segments."""
+    blocks = ["WEBVTT"]
+    for segment in segments:
+        text = str(segment.get("text", "")).strip()
+        if not text:
+            continue
+        start = format_vtt_time(float(segment.get("start", 0.0)))
+        end = format_vtt_time(float(segment.get("end", 0.0)))
+        blocks.append(f"{start} --> {end}\n{text}")
+    return "\n\n".join(blocks) + "\n"
+
+
 def build_audio_output_path(
     directory: str | Path,
     prefix: str = "joe_audio",

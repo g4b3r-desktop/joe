@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from joe.utils import build_audio_output_path, build_srt, format_srt_time
+from joe.utils import build_audio_output_path, build_srt, build_vtt, format_srt_time, format_vtt_time
 
 
 def test_format_srt_time():
@@ -52,3 +52,19 @@ def test_build_audio_output_path_sanitizes_prefix(tmp_path):
     )
 
     assert result.name == "Meu_áudio_teste_20261118_123045.wav"
+
+
+
+def test_vtt_timestamp_uses_period_separator():
+    assert format_vtt_time(65.125) == "00:01:05.125"
+
+
+def test_build_vtt_has_header_and_timed_cues():
+    result = build_vtt([
+        {"start": 0.0, "end": 1.25, "text": "Olá"},
+        {"start": 1.25, "end": 2.5, "text": "Mundo"},
+    ])
+
+    assert result.startswith("WEBVTT\n\n")
+    assert "00:00:00.000 --> 00:00:01.250\nOlá" in result
+    assert "00:00:01.250 --> 00:00:02.500\nMundo" in result
