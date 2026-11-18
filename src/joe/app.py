@@ -162,10 +162,14 @@ class VoiceLibraryDialog(QDialog):
     AUDIO_SUFFIXES = {".wav", ".mp3", ".flac", ".m4a", ".ogg", ".aac"}
     VOICE_SUFFIXES = AUDIO_SUFFIXES | {".safetensors"}
 
-    def __init__(self, root: Path, player: QMediaPlayer, parent=None):
+    def __init__(
+        self, root: Path, player: QMediaPlayer,
+        selected_path: Path | None = None, parent=None
+    ):
         super().__init__(parent)
         self.root = root
         self.player = player
+        self.initial_selected_path = selected_path
         self.selected_path: Path | None = None
         self.setWindowTitle("Biblioteca de vozes")
         self.resize(720, 520)
@@ -219,6 +223,32 @@ class VoiceLibraryDialog(QDialog):
         self.status.setText(
             f"{len(found)} arquivo(s) encontrado(s), incluindo todas as subpastas. "
             ".safetensors não contém áudio para prévia."
+        )
+        self._restore_selection()
+
+    def _restore_selection(self) -> None:
+        if self.initial_selected_path is None:
+            return
+        try:
+            target = self.initial_selected_path.expanduser().resolve()
+        except OSError:
+            target = self.initial_selected_path.expanduser()
+        for index in range(self.files.count()):
+            item = self.files.item(index)
+            try:
+                candidate = Path(item.data(Qt.ItemDataRole.UserRole)).resolve()
+            except OSError:
+                candidate = Path(item.data(Qt.ItemDataRole.UserRole))
+            if candidate == target:
+                self.files.setCurrentItem(item)
+                self.files.scrollToItem(item, QAbstractItemView.ScrollHint.PositionAtCenter)
+                self.status.setText(
+                    f"Voz selecionada anteriormente: {item.text()}"
+                )
+                return
+        self.status.setText(
+            f"{self.files.count()} arquivo(s) encontrado(s). "
+            "A voz selecionada anteriormente não está nesta pasta."
         )
 
     def _filter_items(self, query: str) -> None:
@@ -1395,7 +1425,9 @@ class JoeWindow(QMainWindow):
                 "Escolha uma pasta principal válida para procurar as vozes."
             )
             return
-        dialog = VoiceLibraryDialog(root, self.player, self)
+        current_text = self.voice_path.text().strip()
+        previous_path = Path(current_text).expanduser() if current_text else None
+        dialog = VoiceLibraryDialog(root, self.player, previous_path, self)
         if dialog.exec() == QDialog.DialogCode.Accepted and dialog.selected_path:
             self.voice_path.setText(str(dialog.selected_path))
 
