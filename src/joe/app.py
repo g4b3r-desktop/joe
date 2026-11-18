@@ -219,6 +219,9 @@ class TTSQueueWorker(QRunnable):
             result = self.entry.generate()
         except Exception as exc:  # noqa: BLE001
             self.entry.output_path.unlink(missing_ok=True)
+            if self.entry.cancel_event.is_set():
+                self.signals.cancelled.emit(self.entry.task_id)
+                return
             self.signals.failed.emit(
                 self.entry.task_id,
                 f"{exc}\n\n{traceback.format_exc()}",
