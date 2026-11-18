@@ -284,6 +284,7 @@ def normalize_text_for_tts(
     text: str,
     language: str = "portuguese",
     pronunciation_dictionary: Mapping[str, str] | None = None,
+    apply_automatic: bool = True,
 ) -> str:
     """Prepare a TTS-only copy of text without modifying the source shown in the UI.
 
@@ -308,6 +309,11 @@ def normalize_text_for_tts(
         if pattern.search(normalized):
             normalized = pattern.sub(lambda _match, key=placeholder: key, normalized)
             protected[placeholder] = pronunciation
+
+    if not apply_automatic:
+        for placeholder, pronunciation in protected.items():
+            normalized = normalized.replace(placeholder, pronunciation)
+        return normalized
 
     normalized = _replace_dates(normalized, language)
     normalized = _replace_times(normalized, language)
