@@ -410,8 +410,18 @@ class JoeWindow(QMainWindow):
 
     def _transcription_finished(self, result: object) -> None:
         data = result if isinstance(result, dict) else {}
-        self.transcript.setPlainText(str(data.get("text", "")))
-        self.transcript_segments = list(data.get("segments", []))
+        self.transcript_segments = [
+            segment for segment in list(data.get("segments", []))
+            if str(segment.get("text", "")).strip()
+        ]
+        if self.transcript_segments:
+            visible_text = "\n".join(
+                str(segment.get("text", "")).strip()
+                for segment in self.transcript_segments
+            )
+        else:
+            visible_text = str(data.get("text", ""))
+        self.transcript.setPlainText(visible_text)
         self.transcription_backend = str(data.get("backend", "Parakeet Redux"))
         note = str(data.get("note", ""))
         if self.timestamps_check.isChecked() and not self.transcript_segments:
@@ -466,8 +476,25 @@ class JoeWindow(QMainWindow):
             return
         if not path.lower().endswith(".srt"):
             path += ".srt"
+        edited_lines = [
+            line.strip()
+            for line in self.transcript.toPlainText().splitlines()
+            if line.strip()
+        ]
+        if len(edited_lines) != len(self.transcript_segments):
+            QMessageBox.information(
+                self,
+                "Revise os segmentos",
+                "Para exportar o texto editado, mantenha uma linha para cada segmento "
+                "com tempo. Não adicione nem remova linhas.",
+            )
+            return
+        edited_segments = [
+            {**segment, "text": edited_lines[index]}
+            for index, segment in enumerate(self.transcript_segments)
+        ]
         try:
-            Path(path).write_text(build_srt(self.transcript_segments), encoding="utf-8")
+            Path(path).write_text(build_srt(edited_segments), encoding="utf-8")
         except (OSError, TypeError, ValueError) as exc:
             QMessageBox.critical(self, "Erro ao exportar SRT", str(exc))
             return
