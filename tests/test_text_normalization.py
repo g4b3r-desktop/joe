@@ -104,3 +104,25 @@ def test_custom_dictionary_remains_active_when_automatic_normalization_is_disabl
     )
 
     assert result == "gê pê u custa 25%."
+
+
+
+def test_decimal_numbers_are_normalized_before_sentence_punctuation():
+    result = normalize_text_for_tts("O valor é 2,5.")
+
+    assert result == "O valor é dois vírgula cinco."
+
+
+def test_currency_is_normalized_before_sentence_punctuation():
+    result = normalize_text_for_tts("O preço é R$ 1.234,50.")
+
+    assert result == (
+        "O preço é mil duzentos e trinta e quatro reais "
+        "e cinquenta centavos."
+    )
+
+
+def test_dotted_version_numbers_are_not_partially_normalized():
+    result = normalize_text_for_tts("A versão é 1.2.3.")
+
+    assert result == "A versão é 1.2.3."

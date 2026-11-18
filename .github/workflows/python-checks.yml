@@ -5,6 +5,7 @@ on:
     branches:
       - feature/desktop-audio-studio
       - feature/colab-model-api
+      - feature/joe-studio-improvements
   pull_request:
     branches:
       - main
