@@ -112,6 +112,10 @@ class JoeWindow(QMainWindow):
         tabs.addTab(self._build_tts_tab(), "Texto → Áudio")
         tabs.addTab(self._build_asr_tab(), "Áudio → Texto")
         tabs.addTab(self._build_colab_tab(), "Google Colab / API")
+        tabs.setCurrentIndex(self.app_settings.value("last_tab", 0, type=int))
+        tabs.currentChanged.connect(
+            lambda index: self.app_settings.setValue("last_tab", index)
+        )
         self.setCentralWidget(tabs)
 
         bar = QStatusBar()
@@ -154,9 +158,14 @@ class JoeWindow(QMainWindow):
         self.colab_url = QLineEdit(str(self.app_settings.value("colab_url", "")))
         self.colab_url.setPlaceholderText("https://seu-tunel.trycloudflare.com")
 
-        self.colab_token = QLineEdit()
+        self.colab_token = QLineEdit(
+            str(self.app_settings.value("colab_token", ""))
+        )
         self.colab_token.setEchoMode(QLineEdit.EchoMode.Password)
         self.colab_token.setPlaceholderText("Cole o token gerado pelo notebook")
+        self.colab_token.textChanged.connect(
+            lambda value: self._save_text_setting("colab_token", value)
+        )
         self.colab_token.editingFinished.connect(self._update_colab_monitoring)
 
         form = QFormLayout()
@@ -182,8 +191,9 @@ class JoeWindow(QMainWindow):
             "O Joe verifica a conexão a cada 60 segundos enquanto o modo Colab está selecionado. "
             "Essa verificação apenas detecta desconexões: não impede o Colab de encerrar o runtime "
             "por inatividade ou por seus limites de sessão.\n"
-            "A URL muda quando o túnel é reiniciado. O token fica apenas na memória do Joe "
-            "e não é gravado nas configurações."
+            "A URL e o token são lembrados localmente entre execuções. O token fica salvo "
+            "nas configurações do usuário sem criptografia; não compartilhe o arquivo de "
+            "configuração do Joe."
         )
         self.colab_info.setObjectName("muted")
         self.colab_info.setWordWrap(True)
@@ -332,7 +342,11 @@ class JoeWindow(QMainWindow):
         self.tts_text.setPlaceholderText(
             "Digite ou cole aqui o texto que deseja transformar em áudio..."
         )
+        self.tts_text.setPlainText(str(self.app_settings.value("tts_text", "")))
         self.tts_text.setMinimumHeight(240)
+        self.tts_text.textChanged.connect(
+            lambda: self._save_text_setting("tts_text", self.tts_text.toPlainText())
+        )
 
         self.tts_normalization_enabled = QCheckBox(
             "Normalizar números, datas, siglas e abreviações para a fala"
@@ -392,10 +406,23 @@ class JoeWindow(QMainWindow):
         self.tts_language.addItem("Italiano", "italian")
         self.tts_language.addItem("Alemão", "german")
         self.tts_language.addItem("Neerlandês", "dutch")
+        saved_language = str(self.app_settings.value("tts_language", "portuguese"))
+        language_index = self.tts_language.findData(saved_language)
+        self.tts_language.setCurrentIndex(max(0, language_index))
+        self.tts_language.currentIndexChanged.connect(
+            lambda: self.app_settings.setValue(
+                "tts_language", self.tts_language.currentData()
+            )
+        )
 
-        self.voice_path = QLineEdit()
+        self.voice_path = QLineEdit(
+            str(self.app_settings.value("voice_path", ""))
+        )
         self.voice_path.setReadOnly(True)
         self.voice_path.setPlaceholderText("Voz padrão do Pocket TTS")
+        self.voice_path.textChanged.connect(
+            lambda value: self._save_text_setting("voice_path", value)
+        )
         self.voice_button = QPushButton("Escolher áudio de referência…")
         self.voice_button.clicked.connect(self._choose_voice)
 
@@ -453,9 +480,14 @@ class JoeWindow(QMainWindow):
         )
         description.setObjectName("muted")
 
-        self.audio_path = QLineEdit()
+        self.audio_path = QLineEdit(
+            str(self.app_settings.value("audio_path", ""))
+        )
         self.audio_path.setReadOnly(True)
         self.audio_path.setPlaceholderText("Nenhum arquivo selecionado")
+        self.audio_path.textChanged.connect(
+            lambda value: self._save_text_setting("audio_path", value)
+        )
         self.audio_choose_button = QPushButton("Selecionar áudio…")
         self.audio_choose_button.clicked.connect(self._choose_audio)
 
@@ -464,10 +496,21 @@ class JoeWindow(QMainWindow):
         file_row.addWidget(self.audio_choose_button)
 
         self.timestamps_check = QCheckBox("Incluir tempos dos segmentos (quando disponível)")
-        self.timestamps_check.setChecked(True)
+        self.timestamps_check.setChecked(
+            self.app_settings.value("timestamps_enabled", True, type=bool)
+        )
+        self.timestamps_check.toggled.connect(
+            lambda value: self.app_settings.setValue("timestamps_enabled", value)
+        )
         self.asr_device = QComboBox()
         self.asr_device.addItem("CPU (preserva a VRAM)", "cpu")
         self.asr_device.addItem("NVIDIA GPU (CUDA)", "cuda")
+        saved_device = str(self.app_settings.value("asr_device", "cpu"))
+        device_index = self.asr_device.findData(saved_device)
+        self.asr_device.setCurrentIndex(max(0, device_index))
+        self.asr_device.currentIndexChanged.connect(
+            lambda: self.app_settings.setValue("asr_device", self.asr_device.currentData())
+        )
 
         asr_options = QHBoxLayout()
         asr_options.addWidget(self.timestamps_check, 1)
@@ -481,6 +524,12 @@ class JoeWindow(QMainWindow):
         self.transcript = QTextEdit()
         self.transcript.setPlaceholderText(
             "A transcrição aparecerá aqui. Você poderá revisar e editar o texto."
+        )
+        self.transcript.setPlainText(str(self.app_settings.value("transcript_text", "")))
+        self.transcript.textChanged.connect(
+            lambda: self._save_text_setting(
+                "transcript_text", self.transcript.toPlainText()
+            )
         )
 
         self.copy_button = QPushButton("Copiar texto")
@@ -602,6 +651,15 @@ class JoeWindow(QMainWindow):
         }
         """
 
+
+    def _save_text_setting(self, key: str, value: str) -> None:
+        """Persist editable text and path fields immediately, even if never submitted."""
+        self.app_settings.setValue(key, value)
+
+    def closeEvent(self, event) -> None:  # noqa: N802
+        # Flush the settings cache so unfinished drafts survive an ordinary app exit.
+        self.app_settings.sync()
+        super().closeEvent(event)
 
     def _load_pronunciation_dictionary(self) -> dict[str, str]:
         raw = self.app_settings.value("pronunciation_dictionary", "{}")
