@@ -767,8 +767,13 @@ class JoeWindow(QMainWindow):
         self.voice_path.textChanged.connect(
             lambda value: self._save_text_setting("voice_path", value)
         )
-        self.voice_button = QPushButton("Escolher áudio de referência…")
+        self.voice_button = QPushButton("Escolher voz…")
         self.voice_button.clicked.connect(self._choose_voice)
+        self.voice_prepare_button = QPushButton("Preparar voz (.safetensors)…")
+        self.voice_prepare_button.setToolTip(
+            "Converte o áudio de referência em um estado de voz reutilizável do Pocket TTS."
+        )
+        self.voice_prepare_button.clicked.connect(self._prepare_voice_state)
 
         options = QFormLayout()
         options.addRow("Pasta para salvar", output_folder_row)
@@ -795,7 +800,8 @@ class JoeWindow(QMainWindow):
         voice_layout.setContentsMargins(0, 0, 0, 0)
         voice_layout.addWidget(self.voice_path, 1)
         voice_layout.addWidget(self.voice_button)
-        options.addRow("Voz personalizada (opcional)", voice_row)
+        voice_layout.addWidget(self.voice_prepare_button)
+        options.addRow("Voz padrão / referência", voice_row)
 
         self.tts_generate_button = QPushButton("Gerar áudio WAV")
         self.tts_generate_button.setObjectName("primaryButton")
@@ -1230,12 +1236,63 @@ class JoeWindow(QMainWindow):
     def _choose_voice(self) -> None:
         path, _ = QFileDialog.getOpenFileName(
             self,
-            "Selecionar áudio de referência de voz",
+            "Selecionar voz ou estado de voz",
             str(Path.home()),
-            "Áudio (*.wav *.mp3 *.flac *.m4a);;Todos os arquivos (*)",
+            "Voz Pocket TTS (*.safetensors *.wav *.mp3 *.flac *.m4a);;"
+            "Estados de voz (*.safetensors);;Áudios (*.wav *.mp3 *.flac *.m4a);;"
+            "Todos os arquivos (*)",
         )
         if path:
             self.voice_path.setText(path)
+
+    def _prepare_voice_state(self) -> None:
+        source = Path(self.voice_path.text().strip()).expanduser()
+        if not source.is_file():
+            QMessageBox.information(
+                self,
+                "Selecione uma voz de referência",
+                "Escolha primeiro um arquivo de áudio de referência. "
+                "Arquivos .safetensors já são estados de voz preparados.",
+            )
+            return
+        if source.suffix.lower() == ".safetensors":
+            QMessageBox.information(
+                self,
+                "Voz já preparada",
+                "Este arquivo já é um estado de voz .safetensors. "
+                "Ele será carregado diretamente pelo Pocket TTS.",
+            )
+            return
+
+        output, _ = QFileDialog.getSaveFileName(
+            self,
+            "Salvar estado reutilizável da voz",
+            str(source.with_suffix(".safetensors")),
+            "Estado de voz Pocket TTS (*.safetensors)",
+        )
+        if not output:
+            return
+        if not output.lower().endswith(".safetensors"):
+            output += ".safetensors"
+        destination = Path(output).expanduser()
+        language = str(self.tts_language.currentData())
+
+        def export() -> Path:
+            return self.tts.export_voice_state(source, destination, language)
+
+        def completed(result: object) -> None:
+            saved = Path(result)
+            self.voice_path.setText(str(saved))
+            QMessageBox.information(
+                self,
+                "Estado de voz preparado",
+                "O estado foi salvo e selecionado como voz padrão:\\n"
+                f"{saved}\\n\\n"
+                "Nas próximas gerações, o Pocket TTS carregará esse estado sem "
+                "reprocessar o áudio original.",
+            )
+
+        self._run_task("Preparando estado reutilizável da voz…", export, completed)
 
     def _choose_audio(self) -> None:
         path, _ = QFileDialog.getOpenFileName(
@@ -1734,6 +1791,7 @@ class JoeWindow(QMainWindow):
             self.tts_generate_button,
             self.tts_play_button,
             self.voice_button,
+            self.voice_prepare_button,
             self.tts_output_directory,
             self.tts_browse_output_button,
             self.tts_auto_filename,

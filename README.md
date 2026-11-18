@@ -155,10 +155,11 @@ O Joe grava automaticamente, enquanto você digita ou altera os campos, os texto
 3. Use **Prévia do texto falado** para conferir a cópia preparada sem alterar o texto original.
 4. Use **Dicionário de pronúncia** para cadastrar, editar ou remover palavras e expressões personalizadas. As regras são salvas nas configurações do usuário e são aplicadas antes das regras automáticas.
 5. Selecione o idioma da voz (português é o padrão).
-6. Opcionalmente, selecione um WAV/MP3 de referência para clonagem de voz.
-7. A pasta padrão já é **Música/Joe**. Você pode alterá-la uma vez no campo Pasta para salvar; o Joe memoriza a escolha para as próximas execuções.
-8. A opção **Salvar automaticamente com nome genérico** fica ativada por padrão. Os arquivos recebem nomes como `joe_audio_20261118_123045.wav`, sem abrir uma janela para escolher nome ou local a cada geração. Nomes repetidos no mesmo segundo recebem um sufixo para não sobrescrever arquivos.
-9. Desative a opção automática quando quiser escolher manualmente o nome/local de um áudio específico e use **Reproduzir** para ouvir o resultado.
+6. Opcionalmente, selecione um WAV/MP3 de referência para clonagem de voz. Também é possível selecionar diretamente um estado de voz Pocket TTS em `.safetensors`.
+7. Para reutilizar a mesma voz sem reprocessar o áudio de referência em cada nova sessão, selecione o WAV/MP3 e clique em **Preparar voz (.safetensors)…**. Escolha onde salvar o estado. O Joe passa a usar o arquivo `.safetensors` selecionado como voz padrão. O processamento do áudio original acontece apenas na preparação; nas sessões seguintes, o Pocket TTS carrega o estado salvo diretamente.
+8. A pasta padrão já é **Música/Joe**. Você pode alterá-la uma vez no campo Pasta para salvar; o Joe memoriza a escolha para as próximas execuções.
+9. A opção **Salvar automaticamente com nome genérico** fica ativada por padrão. Os arquivos recebem nomes como `joe_audio_20261118_123045.wav`, sem abrir uma janela para escolher nome ou local a cada geração. Nomes repetidos no mesmo segundo recebem um sufixo para não sobrescrever arquivos.
+10. Desative a opção automática quando quiser escolher manualmente o nome/local de um áudio específico e use **Reproduzir** para ouvir o resultado.
 
 ### Áudio → Texto
 1. Selecione um arquivo de áudio.
