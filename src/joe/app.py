@@ -6,6 +6,8 @@ import shlex
 import shutil
 import subprocess
 import sys
+import time
+import wave
 import tempfile
 import traceback
 from collections.abc import Callable
@@ -530,6 +532,7 @@ class JoeWindow(QMainWindow):
         self.colab_monitor_timer.timeout.connect(self._refresh_colab_status)
 
         self.generated_audio: Path | None = None
+        self.tts_generation_started_at: float | None = None
         self.transcript_segments: list[dict] = []
         self.transcription_backend = ""
         self.pronunciation_dictionary = self._load_pronunciation_dictionary()
@@ -539,6 +542,9 @@ class JoeWindow(QMainWindow):
         self.player.setAudioOutput(self.audio_output)
 
         self._build_ui()
+        self.tts_elapsed_timer = QTimer(self)
+        self.tts_elapsed_timer.setInterval(500)
+        self.tts_elapsed_timer.timeout.connect(self._update_tts_elapsed)
         self.setStyleSheet(self._stylesheet())
         self.statusBar().showMessage("Pronto — os modelos serão carregados sob demanda.")
         self._start_global_hotkey()
@@ -951,6 +957,13 @@ class JoeWindow(QMainWindow):
         )
         self.tts_info.setObjectName("muted")
         self.tts_info.setWordWrap(True)
+
+        self.tts_speed_info = QLabel(
+            "Velocidade de geração: ainda não há uma medição. "
+            "Após gerar, serão exibidos tempo, duração do áudio e velocidade efetiva."
+        )
+        self.tts_speed_info.setObjectName("muted")
+        self.tts_speed_info.setWordWrap(True)
 
         layout.addWidget(title)
         layout.addWidget(description)
@@ -1774,23 +1787,103 @@ class JoeWindow(QMainWindow):
                 QMessageBox.information(self, "Configure a API do Colab", str(exc))
                 return
 
-            def generate_remote() -> Path:
+            def generate_audio() -> Path:
                 audio_data = remote.generate_audio(speech_text, language, voice)
                 destination.write_bytes(audio_data)
                 return destination
 
-            task = generate_remote
             status = "Gerando áudio no Google Colab…"
+            backend = "Google Colab (inclui envio e espera pela API)"
         else:
-            task = lambda: self.tts.generate(speech_text, language, str(destination), voice)
-            status = "Gerando áudio com Pocket TTS local…"
+            def generate_audio() -> Path:
+                return self.tts.generate(speech_text, language, str(destination), voice)
 
-        self._run_task(status, task, self._audio_generated)
+            status = "Gerando áudio com Pocket TTS local…"
+            backend = "Pocket TTS local (inclui carregamento do modelo, se necessário)"
+
+        def generate_with_metrics() -> dict:
+            started = time.perf_counter()
+            output_path = generate_audio()
+            elapsed = max(time.perf_counter() - started, 0.000001)
+            audio_duration = self._wav_duration_seconds(Path(output_path))
+            return {
+                "path": str(output_path),
+                "elapsed": elapsed,
+                "audio_duration": audio_duration,
+                "characters": len(speech_text),
+                "backend": backend,
+            }
+
+        self.tts_generation_started_at = time.monotonic()
+        self.tts_speed_info.setText("Gerando áudio… tempo decorrido: 00:00")
+        self.tts_elapsed_timer.start()
+        self._run_task(status, generate_with_metrics, self._audio_generated)
+
+    @staticmethod
+    def _wav_duration_seconds(path: Path) -> float:
+        """Read WAV duration without loading all audio samples into memory."""
+        try:
+            with wave.open(str(path), "rb") as audio_file:
+                rate = audio_file.getframerate()
+                return audio_file.getnframes() / rate if rate else 0.0
+        except (OSError, EOFError, wave.Error):
+            try:
+                import soundfile as sf
+                return float(sf.info(str(path)).duration)
+            except Exception:  # noqa: BLE001
+                return 0.0
+
+    @staticmethod
+    def _format_duration(seconds: float) -> str:
+        total = max(0, int(seconds))
+        hours, remainder = divmod(total, 3600)
+        minutes, secs = divmod(remainder, 60)
+        if hours:
+            return f"{hours:02d}:{minutes:02d}:{secs:02d}"
+        return f"{minutes:02d}:{secs:02d}"
+
+    def _update_tts_elapsed(self) -> None:
+        if self.tts_generation_started_at is None:
+            self.tts_elapsed_timer.stop()
+            return
+        elapsed = time.monotonic() - self.tts_generation_started_at
+        self.tts_speed_info.setText(
+            "Gerando áudio… tempo decorrido: "
+            f"{self._format_duration(elapsed)}"
+        )
 
     def _audio_generated(self, result: object) -> None:
-        self.generated_audio = Path(result)
+        self.tts_elapsed_timer.stop()
+        self.tts_generation_started_at = None
+        metrics = result if isinstance(result, dict) else {}
+        audio_path = metrics.get("path", result)
+        self.generated_audio = Path(audio_path)
         self.tts_play_button.setEnabled(True)
         self.tts_info.setText(f"Áudio salvo em: {self.generated_audio}")
+
+        elapsed = float(metrics.get("elapsed", 0.0) or 0.0)
+        audio_duration = float(metrics.get("audio_duration", 0.0) or 0.0)
+        characters = int(metrics.get("characters", 0) or 0)
+        backend = str(metrics.get("backend", "TTS"))
+        if elapsed > 0 and audio_duration > 0:
+            realtime_speed = audio_duration / elapsed
+            chars_per_second = characters / elapsed if characters else 0.0
+            speed_text = f"{realtime_speed:.2f}× tempo real".replace(".", ",")
+            chars_text = f"{chars_per_second:.1f}".replace(".", ",")
+            self.tts_speed_info.setText(
+                f"Desempenho — {backend}\n"
+                f"Tempo de geração: {self._format_duration(elapsed)}  •  "
+                f"Duração do áudio: {self._format_duration(audio_duration)}\n"
+                f"Velocidade efetiva: {speed_text}  •  "
+                f"Texto processado: {chars_text} caracteres/s\n"
+                "Acima de 1× significa que o áudio foi gerado mais rápido do que sua reprodução."
+            )
+        else:
+            self.tts_speed_info.setText(
+                f"Desempenho — {backend}\n"
+                f"Tempo de geração: {self._format_duration(elapsed)}. "
+                "Não foi possível ler a duração do WAV para calcular a velocidade."
+            )
 
     def _play_generated_audio(self) -> None:
         if not self.generated_audio or not self.generated_audio.is_file():
@@ -1938,6 +2031,10 @@ class JoeWindow(QMainWindow):
 
         def failed(message: str) -> None:
             self.active_worker = None
+            if self.tts_generation_started_at is not None:
+                self.tts_elapsed_timer.stop()
+                self.tts_generation_started_at = None
+                self.tts_speed_info.setText("Falha ao gerar o áudio. Consulte os detalhes do erro.")
             self._set_busy(False, "Falha")
             QMessageBox.critical(self, "Falha no processamento", message)
 

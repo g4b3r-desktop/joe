@@ -90,24 +90,11 @@ class ColabAPIClient:
                 path = Path(voice_path)
                 if path.suffix.lower() == ".safetensors":
                     raise ColabAPIError(
-                        "O modo remoto ainda não aceita estados .safetensors. "
-                        "Selecione o WAV original da voz."
-                    )
-                if path.suffix.lower() != ".wav":
-                    raise ColabAPIError(
-                        "A API do Colab exige uma referência de voz em WAV. "
-                        "Converta o áudio para WAV ou selecione o WAV original."
+                        "O modo remoto ainda espera uma gravação WAV/MP3 como referência. "
+                        "Selecione o áudio original; .safetensors é um estado preparado para uso local."
                     )
                 opened = path.open("rb")
-                header = opened.read(12)
-                if len(header) < 12 or header[:4] != b"RIFF" or header[8:12] != b"WAVE":
-                    opened.close()
-                    opened = None
-                    raise ColabAPIError(
-                        "O arquivo selecionado tem extensão .wav, mas não possui cabeçalho RIFF/WAVE válido."
-                    )
-                opened.seek(0)
-                files = [("voice", (path.name, opened, "audio/wav"))]
+                files = [("voice", (path.name, opened, "application/octet-stream"))]
             response = self._request("POST", "/v1/jobs/tts", data=data, files=files)
         finally:
             if opened:

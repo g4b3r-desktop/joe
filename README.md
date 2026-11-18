@@ -160,6 +160,7 @@ O Joe grava automaticamente, enquanto você digita ou altera os campos, os texto
 8. A pasta padrão já é **Música/Joe**. Você pode alterá-la uma vez no campo Pasta para salvar; o Joe memoriza a escolha para as próximas execuções.
 9. A opção **Salvar automaticamente com nome genérico** fica ativada por padrão. Os arquivos recebem nomes como `joe_audio_20261118_123045.wav`, sem abrir uma janela para escolher nome ou local a cada geração. Nomes repetidos no mesmo segundo recebem um sufixo para não sobrescrever arquivos.
 10. Desative a opção automática quando quiser escolher manualmente o nome/local de um áudio específico e use **Reproduzir** para ouvir o resultado.
+11. Após gerar, o painel de desempenho mostra o tempo total da tarefa, a duração do WAV, a velocidade efetiva em múltiplos do tempo real (áudio produzido ÷ tempo gasto) e caracteres processados por segundo. Enquanto gera, o tempo decorrido é atualizado. No modo Colab, a medição inclui envio, fila e espera pela resposta; no modo local, inclui o carregamento do modelo quando ele ainda não está carregado. Assim, os números representam o tempo percebido de ponta a ponta, não apenas o tempo interno de inferência.
 
 ### Áudio → Texto
 1. Selecione um arquivo de áudio.
