@@ -17,6 +17,8 @@ import torch
 from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, UploadFile
 from fastapi.responses import Response
 from pocket_tts import TTSModel
+import os, torch
+torch.set_num_threads(os.cpu_count() or 2)
 
 API_TOKEN = os.environ.get("JOE_API_TOKEN", "")
 if len(API_TOKEN) < 32:
@@ -90,9 +92,9 @@ def _get_tts_model(language: str) -> Any:
                 raise FileNotFoundError(
                     f"Configuração local do Pocket TTS não encontrada: {config_path}"
                 )
-            model = TTSModel.load_model(config=str(config_path), quantize=True)
+            model = TTSModel.load_model(config=str(config_path), quantize=False)
         else:
-            model = TTSModel.load_model(language=language, quantize=True)
+            model = TTSModel.load_model(language=language, quantize=False)
         _tts_models[language] = model
     return model
 
