@@ -727,7 +727,8 @@ class ClipboardAudioDialog(QDialog):
             "Medição de velocidade feita pelo Joe aparecerá aqui."
         )
         self.performance_label.setObjectName("muted")
-        self.performance_label.setWordWrap(True)        layout.addWidget(self.performance_label)
+        self.performance_label.setWordWrap(True)
+        layout.addWidget(self.performance_label)
 
         buttons = QHBoxLayout()
         self.play_button = QPushButton("Reproduzir")
