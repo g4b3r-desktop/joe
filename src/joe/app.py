@@ -1138,8 +1138,11 @@ class JoeWindow(QMainWindow):
         dialog_layout.addLayout(footer)
 
     def _open_tts_settings(self) -> None:
-        """Open the TTS settings popup without rebuilding its saved controls."""
-        self.tts_settings_dialog.exec()
+        """Show one reusable, non-modal TTS settings popup."""
+        if not self.tts_settings_dialog.isVisible():
+            self.tts_settings_dialog.show()
+        self.tts_settings_dialog.raise_()
+        self.tts_settings_dialog.activateWindow()
 
     def _build_asr_tab(self) -> QWidget:
         page = QWidget()
