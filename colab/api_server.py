@@ -25,7 +25,7 @@ if len(API_TOKEN) < 32:
 MAX_AUDIO_BYTES = 80 * 1024 * 1024
 MAX_TEXT_CHARS = 20_000
 PARAKEET_MODEL_ID = "moondream/parakeet-redux"
-DEFAULT_VOICE = "hf://kyutai/tts-voices/alba-mackenna/casual.wav"
+DEFAULT_VOICE = os.environ.get("JOE_TTS_DEFAULT_VOICE") or "hf://kyutai/pocket-tts/g-Vi8PgmSY0-enhanced-v2.wav@64ab7d24c479d736a83b8cc666c4a776fca30fda"
 
 app = FastAPI(
     title="Joe Colab Inference API",
@@ -77,7 +77,16 @@ async def _read_upload(upload: UploadFile) -> bytes:
 def _get_tts_model(language: str) -> Any:
     model = _tts_models.get(language)
     if model is None:
-        model = TTSModel.load_model(language=language, quantize=True)
+        local_config = os.environ.get("JOE_TTS_CONFIG_PATH")
+        if local_config and language == "portuguese":
+            config_path = Path(local_config).expanduser()
+            if not config_path.is_file():
+                raise FileNotFoundError(
+                    f"Configuração local do Pocket TTS não encontrada: {config_path}"
+                )
+            model = TTSModel.load_model(config=str(config_path), quantize=True)
+        else:
+            model = TTSModel.load_model(language=language, quantize=True)
         _tts_models[language] = model
     return model
 
