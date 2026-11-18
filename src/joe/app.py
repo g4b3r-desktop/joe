@@ -43,7 +43,6 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPushButton,
     QStatusBar,
-    QSlider,
     QTabWidget,
     QTableWidget,
     QTableWidgetItem,
@@ -1511,7 +1510,7 @@ class JoeWindow(QMainWindow):
             self.app_settings.remove("active_voice_profile")
         self.statusBar().showMessage(f"Perfil “{name}” excluído.", 4000)
 
-    def _apply_voice_profile(self, profile: dict) -> None:
+    def _apply_voice_profile(self, name: str, profile: dict) -> None:
         language = str(profile.get("language", "portuguese"))
         language_index = self.tts_language.findData(language)
         if language_index >= 0:
@@ -1523,10 +1522,7 @@ class JoeWindow(QMainWindow):
         dictionary = profile.get("pronunciation_dictionary", {})
         if isinstance(dictionary, dict):
             self._save_pronunciation_dictionary(dictionary)
-        active_name = next(
-            (name for name, value in self.voice_profiles.items() if value == profile), ""
-        )
-        self.app_settings.setValue("active_voice_profile", active_name)
+        self.app_settings.setValue("active_voice_profile", name)
         self.statusBar().showMessage("Perfil de voz aplicado.", 5000)
 
     def _open_voice_profiles(self) -> None:

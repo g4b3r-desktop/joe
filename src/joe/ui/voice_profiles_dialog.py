@@ -16,7 +16,7 @@ class VoiceProfilesDialog(QDialog):
         self,
         profiles: dict[str, dict[str, Any]],
         active_name: str,
-        on_apply: Callable[[dict[str, Any]], None],
+        on_apply: Callable[[str, dict[str, Any]], None],
         on_save: Callable[[str], dict[str, Any]],
         on_update: Callable[[str], dict[str, Any]],
         on_delete: Callable[[str], None],
@@ -84,7 +84,7 @@ class VoiceProfilesDialog(QDialog):
         profile = self.profiles.get(name)
         if profile is None:
             return
-        self.on_apply(profile)
+        self.on_apply(name, profile)
         self.active_name = name
         self.accept()
 

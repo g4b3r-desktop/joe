@@ -112,3 +112,8 @@ O módulo `text_normalization.py` mantém uma cópia preparada do texto e conté
 - O player avançado controla o mesmo QMediaPlayer compartilhado pelo app, biblioteca e histórico; não cria uma segunda reprodução concorrente.
 - Busca, saltos, volume e velocidade alteram somente a reprodução. Não reprocessam nem modificam o arquivo WAV.
 - A exportação WebVTT usa os segmentos temporizados já retornados pelo backend. Não sintetize tempos quando o backend não fornece timestamps.
+
+
+## Organização atualizada dos módulos
+
+Workers, controle de cancelamento, histórico, fila, perfis e diálogos do player/histórico/fila/perfis ficam em módulos separados. Ao acrescentar comportamentos nessas áreas, mantenha a lógica pura nos módulos auxiliares e deixe app.py responsável por conectar widgets, serviços e preferências.
