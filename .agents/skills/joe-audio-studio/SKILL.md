@@ -55,6 +55,9 @@ Key modules:
 - `src/joe/audio_performance.py`: desktop-side timing, WAV duration and speed report.
 - `src/joe/local_ipc.py`: private Unix-domain socket used to forward shortcut launches to the running Joe instance.
 - `src/joe/voice_favorites.py`: normalization and JSON persistence helpers for favorite voice paths and aliases.
+- `src/joe/voice_profiles.py`: normalized voice profiles combining selected voice, alias, language, text normalization and pronunciation dictionary.
+- `src/joe/audio_history.py`: SQLite history of generated WAVs and metadata; source text is opt-in.
+- `src/joe/audio_player.py` and `src/joe/audio_waveform.py`: reusable shared player controls and streaming waveform extraction.
 - `src/joe/text_normalization.py`: language-aware speech text preparation.
 - `scripts/install-linux.sh` and `scripts/install-desktop.sh`: Linux dependencies, launcher, icon and Xfce shortcut setup.
 

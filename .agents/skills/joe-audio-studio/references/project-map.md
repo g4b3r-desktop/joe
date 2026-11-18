@@ -20,11 +20,15 @@ Snapshot de referência: branch `feature/colab-model-api`, commit `e6ecda33e7c31
 │   ├── app.py
 │   ├── __main__.py
 │   ├── audio_chunks.py
+│   ├── audio_history.py
 │   ├── audio_performance.py
+│   ├── audio_player.py
+│   ├── audio_waveform.py
 │   ├── local_ipc.py
 │   ├── text_normalization.py
 │   ├── utils.py
 │   ├── voice_favorites.py
+│   ├── voice_profiles.py
 │   ├── resources/joe.png
 │   └── services/
 │       ├── pocket_tts.py
@@ -32,7 +36,9 @@ Snapshot de referência: branch `feature/colab-model-api`, commit `e6ecda33e7c31
 │       └── colab_api.py
 ├── tests/
 │   ├── test_audio_chunks.py
+│   ├── test_audio_history.py
 │   ├── test_audio_performance.py
+│   ├── test_audio_waveform.py
 │   ├── test_colab_api.py
 │   ├── test_colab_notebook.py
 │   ├── test_local_ipc.py
@@ -56,8 +62,12 @@ Snapshot de referência: branch `feature/colab-model-api`, commit `e6ecda33e7c31
 | `colab/Joe_Colab_API.ipynb` | Preparação do runtime, acesso opcional ao Drive, monitoramento e túnel temporário |
 | `src/joe/audio_chunks.py` | Divisão por sentenças e união de trechos WAV com taxa de amostragem/canais normalizados |
 | `src/joe/audio_performance.py` | Métricas compartilhadas nas telas: duração, tempo total, razão tempo real e caracteres por segundo |
+| `src/joe/audio_history.py` | Índice SQLite local dos WAVs gerados e metadados; texto original opcional |
+| `src/joe/audio_player.py` | Controles do player compartilhado, forma de onda, seek, volume e velocidade |
+| `src/joe/audio_waveform.py` | Extração de picos de forma de onda em streaming com memória limitada |
 | `src/joe/local_ipc.py` | Servidor/cliente AF_UNIX para comandos locais da instância ativa |
 | `src/joe/voice_favorites.py` | Canonicalização de caminhos, leitura e serialização dos apelidos favoritos |
+| `src/joe/voice_profiles.py` | Validação e persistência de perfis reutilizáveis de voz |
 | `src/joe/text_normalization.py` | Conversão de números, datas, horas, moeda, porcentagem, abreviações e siglas para fala |
 | `scripts/install-linux.sh` | Ambiente virtual, PyTorch CPU/CUDA e instalação editável |
 | `scripts/install-desktop.sh` | `joe.desktop`, ícone, atalho Xfce e desinstalação segura dos itens gerenciados pelo Joe |

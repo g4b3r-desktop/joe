@@ -27,7 +27,7 @@ A fila será mantida em memória nesta fase; fechar o Joe exige confirmação e 
 
 - [x] Perfis que agrupam voz, apelido, idioma, normalização e dicionário de pronúncia.
 - [x] Exportação WebVTT quando o backend retorna segmentos com timestamps.
-- [ ] Editor de transcrição sincronizado com o áudio e navegação por segmento.
+- [x] Editor de transcrição sincronizado com o áudio e navegação por segmento.
 - [ ] Avaliar diarização e timestamps por palavra de acordo com o suporte real dos modelos.
 
 ## Fase 4 — Distribuição e endurecimento

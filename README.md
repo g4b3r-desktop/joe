@@ -170,7 +170,7 @@ A aba **Histórico** mantém um índice SQLite no armazenamento de dados do usu�
 Em Configurações → Perfis de voz, salve uma combinação de voz, idioma, normalização e dicionário de pronúncia. Dê um nome ao perfil e use **Aplicar perfil** para restaurar todas essas opções de uma vez. Excluir um perfil remove apenas sua configuração; os arquivos de voz e favoritos ficam preservados.
 
 ### Exportação WebVTT
-Na aba Áudio → Texto, quando o backend retorna segmentos com timestamps, você pode exportar SRT e WebVTT. A edição da transcrição continua usando uma linha para cada segmento temporizado; o Joe mantém os tempos originais e substitui apenas o texto editado.
+Na aba Áudio → Texto, quando o backend retorna segmentos com timestamps, você pode exportar SRT e WebVTT. A área **Segmentos com timestamps** mostra início, fim e texto editável; selecionar um segmento e clicar em **Reproduzir segmento selecionado** posiciona o player global no timestamp. A edição da transcrição continua usando uma linha para cada segmento temporizado; o Joe mantém os tempos originais e substitui apenas o texto editado. Alguns caminhos de ASR, como o fallback Transformers local atual, retornam apenas texto e não habilitam a tabela/exports sincronizados.
 
 ### Áudio → Texto
 1. Selecione um arquivo de áudio.

@@ -36,7 +36,9 @@ O texto original não deve ser alterado pela normalização. A geração deve us
 
 - Perfis de voz ficam em QSettings por meio de `voice_profiles.py` e agrupam caminho de voz, apelido, idioma, normalização e dicionário de pronúncia.
 - Um perfil não copia nem altera arquivos de voz/favoritos; excluir perfil remove somente seus metadados.
-- SRT e WebVTT usam os timestamps realmente retornados pelo backend. O botão VTT permanece desabilitado quando não existem segmentos temporizados.
+- SRT e WebVTT usam os timestamps realmente retornados pelo backend. Os botões de exportação permanecem desabilitados quando não existem segmentos temporizados.
+- Quando timestamps existem, a tela Áudio → Texto mostra uma tabela editável com início/fim/texto; o player global busca para o início do segmento selecionado e realça o segmento conforme a posição de reprodução.
+- O fallback Transformers local atual retorna apenas texto sem segmentos sincronizados; não prometer tabela, SRT/VTT ou diarização nesse caminho sem implementar e testar suporte real.
 - Ao exportar transcrições editadas, manter uma linha não vazia por segmento; o app aplica as linhas editadas aos timestamps existentes em vez de inventar sincronização.
 
 ## Histórico e player
