@@ -16,7 +16,7 @@ from PySide6.QtCore import (
     QObject, QRunnable, QSettings, QStandardPaths, QThreadPool,
     QTime, QTimer, QUrl, Qt, Signal,
 )
-from PySide6.QtGui import QAction, QDesktopServices
+from PySide6.QtGui import QAction, QDesktopServices, QIcon
 from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
 from PySide6.QtWidgets import (
     QApplication,
@@ -1471,6 +1471,9 @@ def main() -> None:
     app = QApplication(sys.argv)
     app.setApplicationName("Joe Audio Studio")
     app.setOrganizationName("g4b3r-desktop")
+    icon_path = Path(__file__).resolve().parent / "resources" / "joe.png"
+    if icon_path.is_file():
+        app.setWindowIcon(QIcon(str(icon_path)))
     window = JoeWindow()
     window.show()
     sys.exit(app.exec())
