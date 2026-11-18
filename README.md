@@ -4,7 +4,7 @@ Aplicativo desktop para **texto → áudio** e **áudio → texto**, com interfa
 
 ## Modelos
 
-- **TTS — [Kyutai Pocket TTS](https://github.com/kyutai-labs/pocket-tts):** gera WAV localmente, roda na CPU e inclui suporte a português, espanhol, francês, italiano, alemão e neerlandês, além de inglês. Permite usar uma gravação própria como referência de voz.
+- **TTS — [Kyutai Pocket TTS](https://github.com/kyutai-labs/pocket-tts):** gera WAV localmente, roda na CPU e inclui suporte a português, espanhol, francês, italiano, alemão e neerlandês, além de inglês. Instala o extra `quantize` recomendado pelo projeto e permite usar uma gravação própria como referência de voz.
 - **STT — [Moondream Parakeet Redux](https://huggingface.co/moondream/parakeet-redux):** transcrição local em 25 idiomas, com pesos compactados de aproximadamente 178 MB. Quando a implementação Photon compatível está disponível, ela é usada. Em CPUs sem AVX-512 VNNI, o app usa a implementação de referência Transformers; em FP32 ela pode expandir o uso de memória para cerca de 2,5 GB.
 
 No modo Local, o processamento ocorre no próprio computador. No modo Colab, texto e arquivos de áudio selecionados são enviados pela conexão HTTPS ao runtime temporário do Google Colab para inferência. Os pesos são baixados no ambiente em que o modelo estiver sendo executado e permanecem no cache daquele runtime enquanto ele existir.
