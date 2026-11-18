@@ -206,3 +206,6 @@ A aba Texto → Áudio oferece **Histórico** para localizar WAVs gerados no Joe
 Use **Adicionar à fila** para guardar o texto atual com idioma, voz, backend e destino escolhidos naquele momento. **Fila (N)** abre a fila, permite reordenar/remover tarefas e iniciar a geração sequencial. Uma falha em um item não impede os próximos; o item com falha permanece na fila e pode ser tentado novamente. **Cancelar fila** interrompe a sequência depois que a operação de modelo/API atualmente em andamento devolver o controle. As tarefas não concluídas permanecem pendentes.
 
 Por privacidade, os textos da fila existem somente na memória da sessão e não são gravados em QSettings. Fechar o Joe descarta as tarefas pendentes; WAVs concluídos permanecem no disco e no Histórico.
+
+
+Os áudios produzidos pelo atalho do clipboard entram no Histórico somente depois de usar **Salvar áudio…**. O WAV temporário da janela compacta é apagado ao fechar e, por isso, não deixa um registro quebrado.

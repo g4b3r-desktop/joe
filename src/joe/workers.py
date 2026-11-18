@@ -88,6 +88,9 @@ class TTSQueueWorker(QRunnable):
             try:
                 result = self.generator(item)
             except Exception as exc:  # noqa: BLE001
+                if self.cancel_token.is_requested:
+                    self.signals.cancelled.emit()
+                    return
                 self.signals.item_failed.emit(item_id, str(exc))
                 continue
             result["item_id"] = item_id

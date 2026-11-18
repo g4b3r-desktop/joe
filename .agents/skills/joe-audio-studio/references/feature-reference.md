@@ -89,3 +89,11 @@ O módulo `text_normalization.py` mantém uma cópia preparada do texto e conté
 - cubra sinais, separadores decimais/milhar e datas inválidas;
 - adicione testes de regressão para entradas reais;
 - não “corrija” uma falha antiga sem verificar todos os idiomas afetados.
+
+
+### Histórico e arquivos temporários
+
+- Não registre no Histórico o caminho temporário da janela compacta do clipboard: ele é apagado quando a janela fecha.
+- Quando o usuário salva uma cópia permanente pela janela compacta, registre o caminho salvo e associe as métricas e a voz utilizadas.
+- Ao encerrar o Joe durante uma fila, peça cancelamento cooperativo e aguarde o backend retornar; não mate uma inferência nativa à força.
+- A fila deve marcar como **Gerando** somente o item que está efetivamente sendo processado. Destinos duplicados entre itens pendentes devem ser recusados para evitar sobrescrita.

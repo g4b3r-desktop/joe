@@ -441,6 +441,7 @@ class ClipboardAudioDialog(QDialog):
     """Compact playback window for chunked clipboard audio."""
 
     closed = Signal()
+    audio_saved = Signal(str)
 
     def __init__(
         self,
@@ -453,6 +454,7 @@ class ClipboardAudioDialog(QDialog):
         self.output_directory = output_directory
         self.temp_dir: Path | None = None
         self.audio_path: Path | None = None
+        self.performance: AudioPerformance | None = None
         self.chunk_paths: list[Path] = []
         self.next_chunk_index = 0
         self.current_chunk_path: Path | None = None
@@ -563,6 +565,7 @@ class ClipboardAudioDialog(QDialog):
         self.audio_path = Path(result["path"])
         self.generation_finished = True
         performance = result.get("performance")
+        self.performance = performance if isinstance(performance, AudioPerformance) else None
         if isinstance(performance, AudioPerformance):
             self.performance_label.setText(format_performance_report(performance))
         else:
@@ -698,6 +701,7 @@ class ClipboardAudioDialog(QDialog):
             QMessageBox.critical(self, "Erro ao salvar áudio", str(exc))
             return
         self.status_label.setText(f"Cópia salva em:\n{destination}")
+        self.audio_saved.emit(str(destination))
 
     def closeEvent(self, event) -> None:
         self.is_closing = True
@@ -2190,6 +2194,18 @@ class JoeWindow(QMainWindow):
         dialog.set_text_preview(copied_text)
         dialog.start_measurement(remote=remote is not None)
         dialog.closed.connect(lambda: self._clipboard_dialog_closed(dialog))
+        dialog.audio_saved.connect(
+            lambda saved_path: self._record_audio_history(
+                Path(saved_path),
+                dialog.performance,
+                {
+                    "language": language,
+                    "voice_path": voice or "",
+                    "backend": "Google Colab" if remote is not None else "Local",
+                    "source": "Atalho do clipboard salvo",
+                },
+            )
+        )
         self.clipboard_audio_window = dialog
         self.clipboard_temp_dir = temp_dir
         dialog.show()
@@ -2230,17 +2246,6 @@ class JoeWindow(QMainWindow):
                 return
             payload = result if isinstance(result, dict) else {"path": str(result)}
             dialog.set_ready(payload)
-            performance = payload.get("performance")
-            self._record_audio_history(
-                Path(payload["path"]),
-                performance if isinstance(performance, AudioPerformance) else None,
-                {
-                    "language": language,
-                    "voice_path": voice or "",
-                    "backend": "Google Colab" if remote is not None else "Local",
-                    "source": "Atalho do clipboard",
-                },
-            )
             self.statusBar().showMessage("Áudio do clipboard gerado e unido.", 5000)
 
         def failed(message: str) -> None:
@@ -2326,6 +2331,18 @@ class JoeWindow(QMainWindow):
             except OSError as exc:
                 QMessageBox.critical(self, "Erro na pasta de saída", str(exc))
                 return
+
+        destination_key = str(destination.expanduser().resolve())
+        if any(
+            str(Path(entry.get("output_path", "")).expanduser().resolve()) == destination_key
+            for entry in self.tts_queue
+        ):
+            QMessageBox.information(
+                self,
+                "Destino já utilizado",
+                "Outro item da fila já usa esse arquivo. Escolha outro nome para evitar sobrescrever o áudio.",
+            )
+            return
 
         voice_path = self.voice_path.text().strip()
         voice_alias = self.favorite_voices.get(canonical_voice_path(voice_path), "")
@@ -2443,10 +2460,6 @@ class JoeWindow(QMainWindow):
             )
             return
 
-        for item in items:
-            self.tts_queue = update_queue_item(
-                self.tts_queue, item["id"], RUNNING_STATUS
-            )
         worker = TTSQueueWorker(items, self._generate_queued_tts_item)
         self.tts_queue_worker = worker
         self._set_busy(True, "Processando fila de geração…")
@@ -2936,6 +2949,12 @@ class JoeWindow(QMainWindow):
             self.local_command_server = None
         if self.clipboard_audio_window is not None:
             self.clipboard_audio_window.close()
+        if self.tts_queue_worker is not None:
+            self.tts_queue_worker.cancel()
+        if self.clipboard_generation_worker is not None:
+            self.clipboard_generation_worker.cancel()
+        if self.active_worker is not None:
+            self.active_worker.cancel()
         if self.colab_monitor_pool.activeThreadCount():
             self.colab_monitor_pool.waitForDone(5000)
         if self.thread_pool.activeThreadCount():
