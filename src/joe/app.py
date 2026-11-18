@@ -361,7 +361,10 @@ class ClipboardAudioDialog(QDialog):
         self.performance_timer.timeout.connect(self._update_performance_elapsed)
 
         self.setWindowTitle("Joe — Texto copiado para áudio")
-        self.setWindowFlags(self.windowFlags() | Qt.WindowType.Tool)
+        # Tool windows are commonly omitted from the task switcher/taskbar on Linux.
+        # Use a regular window so the shortcut window has its own Joe icon.
+        self.setWindowFlags(Qt.WindowType.Window)
+        self.setWindowIcon(QApplication.windowIcon())
         self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
         self.resize(480, 330)
 
@@ -611,6 +614,7 @@ class JoeWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
         self.setWindowTitle("Joe — Audio Studio")
+        self.setWindowIcon(QApplication.windowIcon())
         self.resize(980, 740)
         self.setMinimumSize(760, 600)
 
