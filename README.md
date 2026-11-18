@@ -31,13 +31,13 @@ cd joe
 Crie o ambiente e instale PyTorch CPU primeiro. O Pocket TTS roda na CPU, então não instale a build CUDA do PyTorch para este app:
 
 ~~~bash
-./scripts/install-linux.sh
+bash scripts/install-linux.sh
 ~~~
 
 Inicie:
 
 ~~~bash
-./run.sh
+bash run.sh
 ~~~
 
 Também é possível instalar manualmente:
