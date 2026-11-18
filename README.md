@@ -20,6 +20,10 @@ O Joe pode usar uma sessão do Google Colab como servidor de inferência, sem in
 4. Cole a URL e o token na aba **Google Colab / API**, teste a conexão e selecione **Google Colab (API remota)** em Modo de execução.
 5. Use as abas **Texto → Áudio** e **Áudio → Texto** normalmente. Os resultados continuam sendo salvos/revisados no desktop.
 
+Enquanto **Google Colab (API remota)** estiver selecionado e a URL/token estiverem preenchidos, o Joe verifica a conectividade a cada 60 segundos e mostra o estado da API. Essa verificação é apenas monitoramento: não mantém o runtime acordado nem evita os limites de inatividade do Colab. Se a sessão terminar, execute novamente o notebook e informe a nova URL do Quick Tunnel e o token. O Joe voltará a verificar a conexão automaticamente.
+
+Para continuar trabalhando sem depender da sessão remota, selecione **Neste computador (Local)** no modo de execução. O Joe já possui os serviços locais de Pocket TTS e Parakeet Redux; o processamento local não depende do Colab, embora exija os modelos instalados/cacheados no computador. A troca para o modo local é manual para evitar enviar silenciosamente tarefas para outro backend.
+
 O notebook usa Pocket TTS na CPU e Parakeet Redux via Photon CUDA quando a GPU do runtime está disponível. Sem GPU, usa a implementação de referência Transformers em CPU, que pode ser consideravelmente mais lenta.
 
 ### Endpoints
