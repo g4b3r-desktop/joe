@@ -6,10 +6,10 @@ import shlex
 import shutil
 import subprocess
 import sys
-import time
-import wave
 import tempfile
+import time
 import traceback
+import wave
 from collections.abc import Callable
 from pathlib import Path
 
@@ -1835,12 +1835,16 @@ class JoeWindow(QMainWindow):
 
     @staticmethod
     def _format_duration(seconds: float) -> str:
-        total = max(0, int(seconds))
-        hours, remainder = divmod(total, 3600)
-        minutes, secs = divmod(remainder, 60)
+        value = max(0.0, float(seconds))
+        hours = int(value // 3600)
+        minutes = int((value % 3600) // 60)
         if hours:
-            return f"{hours:02d}:{minutes:02d}:{secs:02d}"
-        return f"{minutes:02d}:{secs:02d}"
+            secs = value % 60
+            return f"{hours:02d}:{minutes:02d}:{secs:04.1f}"
+        if minutes:
+            secs = value % 60
+            return f"{minutes:02d}:{secs:04.1f}"
+        return f"{value:.1f}s".replace(".", ",")
 
     def _update_tts_elapsed(self) -> None:
         if self.tts_generation_started_at is None:
