@@ -5,7 +5,7 @@ Aplicativo desktop local para **texto → áudio** e **áudio → texto**, com i
 ## Modelos
 
 - **TTS — [Kyutai Pocket TTS](https://github.com/kyutai-labs/pocket-tts):** gera WAV localmente, roda na CPU e inclui suporte a português, espanhol, francês, italiano, alemão e neerlandês, além de inglês. Permite usar uma gravação própria como referência de voz.
-- **STT — [Moondream Parakeet Redux](https://huggingface.co/moondream/parakeet-redux):** transcrição local em 25 idiomas, com arquivos de pesos de aproximadamente 178 MB. Quando a implementação Photon compatível está disponível, ela é usada. Em CPUs x86 sem AVX-512 VNNI, o app tenta a implementação de referência com Transformers.
+- **STT — [Moondream Parakeet Redux](https://huggingface.co/moondream/parakeet-redux):** transcrição local em 25 idiomas, com pesos compactados de aproximadamente 178 MB. Quando a implementação Photon compatível está disponível, ela é usada. Em CPUs sem AVX-512 VNNI, o app usa a implementação de referência Transformers; em FP32 ela pode expandir o uso de memória para cerca de 2,5 GB.
 
 Não há envio de áudio para serviços de nuvem. Na primeira execução, os pesos são baixados do Hugging Face e ficam no cache local para usos seguintes.
 
@@ -98,5 +98,5 @@ MVP inicial: interface desktop, geração WAV, transcrição de arquivo, cópia/
 
 ## Licenças dos modelos
 
-- Pocket TTS: consulte a licença no repositório oficial do Kyutai.
+- Código do Pocket TTS: MIT no repositório oficial; confira também a licença CC-BY-4.0 indicada para os pesos do modelo.
 - Parakeet Redux: CC-BY-4.0, conforme o model card. Preserve atribuição e avisos de licença ao redistribuir pesos.
