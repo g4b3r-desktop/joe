@@ -168,7 +168,7 @@ def _split_number(raw: str, language: str) -> tuple[str, str | None, bool]:
         elif len(pieces) == 2 and len(pieces[1]) != 3:
             integer_part, fractional_part = pieces
         else:
-            integer_part = "".join(pieces)
+            raise ValueError(f"Separadores numéricos inválidos: {raw}")
 
     if not integer_part.isdigit() or (
         fractional_part is not None and not fractional_part.isdigit()
