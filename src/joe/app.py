@@ -635,12 +635,11 @@ class JoeWindow(QMainWindow):
         self.app_settings.setValue("tts_normalization_enabled", bool(checked))
 
     def _prepared_speech_text(self, original_text: str, language: str) -> str:
-        if not self.tts_normalization_enabled.isChecked():
-            return original_text
         return normalize_text_for_tts(
             original_text,
             language=language,
             pronunciation_dictionary=self.pronunciation_dictionary,
+            apply_automatic=self.tts_normalization_enabled.isChecked(),
         )
 
     def _preview_tts_text(self) -> None:
