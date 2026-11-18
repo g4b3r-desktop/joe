@@ -6,3 +6,4 @@ moondream>=2.4.1
 soundfile>=0.12
 transformers>=4.57
 scipy>=1.13
+PyYAML>=6
