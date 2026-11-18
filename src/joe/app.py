@@ -47,6 +47,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from joe.audio_chunks import merge_wav_files, split_text_into_chunks
 from joe.local_ipc import LocalCommandServer, send_local_command
 from joe.services.colab_api import ColabAPIClient
 from joe.services.parakeet import ParakeetReduxService
@@ -76,13 +77,88 @@ class FunctionWorker(QRunnable):
             self.signals.failed.emit(f"{exc}\n\n{details}")
 
 
+class ChunkWorkerSignals(QObject):
+    chunk_ready = Signal(int, str, int)
+    progress = Signal(str)
+    finished = Signal(object)
+    failed = Signal(str)
+    cancelled = Signal()
+
+
+class ClipboardChunkWorker(QRunnable):
+    """Generate independent speech chunks and assemble one final WAV."""
+
+    def __init__(self, chunks, generator, output_directory: Path, final_path: Path):
+        super().__init__()
+        import threading
+
+        self.chunks = list(chunks)
+        self.generator = generator
+        self.output_directory = output_directory
+        self.final_path = final_path
+        self.cancel_event = threading.Event()
+        self.signals = ChunkWorkerSignals()
+
+    def cancel(self) -> None:
+        self.cancel_event.set()
+
+    def run(self) -> None:
+        generated: list[Path] = []
+        total = len(self.chunks)
+        try:
+            for index, text in enumerate(self.chunks, start=1):
+                if self.cancel_event.is_set():
+                    self.signals.cancelled.emit()
+                    return
+
+                destination = self.output_directory / f"part_{index:03d}.wav"
+                self.signals.progress.emit(f"Gerando trecho {index} de {total}…")
+                last_error = None
+                for attempt in range(2):
+                    try:
+                        if destination.exists():
+                            destination.unlink()
+                        result = Path(self.generator(text, destination))
+                        if not result.is_file() or result.stat().st_size == 0:
+                            raise RuntimeError("O serviço TTS não produziu um WAV válido.")
+                        last_error = None
+                        break
+                    except Exception as exc:  # noqa: BLE001
+                        last_error = exc
+                        if attempt == 0:
+                            self.signals.progress.emit(
+                                f"Trecho {index}: falha temporária; tentando novamente…"
+                            )
+                if last_error is not None:
+                    raise RuntimeError(
+                        f"Falha no trecho {index} de {total} após duas tentativas: "
+                        f"{last_error}"
+                    ) from last_error
+
+                if self.cancel_event.is_set():
+                    self.signals.cancelled.emit()
+                    return
+                generated.append(result)
+                self.signals.chunk_ready.emit(index, str(result), total)
+
+            if self.cancel_event.is_set():
+                self.signals.cancelled.emit()
+                return
+
+            self.signals.progress.emit("Unindo os trechos em um único WAV…")
+            merged = merge_wav_files(generated, self.final_path)
+            self.signals.finished.emit(merged)
+        except Exception as exc:  # noqa: BLE001
+            self.signals.failed.emit(str(exc))
+
+
 class HotkeyBridge(QObject):
     activated = Signal()
     command_received = Signal(str)
 
 
 class ClipboardAudioDialog(QDialog):
-    """Compact playback window for audio generated from the system clipboard."""
+    """Compact playback window for chunked clipboard audio."""
 
     closed = Signal()
 
@@ -97,12 +173,18 @@ class ClipboardAudioDialog(QDialog):
         self.output_directory = output_directory
         self.temp_dir: Path | None = None
         self.audio_path: Path | None = None
+        self.chunk_paths: list[Path] = []
+        self.next_chunk_index = 0
+        self.current_chunk_path: Path | None = None
+        self.generation_finished = False
+        self.play_requested = False
+        self.waiting_for_chunk = False
         self.is_closing = False
 
         self.setWindowTitle("Joe — Texto copiado para áudio")
         self.setWindowFlags(self.windowFlags() | Qt.WindowType.Tool)
         self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
-        self.resize(430, 250)
+        self.resize(460, 270)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(18, 16, 18, 16)
@@ -113,7 +195,7 @@ class ClipboardAudioDialog(QDialog):
         self.preview_label.setObjectName("muted")
         layout.addWidget(self.preview_label)
 
-        self.status_label = QLabel("Gerando áudio…")
+        self.status_label = QLabel("Preparando trechos de áudio…")
         self.status_label.setWordWrap(True)
         layout.addWidget(self.status_label)
 
@@ -137,32 +219,106 @@ class ClipboardAudioDialog(QDialog):
         buttons.addWidget(self.close_button)
         layout.addLayout(buttons)
 
+        self.player.mediaStatusChanged.connect(self._on_media_status_changed)
+
     def set_text_preview(self, text: str) -> None:
         compact = " ".join(text.split())
         if len(compact) > 260:
             compact = compact[:257].rstrip() + "…"
         self.preview_label.setText(compact)
 
+    def set_progress(self, message: str) -> None:
+        if not self.is_closing:
+            self.status_label.setText(message)
+
+    def add_chunk(self, index: int, audio_path: Path, total: int) -> None:
+        if self.is_closing:
+            return
+        self.chunk_paths.append(audio_path)
+        self.play_button.setEnabled(True)
+        if not self.generation_finished and not self.play_requested:
+            self.status_label.setText(
+                f"Trecho {index} de {total} pronto. Gerando os próximos…"
+            )
+        if self.waiting_for_chunk and self.play_requested:
+            self._play_next_chunk()
+
     def set_ready(self, audio_path: Path) -> None:
         self.audio_path = audio_path
-        self.status_label.setText("Áudio pronto. Você pode reproduzir ou salvar uma cópia.")
-        self.play_button.setEnabled(True)
+        self.generation_finished = True
+        self.play_button.setEnabled(bool(self.chunk_paths))
         self.save_button.setEnabled(True)
+        if not self.play_requested:
+            self.status_label.setText(
+                "Áudio completo pronto. Você pode reproduzir ou salvar o WAV."
+            )
+        elif self.waiting_for_chunk:
+            self._play_next_chunk()
 
     def set_failed(self, message: str) -> None:
-        self.status_label.setText(f"Não foi possível gerar o áudio: {message}")
-        self.play_button.setEnabled(False)
-        self.pause_button.setEnabled(False)
+        self.generation_finished = True
+        self.status_label.setText(
+            f"Falha ao gerar o áudio completo: {message}. "
+            "Os trechos já gerados ainda podem ser reproduzidos."
+        )
+        self.play_button.setEnabled(bool(self.chunk_paths))
         self.save_button.setEnabled(False)
 
     def _play(self) -> None:
-        if not self.audio_path or not self.audio_path.is_file():
+        if not self.chunk_paths:
             return
-        self.player.setSource(QUrl.fromLocalFile(str(self.audio_path.resolve())))
-        self.player.play()
-        self.pause_button.setEnabled(True)
+        self.play_requested = True
+        if self.player.playbackState() == QMediaPlayer.PlaybackState.PausedState:
+            self.player.play()
+            self.pause_button.setEnabled(True)
+            return
+        if self.current_chunk_path and self.player.source().isValid() and (
+            self.player.mediaStatus() != QMediaPlayer.MediaStatus.EndOfMedia
+        ):
+            self.player.play()
+            self.pause_button.setEnabled(True)
+            return
+        self._play_next_chunk()
+
+    def _play_next_chunk(self) -> None:
+        if not self.play_requested or self.is_closing:
+            return
+        if self.next_chunk_index < len(self.chunk_paths):
+            path = self.chunk_paths[self.next_chunk_index]
+            self.next_chunk_index += 1
+            self.current_chunk_path = path
+            self.waiting_for_chunk = False
+            self.player.setSource(QUrl.fromLocalFile(str(path.resolve())))
+            self.player.play()
+            self.pause_button.setEnabled(True)
+            if not self.generation_finished:
+                self.status_label.setText(
+                    f"Reproduzindo trecho {self.next_chunk_index}; "
+                    "os próximos continuam sendo gerados…"
+                )
+            return
+
+        if self.generation_finished:
+            self.play_requested = False
+            self.waiting_for_chunk = False
+            self.pause_button.setEnabled(False)
+            self.status_label.setText("Reprodução concluída.")
+            return
+
+        self.waiting_for_chunk = True
+        self.pause_button.setEnabled(False)
+        self.status_label.setText(
+            "Aguardando a geração do próximo trecho para continuar a reprodução…"
+        )
+        self.player.stop()
+        self.player.setSource(QUrl())
+
+    def _on_media_status_changed(self, status) -> None:
+        if status == QMediaPlayer.MediaStatus.EndOfMedia and self.play_requested:
+            self._play_next_chunk()
 
     def _pause(self) -> None:
+        self.play_requested = False
         self.player.pause()
         self.pause_button.setEnabled(False)
 
@@ -200,11 +356,15 @@ class ClipboardAudioDialog(QDialog):
 
     def closeEvent(self, event) -> None:
         self.is_closing = True
-        if self.audio_path:
-            current_source = self.player.source().toLocalFile()
-            if current_source == str(self.audio_path.resolve()):
-                self.player.stop()
-                self.player.setSource(QUrl())
+        self.play_requested = False
+        current_source = self.player.source().toLocalFile()
+        chunk_sources = {str(path.resolve()) for path in self.chunk_paths}
+        if current_source and (
+            current_source in chunk_sources
+            or (self.audio_path and current_source == str(self.audio_path.resolve()))
+        ):
+            self.player.stop()
+            self.player.setSource(QUrl())
         self.closed.emit()
         super().closeEvent(event)
 
@@ -596,6 +756,22 @@ class JoeWindow(QMainWindow):
         options.addRow("Pasta para salvar", output_folder_row)
         options.addRow("", self.tts_auto_filename)
         options.addRow("Idioma da fala", self.tts_language)
+
+        self.clipboard_chunk_size = QComboBox()
+        for size in (180, 280, 420, 560):
+            self.clipboard_chunk_size.addItem(f"{size} caracteres", size)
+        saved_chunk_size = self.app_settings.value(
+            "clipboard_chunk_size", 280, type=int
+        )
+        chunk_size_index = self.clipboard_chunk_size.findData(saved_chunk_size)
+        self.clipboard_chunk_size.setCurrentIndex(max(0, chunk_size_index))
+        self.clipboard_chunk_size.currentIndexChanged.connect(
+            lambda: self.app_settings.setValue(
+                "clipboard_chunk_size", self.clipboard_chunk_size.currentData()
+            )
+        )
+        options.addRow("Tamanho dos blocos do atalho", self.clipboard_chunk_size)
+
         voice_row = QWidget()
         voice_layout = QHBoxLayout(voice_row)
         voice_layout.setContentsMargins(0, 0, 0, 0)
@@ -1157,12 +1333,15 @@ class JoeWindow(QMainWindow):
     def _clipboard_dialog_closed(self, dialog: ClipboardAudioDialog) -> None:
         if self.clipboard_audio_window is dialog:
             self.clipboard_audio_window = None
-        if self.clipboard_generation_worker is None:
+        worker = self.clipboard_generation_worker
+        if worker is not None:
+            worker.cancel()
+        else:
             self._remove_clipboard_temp_dir(dialog.temp_dir)
             if self.clipboard_temp_dir == dialog.temp_dir:
                 self.clipboard_temp_dir = None
             dialog.temp_dir = None
-        if self.clipboard_only_mode:
+        if self.clipboard_only_mode and worker is None:
             QTimer.singleShot(0, QApplication.quit)
 
     def _generate_audio_from_clipboard(self) -> None:
@@ -1170,13 +1349,17 @@ class JoeWindow(QMainWindow):
             if self.clipboard_audio_window is not None:
                 self.clipboard_audio_window.raise_()
                 self.clipboard_audio_window.activateWindow()
-            self.statusBar().showMessage("A geração do texto copiado já está em andamento.", 4000)
+            self.statusBar().showMessage(
+                "A geração do texto copiado já está em andamento.", 4000
+            )
             return
 
         if self.active_worker is not None:
             self.statusBar().showMessage(
                 "Aguarde a tarefa atual terminar antes de gerar outro áudio.", 5000
             )
+            if self.clipboard_only_mode:
+                QTimer.singleShot(0, QApplication.quit)
             return
 
         copied_text = QApplication.clipboard().text().strip()
@@ -1200,6 +1383,10 @@ class JoeWindow(QMainWindow):
                 if self.processing_mode.currentData() == "colab"
                 else None
             )
+            chunk_size = int(self.clipboard_chunk_size.currentData())
+            chunks = split_text_into_chunks(speech_text, max_chars=chunk_size)
+            if not chunks:
+                raise ValueError("Não há texto para converter em áudio.")
         except Exception as exc:  # noqa: BLE001
             self.statusBar().showMessage(f"Não foi possível iniciar o TTS: {exc}", 8000)
             if self.clipboard_only_mode:
@@ -1209,22 +1396,25 @@ class JoeWindow(QMainWindow):
         try:
             temp_dir = Path(tempfile.mkdtemp(prefix="joe-clipboard-audio-"))
         except OSError as exc:
-            self.statusBar().showMessage(f"Não foi possível criar áudio temporário: {exc}", 8000)
+            self.statusBar().showMessage(
+                f"Não foi possível criar áudio temporário: {exc}", 8000
+            )
             if self.clipboard_only_mode:
                 QTimer.singleShot(0, QApplication.quit)
             return
 
         destination = temp_dir / "clipboard_audio.wav"
         voice = self.voice_path.text().strip() or None
+
         if remote is not None:
-            def generate_clipboard_audio() -> Path:
-                audio_data = remote.generate_audio(speech_text, language, voice)
-                destination.write_bytes(audio_data)
-                return destination
+            def generate_clipboard_chunk(chunk_text: str, output_path: Path) -> Path:
+                audio_data = remote.generate_audio(chunk_text, language, voice)
+                output_path.write_bytes(audio_data)
+                return output_path
         else:
-            def generate_clipboard_audio() -> Path:
+            def generate_clipboard_chunk(chunk_text: str, output_path: Path) -> Path:
                 return self.tts.generate(
-                    speech_text, language, str(destination), voice
+                    chunk_text, language, str(output_path), voice
                 )
 
         dialog = ClipboardAudioDialog(
@@ -1241,36 +1431,55 @@ class JoeWindow(QMainWindow):
         dialog.raise_()
         dialog.activateWindow()
 
-        worker = FunctionWorker(generate_clipboard_audio)
+        worker = ClipboardChunkWorker(
+            chunks, generate_clipboard_chunk, temp_dir, destination
+        )
         self.clipboard_generation_worker = worker
+
+        def chunk_ready(index: int, path: str, total: int) -> None:
+            if not dialog.is_closing:
+                dialog.add_chunk(index, Path(path), total)
+
+        def progress(message: str) -> None:
+            if not dialog.is_closing:
+                dialog.set_progress(message)
+
+        def cleanup_closed_dialog() -> None:
+            self._remove_clipboard_temp_dir(temp_dir)
+            dialog.temp_dir = None
+            if self.clipboard_temp_dir == temp_dir:
+                self.clipboard_temp_dir = None
+            if self.clipboard_only_mode:
+                QTimer.singleShot(0, QApplication.quit)
 
         def finished(result: object) -> None:
             self.clipboard_generation_worker = None
             if dialog.is_closing:
-                self._remove_clipboard_temp_dir(temp_dir)
-                dialog.temp_dir = None
-                if self.clipboard_temp_dir == temp_dir:
-                    self.clipboard_temp_dir = None
+                cleanup_closed_dialog()
                 return
             dialog.set_ready(Path(result))
-            self.statusBar().showMessage("Áudio do clipboard gerado.", 5000)
+            self.statusBar().showMessage("Áudio do clipboard gerado e unido.", 5000)
 
         def failed(message: str) -> None:
             self.clipboard_generation_worker = None
             detail = message.split("\n\n", 1)[0].strip() or "Erro desconhecido"
             if dialog.is_closing:
-                self._remove_clipboard_temp_dir(temp_dir)
-                dialog.temp_dir = None
+                cleanup_closed_dialog()
             else:
                 dialog.set_failed(detail)
-                self._remove_clipboard_temp_dir(temp_dir)
-                dialog.temp_dir = None
-            if self.clipboard_temp_dir == temp_dir:
-                self.clipboard_temp_dir = None
-            self.statusBar().showMessage(f"Falha ao gerar áudio do clipboard: {detail}", 8000)
+                self.statusBar().showMessage(
+                    f"Falha ao gerar áudio do clipboard: {detail}", 8000
+                )
 
+        def cancelled() -> None:
+            self.clipboard_generation_worker = None
+            cleanup_closed_dialog()
+
+        worker.signals.chunk_ready.connect(chunk_ready)
+        worker.signals.progress.connect(progress)
         worker.signals.finished.connect(finished)
         worker.signals.failed.connect(failed)
+        worker.signals.cancelled.connect(cancelled)
         self.thread_pool.start(worker)
 
     def _generate_audio(self) -> None:
