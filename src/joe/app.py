@@ -9,7 +9,10 @@ from pathlib import Path
 import torch  # noqa: F401
 
 # isort: split
-from PySide6.QtCore import QObject, QRunnable, QSettings, QThreadPool, QTime, QTimer, QUrl, Signal
+from PySide6.QtCore import (
+    QObject, QRunnable, QSettings, QStandardPaths, QThreadPool,
+    QTime, QTimer, QUrl, Signal,
+)
 from PySide6.QtGui import QAction, QDesktopServices
 from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
 from PySide6.QtWidgets import (
@@ -34,7 +37,7 @@ from PySide6.QtWidgets import (
 from joe.services.colab_api import ColabAPIClient
 from joe.services.parakeet import ParakeetReduxService
 from joe.services.pocket_tts import PocketTTSService
-from joe.utils import build_srt
+from joe.utils import build_srt, build_audio_output_path
 
 
 class WorkerSignals(QObject):
@@ -321,6 +324,36 @@ class JoeWindow(QMainWindow):
         )
         self.tts_text.setMinimumHeight(240)
 
+        default_output_dir = QStandardPaths.writableLocation(
+            QStandardPaths.StandardLocation.MusicLocation
+        )
+        if not default_output_dir:
+            default_output_dir = str(Path.home() / "Music")
+        default_output_dir = str(Path(default_output_dir) / "Joe")
+        saved_output_dir = str(
+            self.app_settings.value("tts_output_directory", default_output_dir)
+        )
+        self.tts_output_directory = QLineEdit(saved_output_dir)
+        self.tts_output_directory.setPlaceholderText("Pasta onde os WAV serão salvos")
+        self.tts_output_directory.editingFinished.connect(self._save_tts_output_settings)
+
+        self.tts_browse_output_button = QPushButton("Escolher pasta…")
+        self.tts_browse_output_button.clicked.connect(self._choose_tts_output_directory)
+
+        output_folder_row = QWidget()
+        output_folder_layout = QHBoxLayout(output_folder_row)
+        output_folder_layout.setContentsMargins(0, 0, 0, 0)
+        output_folder_layout.addWidget(self.tts_output_directory, 1)
+        output_folder_layout.addWidget(self.tts_browse_output_button)
+
+        self.tts_auto_filename = QCheckBox(
+            "Salvar automaticamente com nome genérico (joe_audio_data_hora.wav)"
+        )
+        self.tts_auto_filename.setChecked(
+            self.app_settings.value("tts_auto_filename", True, type=bool)
+        )
+        self.tts_auto_filename.toggled.connect(self._save_tts_output_settings)
+
         self.tts_language = QComboBox()
         self.tts_language.addItem("Português", "portuguese")
         self.tts_language.addItem("Inglês", "english")
@@ -337,6 +370,8 @@ class JoeWindow(QMainWindow):
         self.voice_button.clicked.connect(self._choose_voice)
 
         options = QFormLayout()
+        options.addRow("Pasta para salvar", output_folder_row)
+        options.addRow("", self.tts_auto_filename)
         options.addRow("Idioma da fala", self.tts_language)
         voice_row = QWidget()
         voice_layout = QHBoxLayout(voice_row)
@@ -359,8 +394,9 @@ class JoeWindow(QMainWindow):
         action_row.addStretch(1)
 
         self.tts_info = QLabel(
-            "A primeira geração pode baixar os pesos do modelo. "
-            "Depois, eles ficam armazenados no cache local."
+            "Os áudios serão salvos na pasta escolhida, sem abrir a janela de salvamento "
+            "quando o nome automático estiver ativado. A primeira geração pode baixar "
+            "os pesos do modelo; depois, eles ficam armazenados no cache local."
         )
         self.tts_info.setObjectName("muted")
         self.tts_info.setWordWrap(True)
@@ -535,6 +571,27 @@ class JoeWindow(QMainWindow):
         }
         """
 
+    def _save_tts_output_settings(self, *_args) -> None:
+        if not hasattr(self, "tts_output_directory"):
+            return
+        self.app_settings.setValue(
+            "tts_output_directory", self.tts_output_directory.text().strip()
+        )
+        self.app_settings.setValue(
+            "tts_auto_filename", self.tts_auto_filename.isChecked()
+        )
+
+    def _choose_tts_output_directory(self) -> None:
+        current = self.tts_output_directory.text().strip() or str(Path.home())
+        directory = QFileDialog.getExistingDirectory(
+            self,
+            "Escolher pasta para salvar os áudios",
+            current,
+        )
+        if directory:
+            self.tts_output_directory.setText(directory)
+            self._save_tts_output_settings()
+
     def _choose_voice(self) -> None:
         path, _ = QFileDialog.getOpenFileName(
             self,
@@ -564,16 +621,42 @@ class JoeWindow(QMainWindow):
             QMessageBox.information(self, "Texto vazio", "Digite o texto que deseja converter.")
             return
 
-        output, _ = QFileDialog.getSaveFileName(
-            self,
-            "Salvar áudio gerado",
-            str(Path.home() / "joe-audio.wav"),
-            "Áudio WAV (*.wav)",
-        )
-        if not output:
+        output_directory = Path(self.tts_output_directory.text().strip()).expanduser()
+        if not str(output_directory):
+            QMessageBox.information(
+                self, "Pasta não definida", "Escolha uma pasta para salvar os áudios."
+            )
             return
-        if not output.lower().endswith(".wav"):
-            output += ".wav"
+
+        if self.tts_auto_filename.isChecked():
+            try:
+                destination = build_audio_output_path(output_directory)
+            except OSError as exc:
+                QMessageBox.critical(
+                    self, "Erro na pasta de saída", f"Não foi possível preparar a pasta:\n{exc}"
+                )
+                return
+        else:
+            output, _ = QFileDialog.getSaveFileName(
+                self,
+                "Salvar áudio gerado",
+                str(output_directory / "joe-audio.wav"),
+                "Áudio WAV (*.wav)",
+            )
+            if not output:
+                return
+            if not output.lower().endswith(".wav"):
+                output += ".wav"
+            destination = Path(output).expanduser()
+            self.tts_output_directory.setText(str(destination.parent))
+            self._save_tts_output_settings()
+            try:
+                destination.parent.mkdir(parents=True, exist_ok=True)
+            except OSError as exc:
+                QMessageBox.critical(
+                    self, "Erro na pasta de saída", f"Não foi possível criar a pasta:\n{exc}"
+                )
+                return
 
         language = str(self.tts_language.currentData())
         voice = self.voice_path.text().strip() or None
@@ -586,14 +669,13 @@ class JoeWindow(QMainWindow):
 
             def generate_remote() -> Path:
                 audio_data = remote.generate_audio(text, language, voice)
-                destination = Path(output)
                 destination.write_bytes(audio_data)
                 return destination
 
             task = generate_remote
             status = "Gerando áudio no Google Colab…"
         else:
-            task = lambda: self.tts.generate(text, language, output, voice)
+            task = lambda: self.tts.generate(text, language, str(destination), voice)
             status = "Gerando áudio com Pocket TTS local…"
 
         self._run_task(status, task, self._audio_generated)
@@ -761,6 +843,9 @@ class JoeWindow(QMainWindow):
             self.tts_generate_button,
             self.tts_play_button,
             self.voice_button,
+            self.tts_output_directory,
+            self.tts_browse_output_button,
+            self.tts_auto_filename,
             self.audio_choose_button,
             self.asr_button,
             self.asr_device,
