@@ -1,0 +1,27 @@
+name: Python checks
+
+on:
+  push:
+    branches:
+      - feature/desktop-audio-studio
+      - feature/colab-model-api
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install lightweight test dependencies
+        run: python -m pip install pytest httpx
+      - name: Compile Python sources
+        run: python -m compileall -q src/joe colab/api_server.py
+      - name: Run unit tests
+        env:
+          PYTHONPATH: src
+        run: python -m pytest -q
