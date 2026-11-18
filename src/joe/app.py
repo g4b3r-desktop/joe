@@ -323,10 +323,6 @@ class TTSGenerationWorker(QRunnable):
                     character_count=len(self.task.speech_text),
                     remote=self.task.remote,
                 )
-                if self.cancel_event.is_set():
-                    output_path.unlink(missing_ok=True)
-                    self.signals.cancelled.emit(self.task.task_id)
-                    return
                 self.signals.finished.emit(
                     self.task.task_id,
                     {"path": str(output_path), "performance": performance},
@@ -2738,9 +2734,11 @@ class JoeWindow(QMainWindow):
         self.tts_generation_started_at = None
         self.tts_speed_info.setText("Geração falhou. Veja os detalhes na fila para repetir.")
         self._set_busy(False, "Falha na tarefa; continuando a fila")
+        failed_task = self.generation_queue.get(task_id)
+        task_name = failed_task.output_name if failed_task is not None else task_id
+        error_summary = message.splitlines()[0] if message.splitlines() else "Erro desconhecido"
         self.statusBar().showMessage(
-            f"Falha em {self.generation_queue.get(task_id).output_name}: "
-            f"{message.splitlines()[0]}",
+            f"Falha em {task_name}: {error_summary}",
             8000,
         )
         self._refresh_generation_queue()

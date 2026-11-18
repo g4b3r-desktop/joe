@@ -44,7 +44,7 @@ def test_colab_tts_rejects_non_wav_results(monkeypatch):
     monkeypatch.setattr(
         client,
         "_wait_for_result",
-        lambda _job_id: httpx.Response(200, content=b"not a wave file"),
+        lambda _job_id, **_kwargs: httpx.Response(200, content=b"not a wave file"),
     )
 
     with pytest.raises(ColabAPIError, match="RIFF/WAVE"):
