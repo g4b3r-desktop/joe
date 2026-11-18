@@ -62,3 +62,10 @@ Ao clicar em **Aplicar pastas e modelos**, o notebook extrai o ZIP para `/conten
 O campo **Arquivo ZIP** permite alterar o caminho do arquivo. O notebook verifica se o ZIP existe e se contém a pasta `pocket-tts`; também aceita uma pasta externa `JOE_MODELS/`. O caminho do tokenizer é preenchido automaticamente com base na estrutura esperada, mas pode ser ajustado no campo correspondente.
 
 Para clonagem personalizada, o Joe também pode enviar um áudio de referência em cada solicitação. O arquivo WAV ou estado `.safetensors` indicado em **Voz padrão** é opcional e precisa existir no Drive. O campo **Cache HF/ASR** define `HF_HOME`; use uma pasta persistente no Drive se quiser manter o cache entre sessões.
+
+
+## Garantia de carregamento local do Pocket TTS
+
+O notebook configura `weights_path` para o checkpoint de clonagem em `pocket-tts/languages/portuguese/model.safetensors` e o tokenizer para o arquivo local do Drive. Se existir, também configura o checkpoint de fallback sem clonagem em `pocket-tts-without-voice-cloning/languages/portuguese/model.safetensors`. A API é impedida de iniciar em modo Drive se a configuração local não tiver sido aplicada.
+
+A voz de referência padrão não é mais um endereço `hf://`. Se o Joe não enviar um WAV na requisição, configure um WAV local no campo **Voz padrão WAV**. Os arquivos de voz em formato WAV são áudio de referência; não são os pesos do modelo.
