@@ -1,4 +1,6 @@
-from joe.utils import build_srt, format_srt_time
+from datetime import datetime
+
+from joe.utils import build_audio_output_path, build_srt, format_srt_time
 
 
 def test_format_srt_time():
@@ -18,3 +20,35 @@ def test_build_srt():
 
 def test_build_srt_skips_empty_segments():
     assert build_srt([{"start": 0, "end": 1, "text": " " }]) == ""
+
+
+
+def test_build_audio_output_path_creates_directory_and_uses_generic_name(tmp_path):
+    timestamp = datetime(2026, 11, 18, 12, 30, 45)
+
+    result = build_audio_output_path(tmp_path / "Joe", timestamp=timestamp)
+
+    assert result == tmp_path / "Joe" / "joe_audio_20261118_123045.wav"
+    assert result.parent.is_dir()
+    assert not result.exists()
+
+
+def test_build_audio_output_path_avoids_overwriting_existing_audio(tmp_path):
+    timestamp = datetime(2026, 11, 18, 12, 30, 45)
+    first = build_audio_output_path(tmp_path, timestamp=timestamp)
+    first.touch()
+
+    second = build_audio_output_path(tmp_path, timestamp=timestamp)
+
+    assert second.name == "joe_audio_20261118_123045_001.wav"
+    assert second != first
+
+
+def test_build_audio_output_path_sanitizes_prefix(tmp_path):
+    timestamp = datetime(2026, 11, 18, 12, 30, 45)
+
+    result = build_audio_output_path(
+        tmp_path, prefix="  Meu áudio / teste  ", timestamp=timestamp
+    )
+
+    assert result.name == "Meu_áudio_teste_20261118_123045.wav"
