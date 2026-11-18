@@ -144,9 +144,9 @@ class JoeWindow(QMainWindow):
         self.colab_open_button.clicked.connect(self._open_colab_notebook)
 
         self.colab_info = QLabel(
-            "1. Abra o notebook no Google Colab e execute as células.\\n"
-            "2. Copie a URL trycloudflare.com e o token exibidos no final.\\n"
-            "3. Cole os dois campos acima, teste a conexão e selecione Google Colab no modo.\\n\\n"
+            "1. Abra o notebook no Google Colab e execute as células.\n"
+            "2. Copie a URL trycloudflare.com e o token exibidos no final.\n"
+            "3. Cole os dois campos acima, teste a conexão e selecione Google Colab no modo.\n\n"
             "A URL e o token não são iguais: a URL muda quando o túnel é reiniciado. "
             "O token fica apenas na memória do Joe e não é gravado nas configurações."
         )
@@ -200,9 +200,9 @@ class JoeWindow(QMainWindow):
         data = result if isinstance(result, dict) else {}
         gpu = data.get("gpu_name") or ("CUDA disponível" if data.get("cuda_available") else "CPU")
         self.colab_info.setText(
-            f"Conexão confirmada. Servidor: {data.get('service', 'Joe Colab API')}\\n"
-            f"ASR: {data.get('asr', 'Parakeet Redux')}\\n"
-            f"GPU: {gpu}\\n"
+            f"Conexão confirmada. Servidor: {data.get('service', 'Joe Colab API')}\n"
+            f"ASR: {data.get('asr', 'Parakeet Redux')}\n"
+            f"GPU: {gpu}\n"
             f"Parakeet carregado: {'sim' if data.get('asr_loaded') else 'ainda não'}"
         )
         self.statusBar().showMessage("API do Google Colab conectada.", 5000)
@@ -677,7 +677,7 @@ class JoeWindow(QMainWindow):
             self.asr_button,
             self.asr_device,
             self.timestamps_check,
-            self.colab_test_button if hasattr(self, "colab_test_button") else self.tts_generate_button,
+            self.colab_test_button,
         ):
             widget.setEnabled(not busy)
         if busy:
