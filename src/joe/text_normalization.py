@@ -95,7 +95,7 @@ _PT_ACRONYMS = {
     "LLM": "éle éle ême",
     "OCR": "ó cê érre",
     "PDF": "pê dê éfe",
-    "RAM": "rã",
+    "RAM": "rãm",
     "RGB": "érre gê bê",
     "ROM": "rôm",
     "RTX": "érre tê xis",
@@ -104,7 +104,7 @@ _PT_ACRONYMS = {
     "TTS": "tê tê ésse",
     "URL": "u érre éle",
     "USB": "u ésse bê",
-    "VRAM": "vê érre ã ême",
+    "VRAM": "vê rãm",
 }
 _PT_WORD_LIKE_BRANDS = {
     "BLENDER", "BOM", "COLAB", "FIM", "JOE", "LINUX", "NAO", "NÃO",
@@ -235,28 +235,47 @@ def _replace_dates(text: str, language: str) -> str:
 
 
 def _replace_times(text: str, language: str) -> str:
-    units = {
-        "portuguese": "horas", "english": "hours", "spanish": "horas",
-        "french": "heures", "german": "Uhr", "italian": "ore", "dutch": "uur",
+    hour_units = {
+        "portuguese": ("hora", "horas"), "english": ("hour", "hours"),
+        "spanish": ("hora", "horas"), "french": ("heure", "heures"),
+        "german": ("Uhr", "Uhr"), "italian": ("ora", "ore"),
+        "dutch": ("uur", "uur"),
+    }
+    minute_units = {
+        "portuguese": ("minuto", "minutos"), "english": ("minute", "minutes"),
+        "spanish": ("minuto", "minutos"), "french": ("minute", "minutes"),
+        "german": ("Minute", "Minuten"), "italian": ("minuto", "minuti"),
+        "dutch": ("minuut", "minuten"),
     }
     conjunctions = {
         "portuguese": "e", "english": "and", "spanish": "y",
         "french": "et", "german": "und", "italian": "e", "dutch": "en",
     }
+    one_words = {
+        "portuguese": "uma", "english": "one", "spanish": "una",
+        "french": "une", "german": "ein", "italian": "una", "dutch": "één",
+    }
 
     def replace(match: re.Match[str]) -> str:
         hour = int(match.group(1))
         minute = int(match.group(2))
-        hour_words = _number_to_words(hour, language)
-        unit = units.get(language, "")
+        hour_words = one_words.get(language, "um") if hour == 1 else _number_to_words(
+            hour, language
+        )
+        hour_unit = hour_units.get(language, ("", ""))[0 if hour == 1 else 1]
         if minute == 0:
-            return f"{hour_words} {unit}".strip()
-        minute_words = _number_to_words(minute, language)
-        if language == "german":
-            return f"{hour_words} {unit} {minute_words}"
+            return f"{hour_words} {hour_unit}".strip()
+
+        minute_words = (
+            one_words.get(language, "um")
+            if minute == 1
+            else _number_to_words(minute, language)
+        )
+        minute_unit = minute_units.get(language, ("", ""))[0 if minute == 1 else 1]
         conjunction = conjunctions.get(language, "e")
-        minute_unit = "minutos" if language == "portuguese" else ""
-        return f"{hour_words} {unit} {conjunction} {minute_words} {minute_unit}".strip()
+        return (
+            f"{hour_words} {hour_unit} {conjunction} {minute_words} {minute_unit}"
+        ).strip()
 
     return _TIME_PATTERN.sub(replace, text)
 
