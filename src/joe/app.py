@@ -355,7 +355,6 @@ class ClipboardAudioDialog(QDialog):
         self.playing_final_audio = False
         self.is_closing = False
         self.generation_started_at: float | None = None
-        self.performance_remote = False
         self.performance_timer = QTimer(self)
         self.performance_timer.setInterval(500)
         self.performance_timer.timeout.connect(self._update_performance_elapsed)
@@ -415,7 +414,6 @@ class ClipboardAudioDialog(QDialog):
 
     def start_measurement(self, remote: bool = False) -> None:
         """Inicia o cronômetro do desktop para a geração em blocos."""
-        self.performance_remote = remote
         self.generation_started_at = time.perf_counter()
         self.performance_label.setText(
             "Medição do Joe neste computador — "

@@ -17,7 +17,7 @@ def test_wav_duration_is_read_without_loading_audio_samples(tmp_path):
         audio_file.setnchannels(1)
         audio_file.setsampwidth(2)
         audio_file.setframerate(8000)
-        audio_file.writeframes(b"\\x00\\x00" * 8000)
+        audio_file.writeframes(b"\x00\x00" * 8000)
 
     assert wav_duration_seconds(audio_path) == 1.0
 
