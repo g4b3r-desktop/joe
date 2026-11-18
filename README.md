@@ -1,13 +1,48 @@
 # Joe — Audio Studio
 
-Aplicativo desktop local para **texto → áudio** e **áudio → texto**, com interface em português.
+Aplicativo desktop para **texto → áudio** e **áudio → texto**, com interface em português e dois modos de execução: **Local** ou **Google Colab (API remota)**.
 
 ## Modelos
 
 - **TTS — [Kyutai Pocket TTS](https://github.com/kyutai-labs/pocket-tts):** gera WAV localmente, roda na CPU e inclui suporte a português, espanhol, francês, italiano, alemão e neerlandês, além de inglês. Permite usar uma gravação própria como referência de voz.
 - **STT — [Moondream Parakeet Redux](https://huggingface.co/moondream/parakeet-redux):** transcrição local em 25 idiomas, com pesos compactados de aproximadamente 178 MB. Quando a implementação Photon compatível está disponível, ela é usada. Em CPUs sem AVX-512 VNNI, o app usa a implementação de referência Transformers; em FP32 ela pode expandir o uso de memória para cerca de 2,5 GB.
 
-Não há envio de áudio para serviços de nuvem. Na primeira execução, os pesos são baixados do Hugging Face e ficam no cache local para usos seguintes.
+No modo Local, o processamento ocorre no próprio computador. No modo Colab, texto e arquivos de áudio selecionados são enviados pela conexão HTTPS ao runtime temporário do Google Colab para inferência. Os pesos são baixados no ambiente em que o modelo estiver sendo executado e permanecem no cache daquele runtime enquanto ele existir.
+
+
+## Modo Google Colab (API remota)
+
+O Joe pode usar uma sessão do Google Colab como servidor de inferência, sem instalar os pesos dos modelos no computador desktop.
+
+1. Abra a aba **Google Colab / API** no Joe e clique em **Abrir notebook no Google Colab** (ou abra [o notebook diretamente](https://colab.research.google.com/github/g4b3r-desktop/joe/blob/feature/colab-model-api/colab/Joe_Colab_API.ipynb)).
+2. No Colab, selecione um runtime com GPU quando disponível e execute as células em sequência.
+3. A última célula inicia a API FastAPI e um Cloudflare Quick Tunnel temporário. Ela mostra uma URL HTTPS `trycloudflare.com` e um token Bearer aleatório.
+4. Cole a URL e o token na aba **Google Colab / API**, teste a conexão e selecione **Google Colab (API remota)** em Modo de execução.
+5. Use as abas **Texto → Áudio** e **Áudio → Texto** normalmente. Os resultados continuam sendo salvos/revisados no desktop.
+
+O notebook usa Pocket TTS na CPU e Parakeet Redux via Photon CUDA quando a GPU do runtime está disponível. Sem GPU, usa a implementação de referência Transformers em CPU, que pode ser consideravelmente mais lenta.
+
+### Endpoints
+
+A API autenticada oferece:
+
+| Método | Endpoint | Função |
+|---|---|---|
+| GET | `/health` | Estado da sessão, CUDA e modelos carregados |
+| POST | `/v1/tts` | Formulário multipart com `text`, `language` e `voice` opcional; retorna WAV |
+| POST | `/v1/transcribe` | Upload multipart `audio` e `timestamps` (`none`, `segment` ou `word`); retorna JSON |
+
+Todas as rotas exigem `Authorization: Bearer <token>`. A API não habilita páginas públicas Swagger/OpenAPI e limita uploads de áudio a 80 MB e texto a 20.000 caracteres.
+
+### Limitações e segurança
+
+- O Quick Tunnel é temporário e a URL muda ao reiniciar a sessão. O Colab pode desconectar o runtime por inatividade, limites de uso ou duração máxima; a disponibilidade de GPU não é garantida.
+- A URL e o token devem ser tratados como credenciais. Não publique a saída do notebook nem compartilhe o token. O Joe mantém o token apenas na memória durante a execução e grava somente a URL/modo nas configurações.
+- O modo Colab envia o texto e/ou o áudio para o runtime do Colab através do túnel HTTPS. Não use esse modo para conteúdo que não possa sair do computador.
+- Feche a sessão quando terminar. O notebook inclui uma célula para encerrar o servidor e o túnel.
+- O Quick Tunnel é voltado a desenvolvimento/uso pessoal temporário; não é um endpoint de produção com disponibilidade garantida.
+
+Consulte [as limitações oficiais do Colab](https://research.google.com/colaboratory/faq.html) e a [documentação de Cloudflare Quick Tunnels](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/do-more-with-tunnels/trycloudflare/).
 
 ## Hardware e compatibilidade
 
@@ -94,7 +129,7 @@ ruff check .
 
 ## Estado
 
-MVP inicial: interface desktop, geração WAV, transcrição de arquivo, cópia/salvamento de texto, exportação SRT quando o backend fornece timestamps e seleção automática de backend de ASR. Gravação direta do microfone, fila de tarefas e empacotamento AppImage/DEB ficam para etapas posteriores.
+MVP inicial: interface desktop, geração WAV, transcrição de arquivo, cópia/salvamento de texto, exportação SRT quando o backend fornece timestamps, seleção local CPU/CUDA e integração com API do Google Colab. Gravação direta do microfone, fila de tarefas e empacotamento AppImage/DEB ficam para etapas posteriores.
 
 ## Licenças dos modelos
 
