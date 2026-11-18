@@ -64,6 +64,11 @@ from joe.services.colab_api import ColabAPIClient
 from joe.services.parakeet import ParakeetReduxService
 from joe.services.pocket_tts import PocketTTSService
 from joe.text_normalization import normalize_text_for_tts
+from joe.voice_favorites import (
+    canonical_voice_path,
+    load_voice_favorites,
+    serialize_voice_favorites,
+)
 from joe.utils import build_srt, build_audio_output_path
 
 
@@ -407,6 +412,129 @@ class VoiceLibraryDialog(QDialog):
         super().reject()
 
 
+class FavoriteVoicesDialog(QDialog):
+    """Quick picker for saved voice favorites with one-click audio preview."""
+
+    def __init__(
+        self,
+        favorites: dict[str, str],
+        player: QMediaPlayer,
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self.player = player
+        self.selected_path: Path | None = None
+        self.setWindowTitle("Vozes favoritas")
+        self.resize(680, 440)
+
+        layout = QVBoxLayout(self)
+        description = QLabel(
+            "Clique em uma voz para ouvir. Dê duplo clique ou use "
+            "“Usar esta voz” para torná-la a voz padrão."
+        )
+        description.setWordWrap(True)
+        description.setObjectName("muted")
+        layout.addWidget(description)
+
+        self.files = QListWidget()
+        self.files.itemClicked.connect(self._preview_item)
+        self.files.currentItemChanged.connect(self._preview_selection_changed)
+        self.files.itemDoubleClicked.connect(lambda _item: self._accept_selection())
+        layout.addWidget(self.files, 1)
+
+        self.status = QLabel()
+        self.status.setObjectName("muted")
+        self.status.setWordWrap(True)
+        layout.addWidget(self.status)
+
+        actions = QHBoxLayout()
+        stop_button = QPushButton("Parar reprodução")
+        stop_button.clicked.connect(self.player.stop)
+        actions.addWidget(stop_button)
+        actions.addStretch(1)
+        layout.addLayout(actions)
+
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+        buttons.button(QDialogButtonBox.StandardButton.Ok).setText("Usar esta voz")
+        buttons.accepted.connect(self._accept_selection)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+        for raw_path, alias in sorted(
+            favorites.items(), key=lambda entry: entry[1].casefold()
+        ):
+            path = Path(raw_path)
+            label = f"★ {alias}  —  {path.name}"
+            if not path.is_file():
+                label += "  (arquivo não encontrado)"
+            item = QListWidgetItem(label)
+            item.setData(Qt.ItemDataRole.UserRole, str(path))
+            item.setToolTip(f"{alias}\n{path}")
+            self.files.addItem(item)
+
+        if favorites:
+            self.files.setCurrentRow(0)
+            self.status.setText(f"{len(favorites)} voz(es) favorita(s).")
+        else:
+            self.status.setText(
+                "Você ainda não adicionou vozes aos favoritos. "
+                "Use Configurações → Idioma e voz para adicionar a voz selecionada."
+            )
+
+    def _preview_selection_changed(self, current, _previous) -> None:
+        if current is not None:
+            self._preview_item(current)
+
+    def _preview_item(self, item) -> None:
+        if item is None:
+            return
+        path = Path(item.data(Qt.ItemDataRole.UserRole))
+        if not path.is_file():
+            self.player.stop()
+            self.player.setSource(QUrl())
+            self.status.setText(f"Arquivo não encontrado: {path}")
+            return
+        if path.suffix.lower() == ".safetensors":
+            self.player.stop()
+            self.player.setSource(QUrl())
+            self.status.setText(
+                "Estado .safetensors selecionado. Ele pode ser usado como voz, "
+                "mas não contém áudio para prévia."
+            )
+            return
+
+        source = QUrl.fromLocalFile(str(path.resolve()))
+        if (
+            self.player.source() == source
+            and self.player.playbackState() == QMediaPlayer.PlaybackState.PlayingState
+        ):
+            return
+        self.player.setSource(source)
+        self.player.play()
+        self.status.setText(f"Reproduzindo: {path.name}")
+
+    def _accept_selection(self) -> None:
+        item = self.files.currentItem()
+        if item is None:
+            self.status.setText("Selecione uma voz favorita.")
+            return
+        path = Path(item.data(Qt.ItemDataRole.UserRole))
+        if not path.is_file():
+            self.status.setText("O arquivo desta voz não foi encontrado.")
+            return
+        self.selected_path = path
+        self.player.stop()
+        self.player.setSource(QUrl())
+        self.accept()
+
+    def reject(self) -> None:
+        self.player.stop()
+        self.player.setSource(QUrl())
+        super().reject()
+
+
 class HotkeyBridge(QObject):
     activated = Signal()
     command_received = Signal(str)
@@ -732,12 +860,18 @@ class JoeWindow(QMainWindow):
         self.transcript_segments: list[dict] = []
         self.transcription_backend = ""
         self.pronunciation_dictionary = self._load_pronunciation_dictionary()
+        self.favorite_voices = load_voice_favorites(
+            self.app_settings.value("favorite_voices", "{}")
+        )
 
         self.player = QMediaPlayer(self)
         self.audio_output = QAudioOutput(self)
         self.player.setAudioOutput(self.audio_output)
 
         self._build_ui()
+        self.tts_favorites_button.setText(
+            f"★ Favoritos ({len(self.favorite_voices)})"
+        )
         self.tts_elapsed_timer = QTimer(self)
         self.tts_elapsed_timer.setInterval(500)
         self.tts_elapsed_timer.timeout.connect(self._update_tts_elapsed)
@@ -1011,6 +1145,12 @@ class JoeWindow(QMainWindow):
         self.tts_play_button.setEnabled(False)
         self.tts_play_button.clicked.connect(self._play_generated_audio)
 
+        self.tts_favorites_button = QPushButton("★ Favoritos")
+        self.tts_favorites_button.setToolTip(
+            "Escolher rapidamente uma voz salva nos favoritos"
+        )
+        self.tts_favorites_button.clicked.connect(self._open_favorite_voices)
+
         self.tts_settings_button = QPushButton("⚙ Configurações")
         self.tts_settings_button.setToolTip(
             "Idioma, voz, pronúncia, pasta de saída e opções do atalho"
@@ -1020,6 +1160,7 @@ class JoeWindow(QMainWindow):
         action_row = QHBoxLayout()
         action_row.addWidget(self.tts_generate_button)
         action_row.addWidget(self.tts_play_button)
+        action_row.addWidget(self.tts_favorites_button)
         action_row.addStretch(1)
         action_row.addWidget(self.tts_settings_button)
 
@@ -1116,6 +1257,7 @@ class JoeWindow(QMainWindow):
         self.voice_path.textChanged.connect(
             lambda value: self._save_text_setting("voice_path", value)
         )
+        self.voice_path.textChanged.connect(self._sync_favorite_editor)
 
         self.voice_library_directory = QLineEdit(
             str(self.app_settings.value("voice_library_directory", ""))
@@ -1160,6 +1302,33 @@ class JoeWindow(QMainWindow):
         voice_form.addRow("Pasta da biblioteca", library_row)
         voice_form.addRow("Voz padrão / referência", voice_row)
         dialog_layout.addWidget(voice_group)
+
+        favorite_group = QGroupBox("Favoritos")
+        favorite_layout = QFormLayout(favorite_group)
+        self.favorite_voice_alias = QLineEdit()
+        self.favorite_voice_alias.setPlaceholderText(
+            "Ex.: Narradora, Voz grave, Personagem principal…"
+        )
+        self.favorite_voice_alias.setToolTip(
+            "Apelido usado para localizar esta voz no botão Favoritos da tela principal."
+        )
+        favorite_layout.addRow("Apelido da voz selecionada", self.favorite_voice_alias)
+
+        favorite_actions = QHBoxLayout()
+        self.favorite_voice_save_button = QPushButton("Adicionar aos favoritos")
+        self.favorite_voice_save_button.clicked.connect(
+            self._save_current_voice_favorite
+        )
+        self.favorite_voice_remove_button = QPushButton("Remover dos favoritos")
+        self.favorite_voice_remove_button.clicked.connect(
+            self._remove_current_voice_favorite
+        )
+        favorite_actions.addWidget(self.favorite_voice_save_button)
+        favorite_actions.addWidget(self.favorite_voice_remove_button)
+        favorite_actions.addStretch(1)
+        favorite_layout.addRow("", favorite_actions)
+        dialog_layout.addWidget(favorite_group)
+        self._sync_favorite_editor()
 
         # Output folder and clipboard shortcut settings.
         default_output_dir = QStandardPaths.writableLocation(
@@ -1221,6 +1390,90 @@ class JoeWindow(QMainWindow):
         close_button.clicked.connect(dialog.accept)
         footer.addWidget(close_button)
         dialog_layout.addLayout(footer)
+
+    def _load_favorite_voices(self) -> dict[str, str]:
+        """Reload the saved voice favorites from QSettings."""
+        return load_voice_favorites(self.app_settings.value("favorite_voices", "{}"))
+
+    def _save_favorite_voices(self) -> None:
+        self.app_settings.setValue(
+            "favorite_voices",
+            serialize_voice_favorites(self.favorite_voices),
+        )
+        self.app_settings.sync()
+        self.tts_favorites_button.setText(
+            f"★ Favoritos ({len(self.favorite_voices)})"
+        )
+
+    def _sync_favorite_editor(self, *_args) -> None:
+        if not hasattr(self, "favorite_voice_alias"):
+            return
+        current_path = self.voice_path.text().strip()
+        key = canonical_voice_path(current_path) if current_path else ""
+        alias = self.favorite_voices.get(key, "")
+        self.favorite_voice_alias.blockSignals(True)
+        self.favorite_voice_alias.setText(alias)
+        self.favorite_voice_alias.blockSignals(False)
+        is_favorite = bool(key and key in self.favorite_voices)
+        self.favorite_voice_save_button.setText(
+            "Atualizar favorito" if is_favorite else "Adicionar aos favoritos"
+        )
+        self.favorite_voice_remove_button.setEnabled(is_favorite)
+
+    def _save_current_voice_favorite(self) -> None:
+        raw_path = self.voice_path.text().strip()
+        if not raw_path:
+            QMessageBox.information(
+                self,
+                "Nenhuma voz selecionada",
+                "Escolha uma voz na Biblioteca antes de adicioná-la aos favoritos.",
+            )
+            return
+
+        path = Path(raw_path).expanduser()
+        if not path.is_file():
+            QMessageBox.warning(
+                self,
+                "Arquivo de voz não encontrado",
+                f"Não foi possível localizar o arquivo:\n{path}",
+            )
+            return
+
+        key = canonical_voice_path(path)
+        alias = self.favorite_voice_alias.text().strip() or path.stem
+        self.favorite_voices[key] = alias
+        self._save_favorite_voices()
+        self._sync_favorite_editor()
+        self.statusBar().showMessage(
+            f"Voz “{alias}” adicionada aos favoritos.", 5000
+        )
+
+    def _remove_current_voice_favorite(self) -> None:
+        raw_path = self.voice_path.text().strip()
+        key = canonical_voice_path(raw_path) if raw_path else ""
+        alias = self.favorite_voices.pop(key, None)
+        if alias is None:
+            return
+        self._save_favorite_voices()
+        self._sync_favorite_editor()
+        self.statusBar().showMessage(f"Voz “{alias}” removida dos favoritos.", 4000)
+
+    def _open_favorite_voices(self) -> None:
+        self.favorite_voices = self._load_favorite_voices()
+        self.tts_favorites_button.setText(
+            f"★ Favoritos ({len(self.favorite_voices)})"
+        )
+        dialog = FavoriteVoicesDialog(self.favorite_voices, self.player, self)
+        if (
+            dialog.exec() == QDialog.DialogCode.Accepted
+            and dialog.selected_path is not None
+        ):
+            self.voice_path.setText(str(dialog.selected_path))
+            self._sync_favorite_editor()
+            self.statusBar().showMessage(
+                f"Voz favorita selecionada: {self.favorite_voices.get(canonical_voice_path(dialog.selected_path), dialog.selected_path.stem)}",
+                5000,
+            )
 
     def _open_tts_settings(self) -> None:
         """Show one reusable, non-modal TTS settings popup."""
@@ -2287,6 +2540,7 @@ class JoeWindow(QMainWindow):
         for widget in (
             self.tts_generate_button,
             self.tts_play_button,
+            self.tts_favorites_button,
             self.tts_settings_button,
             self.tts_language,
             self.clipboard_chunk_size,
@@ -2296,6 +2550,9 @@ class JoeWindow(QMainWindow):
             self.voice_library_directory,
             self.voice_library_button,
             self.voice_prepare_button,
+            self.favorite_voice_alias,
+            self.favorite_voice_save_button,
+            self.favorite_voice_remove_button,
             self.tts_output_directory,
             self.tts_browse_output_button,
             self.tts_auto_filename,
