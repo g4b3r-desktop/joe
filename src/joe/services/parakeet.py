@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import logging
 import platform
 import sys
 from pathlib import Path
 from typing import Any
 
 MODEL_ID = "moondream/parakeet-redux"
+logger = logging.getLogger(__name__)
 
 
 def photon_cpu_supported() -> bool:
@@ -66,13 +68,16 @@ class ParakeetReduxService:
             self._backend = "Photon"
             self._backend_note = "Backend otimizado Photon"
             return True
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             self._backend_note = f"Photon indisponível; usando Transformers ({exc})"
             if self._photon_context is not None:
                 try:
                     self._photon_context.__exit__(None, None, None)
-                except Exception:
-                    pass
+                except Exception as cleanup_error:  # noqa: BLE001
+                    logger.warning(
+                        "Falha ao fechar Photon após erro de carregamento: %s",
+                        cleanup_error,
+                    )
             self._photon_context = None
             self._speech = None
             return False
@@ -165,9 +170,10 @@ class ParakeetReduxService:
 
     @staticmethod
     def _read_audio_16khz(path: Path):
+        from math import gcd
+
         import numpy as np
         import soundfile as sf
-        from math import gcd
         from scipy.signal import resample_poly
 
         samples, sample_rate = sf.read(path, dtype="float32", always_2d=False)
@@ -224,8 +230,8 @@ class ParakeetReduxService:
         if self._photon_context is not None:
             try:
                 self._photon_context.__exit__(None, None, None)
-            except Exception:
-                pass
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Falha ao fechar o backend Photon: %s", exc)
         self._photon_context = None
         self._speech = None
         self._model = None
