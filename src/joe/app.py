@@ -5,8 +5,8 @@ import traceback
 from pathlib import Path
 from typing import Callable
 
-from PySide6.QtCore import QObject, QRunnable, QThreadPool, QUrl, Signal
-from PySide6.QtGui import QAction
+from PySide6.QtCore import QObject, QRunnable, QSettings, QThreadPool, QUrl, Signal
+from PySide6.QtGui import QAction, QDesktopServices
 from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
 from PySide6.QtWidgets import (
     QApplication,
@@ -27,6 +27,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from joe.services.colab_api import ColabAPIClient
 from joe.services.parakeet import ParakeetReduxService
 from joe.services.pocket_tts import PocketTTSService
 from joe.utils import build_srt
@@ -62,6 +63,7 @@ class JoeWindow(QMainWindow):
 
         self.tts = PocketTTSService()
         self.asr = ParakeetReduxService()
+        self.app_settings = QSettings("g4b3r-desktop", "JoeAudioStudio")
         self.thread_pool = QThreadPool(self)
         self.thread_pool.setMaxThreadCount(1)
         self.active_worker: FunctionWorker | None = None
@@ -82,6 +84,7 @@ class JoeWindow(QMainWindow):
         tabs = QTabWidget()
         tabs.addTab(self._build_tts_tab(), "Texto → Áudio")
         tabs.addTab(self._build_asr_tab(), "Áudio → Texto")
+        tabs.addTab(self._build_colab_tab(), "Google Colab / API")
         self.setCentralWidget(tabs)
 
         bar = QStatusBar()
@@ -98,6 +101,118 @@ class JoeWindow(QMainWindow):
         about_action = QAction("Sobre o Joe", self)
         about_action.triggered.connect(self._show_about)
         help_menu.addAction(about_action)
+
+    def _build_colab_tab(self) -> QWidget:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(24, 22, 24, 22)
+        layout.setSpacing(14)
+
+        title = QLabel("Onde executar os modelos?")
+        title.setObjectName("pageTitle")
+        description = QLabel(
+            "Escolha processamento local ou use uma sessão do Google Colab como servidor remoto."
+        )
+        description.setObjectName("muted")
+        description.setWordWrap(True)
+
+        self.processing_mode = QComboBox()
+        self.processing_mode.addItem("Neste computador (Local)", "local")
+        self.processing_mode.addItem("Google Colab (API remota)", "colab")
+        saved_mode = str(self.app_settings.value("processing_mode", "local"))
+        mode_index = self.processing_mode.findData(saved_mode)
+        self.processing_mode.setCurrentIndex(max(0, mode_index))
+        self.processing_mode.currentIndexChanged.connect(self._save_colab_settings)
+
+        self.colab_url = QLineEdit(str(self.app_settings.value("colab_url", "")))
+        self.colab_url.setPlaceholderText("https://seu-tunel.trycloudflare.com")
+
+        self.colab_token = QLineEdit()
+        self.colab_token.setEchoMode(QLineEdit.EchoMode.Password)
+        self.colab_token.setPlaceholderText("Cole o token gerado pelo notebook")
+
+        form = QFormLayout()
+        form.addRow("Modo de execução", self.processing_mode)
+        form.addRow("URL da API", self.colab_url)
+        form.addRow("Token de acesso", self.colab_token)
+
+        self.colab_test_button = QPushButton("Testar conexão com o Colab")
+        self.colab_test_button.setObjectName("primaryButton")
+        self.colab_test_button.clicked.connect(self._test_colab_connection)
+
+        self.colab_open_button = QPushButton("Abrir notebook no Google Colab")
+        self.colab_open_button.clicked.connect(self._open_colab_notebook)
+
+        self.colab_info = QLabel(
+            "1. Abra o notebook no Google Colab e execute as células.\\n"
+            "2. Copie a URL trycloudflare.com e o token exibidos no final.\\n"
+            "3. Cole os dois campos acima, teste a conexão e selecione Google Colab no modo.\\n\\n"
+            "A URL e o token não são iguais: a URL muda quando o túnel é reiniciado. "
+            "O token fica apenas na memória do Joe e não é gravado nas configurações."
+        )
+        self.colab_info.setObjectName("muted")
+        self.colab_info.setWordWrap(True)
+
+        self.colab_url.editingFinished.connect(self._save_colab_settings)
+
+        buttons = QHBoxLayout()
+        buttons.addWidget(self.colab_test_button)
+        buttons.addWidget(self.colab_open_button)
+        buttons.addStretch(1)
+
+        layout.addWidget(title)
+        layout.addWidget(description)
+        layout.addLayout(form)
+        layout.addLayout(buttons)
+        layout.addWidget(self.colab_info)
+        layout.addStretch(1)
+
+        self._update_mode_widgets()
+        return page
+
+    def _save_colab_settings(self, *_args) -> None:
+        if hasattr(self, "processing_mode"):
+            self.app_settings.setValue("processing_mode", self.processing_mode.currentData())
+        if hasattr(self, "colab_url"):
+            self.app_settings.setValue("colab_url", self.colab_url.text().strip())
+        self._update_mode_widgets()
+
+    def _update_mode_widgets(self) -> None:
+        if hasattr(self, "asr_device") and hasattr(self, "processing_mode"):
+            self.asr_device.setEnabled(self.processing_mode.currentData() == "local")
+
+    def _colab_client(self) -> ColabAPIClient:
+        return ColabAPIClient(self.colab_url.text(), self.colab_token.text())
+
+    def _test_colab_connection(self) -> None:
+        try:
+            client = self._colab_client()
+        except ValueError as exc:
+            QMessageBox.information(self, "Configuração incompleta", str(exc))
+            return
+        self._run_task(
+            "Testando conexão com a API do Colab…",
+            client.test_connection,
+            self._colab_connection_finished,
+        )
+
+    def _colab_connection_finished(self, result: object) -> None:
+        data = result if isinstance(result, dict) else {}
+        gpu = data.get("gpu_name") or ("CUDA disponível" if data.get("cuda_available") else "CPU")
+        self.colab_info.setText(
+            f"Conexão confirmada. Servidor: {data.get('service', 'Joe Colab API')}\\n"
+            f"ASR: {data.get('asr', 'Parakeet Redux')}\\n"
+            f"GPU: {gpu}\\n"
+            f"Parakeet carregado: {'sim' if data.get('asr_loaded') else 'ainda não'}"
+        )
+        self.statusBar().showMessage("API do Google Colab conectada.", 5000)
+
+    def _open_colab_notebook(self) -> None:
+        url = (
+            "https://colab.research.google.com/github/g4b3r-desktop/joe/"
+            "blob/feature/colab-model-api/colab/Joe_Colab_API.ipynb"
+        )
+        QDesktopServices.openUrl(QUrl(url))
 
     def _build_tts_tab(self) -> QWidget:
         page = QWidget()
@@ -374,11 +489,26 @@ class JoeWindow(QMainWindow):
 
         language = str(self.tts_language.currentData())
         voice = self.voice_path.text().strip() or None
-        self._run_task(
-            "Gerando áudio com Pocket TTS…",
-            lambda: self.tts.generate(text, language, output, voice),
-            self._audio_generated,
-        )
+        if self.processing_mode.currentData() == "colab":
+            try:
+                remote = self._colab_client()
+            except ValueError as exc:
+                QMessageBox.information(self, "Configure a API do Colab", str(exc))
+                return
+
+            def generate_remote() -> Path:
+                audio_data = remote.generate_audio(text, language, voice)
+                destination = Path(output)
+                destination.write_bytes(audio_data)
+                return destination
+
+            task = generate_remote
+            status = "Gerando áudio no Google Colab…"
+        else:
+            task = lambda: self.tts.generate(text, language, output, voice)
+            status = "Gerando áudio com Pocket TTS local…"
+
+        self._run_task(status, task, self._audio_generated)
 
     def _audio_generated(self, result: object) -> None:
         self.generated_audio = Path(result)
@@ -401,12 +531,24 @@ class JoeWindow(QMainWindow):
             return
 
         want_timestamps = self.timestamps_check.isChecked()
-        device_preference = str(self.asr_device.currentData())
-        self._run_task(
-            "Carregando Parakeet Redux e transcrevendo…",
-            lambda: self.asr.transcribe(source, want_timestamps, device_preference),
-            self._transcription_finished,
-        )
+        if self.processing_mode.currentData() == "colab":
+            try:
+                remote = self._colab_client()
+            except ValueError as exc:
+                QMessageBox.information(self, "Configure a API do Colab", str(exc))
+                return
+            self._run_task(
+                "Enviando áudio para o Google Colab e transcrevendo…",
+                lambda: remote.transcribe(source, want_timestamps),
+                self._transcription_finished,
+            )
+        else:
+            device_preference = str(self.asr_device.currentData())
+            self._run_task(
+                "Carregando Parakeet Redux e transcrevendo localmente…",
+                lambda: self.asr.transcribe(source, want_timestamps, device_preference),
+                self._transcription_finished,
+            )
 
     def _transcription_finished(self, result: object) -> None:
         data = result if isinstance(result, dict) else {}
@@ -424,6 +566,8 @@ class JoeWindow(QMainWindow):
         self.transcript.setPlainText(visible_text)
         self.transcription_backend = str(data.get("backend", "Parakeet Redux"))
         note = str(data.get("note", ""))
+        if data.get("device"):
+            note = (note + f" Dispositivo: {data.get('device')}.").strip()
         if self.timestamps_check.isChecked() and not self.transcript_segments:
             note += " Os tempos de segmento não foram retornados por este backend."
         self.save_srt_button.setEnabled(bool(self.transcript_segments))
@@ -533,12 +677,14 @@ class JoeWindow(QMainWindow):
             self.asr_button,
             self.asr_device,
             self.timestamps_check,
+            self.colab_test_button if hasattr(self, "colab_test_button") else self.tts_generate_button,
         ):
             widget.setEnabled(not busy)
         if busy:
             self.tts_play_button.setEnabled(False)
         elif self.generated_audio and self.generated_audio.is_file():
             self.tts_play_button.setEnabled(True)
+        self._update_mode_widgets()
         self.status_label.setText(message)
         self.statusBar().showMessage(message)
 
