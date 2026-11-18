@@ -682,6 +682,7 @@ class ClipboardAudioDialog(QDialog):
     """Compact playback window for chunked clipboard audio."""
 
     closed = Signal()
+    audio_saved = Signal(str, object)
 
     def __init__(
         self,
@@ -703,6 +704,8 @@ class ClipboardAudioDialog(QDialog):
         self.playing_final_audio = False
         self.is_closing = False
         self.generation_started_at: float | None = None
+        self.performance: AudioPerformance | None = None
+        self.history_context: dict = {}
         self.performance_timer = QTimer(self)
         self.performance_timer.setInterval(500)
         self.performance_timer.timeout.connect(self._update_performance_elapsed)
@@ -757,6 +760,21 @@ class ClipboardAudioDialog(QDialog):
 
         self.player.mediaStatusChanged.connect(self._on_media_status_changed)
 
+    def set_history_context(
+        self,
+        *,
+        text: str,
+        voice_path: str | None,
+        voice_alias: str,
+        backend: str,
+    ) -> None:
+        self.history_context = {
+            "text": text,
+            "voice_path": voice_path,
+            "voice_alias": voice_alias,
+            "backend": backend,
+        }
+
     def set_text_preview(self, text: str) -> None:
         compact = " ".join(text.split())
         if len(compact) > 260:
@@ -804,6 +822,9 @@ class ClipboardAudioDialog(QDialog):
         self.audio_path = Path(result["path"])
         self.generation_finished = True
         performance = result.get("performance")
+        self.performance = (
+            performance if isinstance(performance, AudioPerformance) else None
+        )
         if isinstance(performance, AudioPerformance):
             self.performance_label.setText(format_performance_report(performance))
         else:
@@ -939,6 +960,10 @@ class ClipboardAudioDialog(QDialog):
             QMessageBox.critical(self, "Erro ao salvar áudio", str(exc))
             return
         self.status_label.setText(f"Cópia salva em:\n{destination}")
+        self.audio_saved.emit(str(destination), {
+            **self.history_context,
+            "performance": self.performance,
+        })
 
     def closeEvent(self, event) -> None:
         self.is_closing = True
@@ -1156,6 +1181,46 @@ class JoeWindow(QMainWindow):
         if value >= 1024:
             return f"{value / 1024:.1f} KB"
         return f"{value} B"
+
+    def _clipboard_audio_saved(self, audio_path: str, context: object) -> None:
+        path = Path(audio_path).expanduser()
+        details = context if isinstance(context, dict) else {}
+        performance = details.get("performance")
+        elapsed = (
+            performance.elapsed_seconds
+            if isinstance(performance, AudioPerformance)
+            else 0.0
+        )
+        character_count = (
+            performance.character_count
+            if isinstance(performance, AudioPerformance)
+            else 0
+        )
+        try:
+            self.history_store.add(
+                path,
+                voice_path=details.get("voice_path"),
+                voice_alias=details.get("voice_alias", ""),
+                backend=details.get("backend", ""),
+                elapsed_seconds=elapsed,
+                chars_per_second=(character_count / elapsed) if elapsed > 0 else 0.0,
+                text=(
+                    details.get("text")
+                    if self.history_save_text.isChecked()
+                    else None
+                ),
+            )
+            self.generated_audio = path
+            self.tts_play_button.setEnabled(True)
+            self.audio_player.set_audio_path(path)
+            self.tts_info.setText(f"Áudio do atalho salvo em: {path}")
+            self._refresh_audio_history()
+            self.statusBar().showMessage("Áudio do atalho adicionado ao histórico.", 5000)
+        except Exception as exc:  # noqa: BLE001
+            self.statusBar().showMessage(
+                f"Áudio salvo, mas não foi possível registrá-lo no histórico: {exc}",
+                8000,
+            )
 
     def _refresh_audio_history(self, *_args) -> None:
         if not hasattr(self, "history_table"):
@@ -2581,6 +2646,14 @@ class JoeWindow(QMainWindow):
         )
         dialog.temp_dir = temp_dir
         dialog.set_text_preview(copied_text)
+        voice_key = canonical_voice_path(voice) if voice else ""
+        dialog.set_history_context(
+            text=copied_text,
+            voice_path=voice,
+            voice_alias=self.favorite_voices.get(voice_key, ""),
+            backend="Google Colab" if remote is not None else "Local",
+        )
+        dialog.audio_saved.connect(self._clipboard_audio_saved)
         dialog.start_measurement(remote=remote is not None)
         dialog.closed.connect(lambda: self._clipboard_dialog_closed(dialog))
         self.clipboard_audio_window = dialog
