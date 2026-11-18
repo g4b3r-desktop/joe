@@ -105,6 +105,17 @@ python -m pip install torch --index-url https://download.pytorch.org/whl/cu132
 
 ## Uso
 
+### Áudio rápido do texto copiado
+
+1. Copie qualquer texto no sistema, em um navegador, editor ou outro aplicativo.
+2. Pressione **Ctrl+Shift+Espaço**. O Joe captura o clipboard e começa a gerar o áudio automaticamente, sem precisar colar o texto na aba Texto → Áudio.
+3. Uma pequena janela do Joe aparece enquanto o áudio é gerado. Quando terminar, use **Reproduzir**, **Pausar** ou **Salvar áudio…**.
+4. Ao fechar essa janela, o WAV temporário é apagado. Quando você usa **Salvar áudio…**, uma cópia permanente fica no local escolhido.
+
+Esse atalho usa o idioma, a voz, a normalização, o dicionário de pronúncia e o modo Local/Google Colab já selecionados no Joe. O texto do clipboard só é lido quando o atalho é acionado. Também existe a ação **Arquivo → Gerar áudio do texto copiado** como alternativa.
+
+O atalho global usa pynput. Em sessões Linux X11 (como a sessão Xfce padrão do Linux Mint) ele pode capturar teclas fora da janela do Joe. Em Wayland, o ambiente gráfico pode bloquear a captura global; nesse caso, use a ação pelo menu Arquivo.
+
 ### Salvamento automático de rascunhos e campos
 O Joe grava automaticamente, enquanto você digita ou altera os campos, os textos do Texto → Áudio, a transcrição e sua edição, os caminhos de arquivos, a pasta de saída, idioma, dispositivo, opções, URL e token do Colab e a última aba aberta. Esses dados são restaurados ao iniciar o aplicativo, mesmo que você não tenha gerado áudio ou iniciado uma transcrição. O token do Colab é armazenado nas configurações locais do usuário sem criptografia; proteja o arquivo de configuração e sua conta do sistema.
 
