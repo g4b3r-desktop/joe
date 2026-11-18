@@ -37,6 +37,7 @@ class ParakeetReduxService:
         self._model: Any = None
         self._processor: Any = None
         self._device = "cpu"
+        self._loaded_preference: str | None = None
         self._backend_note = ""
 
     @property
@@ -76,7 +77,7 @@ class ParakeetReduxService:
             self._speech = None
             return False
 
-    def _load_transformers(self) -> None:
+    def _load_transformers(self, prefer_cuda: bool = False) -> None:
         try:
             import torch
             from transformers import AutoModel, AutoProcessor
@@ -98,7 +99,11 @@ class ParakeetReduxService:
             trust_remote_code=True,
         )
 
-        device = "cuda" if torch.cuda.is_available() else "cpu"
+        device = "cuda" if prefer_cuda and torch.cuda.is_available() else "cpu"
+        if prefer_cuda and device == "cpu":
+            self._backend_note = (
+                "CUDA foi solicitada, mas torch.cuda.is_available() é falso; fallback para CPU."
+            )
         dtype = torch.float16 if device == "cuda" else torch.float32
         try:
             model = AutoModel.from_pretrained(
@@ -112,7 +117,10 @@ class ParakeetReduxService:
                 raise
             # A CUDA build may be installed on a machine with insufficient VRAM
             # or an incompatible driver. Retry on CPU instead of failing outright.
-            del model
+            try:
+                del model
+            except UnboundLocalError:
+                pass
             torch.cuda.empty_cache()
             self._backend_note = f"CUDA indisponível ({exc}); fallback para CPU."
             model = AutoModel.from_pretrained(
@@ -133,18 +141,27 @@ class ParakeetReduxService:
         else:
             self._backend_note += " — modo de referência ativo."
 
-    def _ensure_loaded(self) -> None:
+    def _ensure_loaded(self, device_preference: str) -> None:
+        if device_preference not in {"cpu", "cuda"}:
+            raise ValueError("Dispositivo inválido. Escolha cpu ou cuda.")
+        if self._backend is not None and self._loaded_preference != device_preference:
+            self.close()
         if self._backend is not None:
             return
         try:
             import moondream  # noqa: F401
         except ImportError as exc:
             raise RuntimeError(
-                "Pacote Moondream ausente. Execute ./scripts/install-linux.sh."
+                "Pacote Moondream ausente. Execute bash scripts/install-linux.sh."
             ) from exc
 
-        if not self._load_photon():
-            self._load_transformers()
+        # CPU mode can use Photon on supported CPUs. CUDA mode uses the
+        # documented Transformers reference path on the NVIDIA GPU.
+        if device_preference == "cpu" and self._load_photon():
+            self._loaded_preference = device_preference
+            return
+        self._load_transformers(prefer_cuda=(device_preference == "cuda"))
+        self._loaded_preference = device_preference
 
     @staticmethod
     def _read_audio_16khz(path: Path):
@@ -170,12 +187,13 @@ class ParakeetReduxService:
         self,
         audio_path: str | Path,
         timestamps: bool = False,
+        device_preference: str = "cpu",
     ) -> dict[str, Any]:
         source = Path(audio_path).expanduser()
         if not source.is_file():
             raise FileNotFoundError(f"Arquivo de áudio não encontrado: {source}")
 
-        self._ensure_loaded()
+        self._ensure_loaded(device_preference)
 
         if self._backend == "Photon":
             options: dict[str, Any] = {}
@@ -213,3 +231,4 @@ class ParakeetReduxService:
         self._model = None
         self._processor = None
         self._backend = None
+        self._loaded_preference = None
