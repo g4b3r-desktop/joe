@@ -380,7 +380,7 @@ class JoeWindow(QMainWindow):
     def _play_generated_audio(self) -> None:
         if not self.generated_audio or not self.generated_audio.is_file():
             return
-        if self.player.source().isValid() and self.player.playbackState() == QMediaPlayer.PlayingState:
+        if self.player.source().isValid() and self.player.playbackState() == QMediaPlayer.PlaybackState.PlayingState:
             self.player.stop()
             return
         self.player.setSource(QUrl.fromLocalFile(str(self.generated_audio.resolve())))
