@@ -69,10 +69,11 @@ from joe.voice_favorites import (
     load_voice_favorites,
     serialize_voice_favorites,
 )
-from joe.utils import build_srt, build_audio_output_path
+from joe.utils import build_srt, build_vtt, build_audio_output_path
 from joe.tts_queue import TTSJobQueue, TTSQueueEntry
 from joe.audio_history import AudioHistoryStore
 from joe.audio_player import AudioPlayerWidget
+from joe.voice_profiles import load_voice_profiles, serialize_voice_profiles
 
 
 class WorkerSignals(QObject):
@@ -1033,6 +1034,9 @@ class JoeWindow(QMainWindow):
         self.favorite_voices = load_voice_favorites(
             self.app_settings.value("favorite_voices", "{}")
         )
+        self.voice_profiles = load_voice_profiles(
+            self.app_settings.value("voice_profiles", "{}")
+        )
 
         self.player = QMediaPlayer(self)
         self.audio_output = QAudioOutput(self)
@@ -1771,6 +1775,33 @@ class JoeWindow(QMainWindow):
         dialog_layout.addWidget(favorite_group)
         self._sync_favorite_editor()
 
+        profile_group = QGroupBox("Perfis de voz")
+        profile_form = QFormLayout(profile_group)
+        self.voice_profile_selector = QComboBox()
+        self.voice_profile_selector.currentTextChanged.connect(
+            self._voice_profile_selected
+        )
+        self.voice_profile_name = QLineEdit()
+        self.voice_profile_name.setPlaceholderText(
+            "Ex.: Narrador, Documentário, Personagem…"
+        )
+        profile_form.addRow("Perfil salvo", self.voice_profile_selector)
+        profile_form.addRow("Nome do perfil", self.voice_profile_name)
+
+        profile_actions = QHBoxLayout()
+        self.voice_profile_save_button = QPushButton("Salvar / atualizar")
+        self.voice_profile_save_button.clicked.connect(self._save_voice_profile)
+        self.voice_profile_apply_button = QPushButton("Aplicar perfil")
+        self.voice_profile_apply_button.clicked.connect(self._apply_voice_profile)
+        self.voice_profile_remove_button = QPushButton("Excluir perfil")
+        self.voice_profile_remove_button.clicked.connect(self._remove_voice_profile)
+        profile_actions.addWidget(self.voice_profile_save_button)
+        profile_actions.addWidget(self.voice_profile_apply_button)
+        profile_actions.addWidget(self.voice_profile_remove_button)
+        profile_form.addRow("", profile_actions)
+        dialog_layout.addWidget(profile_group)
+        self._refresh_voice_profile_selector()
+
         # Output folder and clipboard shortcut settings.
         default_output_dir = QStandardPaths.writableLocation(
             QStandardPaths.StandardLocation.MusicLocation
@@ -1856,6 +1887,98 @@ class JoeWindow(QMainWindow):
         self.tts_favorites_button.setText(
             f"★ Favoritos ({len(self.favorite_voices)})"
         )
+
+    def _refresh_voice_profile_selector(self, selected_name: str = "") -> None:
+        if not hasattr(self, "voice_profile_selector"):
+            return
+        combo = self.voice_profile_selector
+        combo.blockSignals(True)
+        combo.clear()
+        combo.addItems(sorted(self.voice_profiles, key=str.casefold))
+        if selected_name and combo.findText(selected_name) >= 0:
+            combo.setCurrentText(selected_name)
+        combo.blockSignals(False)
+        if selected_name:
+            self.voice_profile_name.setText(selected_name)
+        self.voice_profile_apply_button.setEnabled(combo.count() > 0)
+        self.voice_profile_remove_button.setEnabled(combo.count() > 0)
+
+    def _voice_profile_selected(self, name: str) -> None:
+        if name:
+            self.voice_profile_name.setText(name)
+
+    def _save_voice_profile(self) -> None:
+        name = self.voice_profile_name.text().strip()
+        if not name:
+            QMessageBox.information(
+                self, "Nome do perfil", "Digite um nome para salvar este perfil."
+            )
+            return
+        raw_voice = self.voice_path.text().strip()
+        voice_key = canonical_voice_path(raw_voice) if raw_voice else ""
+        self.voice_profiles[name] = {
+            "voice_path": raw_voice,
+            "voice_alias": self.favorite_voices.get(voice_key, ""),
+            "language": str(self.tts_language.currentData()),
+            "normalize_text": self.tts_normalization_enabled.isChecked(),
+            "pronunciation_dictionary": dict(self.pronunciation_dictionary),
+        }
+        self.app_settings.setValue(
+            "voice_profiles", serialize_voice_profiles(self.voice_profiles)
+        )
+        self.app_settings.sync()
+        self._refresh_voice_profile_selector(name)
+        self.statusBar().showMessage(f"Perfil “{name}” salvo.", 5000)
+
+    def _apply_voice_profile(self) -> None:
+        name = self.voice_profile_selector.currentText()
+        profile = self.voice_profiles.get(name)
+        if profile is None:
+            QMessageBox.information(
+                self, "Perfil não selecionado", "Escolha um perfil salvo."
+            )
+            return
+        voice_path = str(profile.get("voice_path", ""))
+        if voice_path and not Path(voice_path).is_file():
+            QMessageBox.warning(
+                self,
+                "Arquivo da voz não encontrado",
+                "O perfil será aplicado, mas a voz salva não está acessível. "
+                f"Confira o caminho nas configurações:\\n{voice_path}",
+            )
+        self.voice_path.setText(voice_path)
+        language_index = self.tts_language.findData(profile.get("language", "portuguese"))
+        self.tts_language.setCurrentIndex(max(0, language_index))
+        self.tts_normalization_enabled.setChecked(
+            bool(profile.get("normalize_text", True))
+        )
+        self._save_pronunciation_dictionary(
+            profile.get("pronunciation_dictionary", {})
+        )
+        self._sync_favorite_editor()
+        self.statusBar().showMessage(f"Perfil “{name}” aplicado.", 5000)
+
+    def _remove_voice_profile(self) -> None:
+        name = self.voice_profile_selector.currentText()
+        if name not in self.voice_profiles:
+            return
+        answer = QMessageBox.question(
+            self,
+            "Excluir perfil",
+            f"Excluir o perfil “{name}”? Os arquivos de voz e favoritos não serão removidos.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        self.voice_profiles.pop(name, None)
+        self.app_settings.setValue(
+            "voice_profiles", serialize_voice_profiles(self.voice_profiles)
+        )
+        self.app_settings.sync()
+        self.voice_profile_name.clear()
+        self._refresh_voice_profile_selector()
+        self.statusBar().showMessage(f"Perfil “{name}” removido.", 4000)
 
     def _sync_favorite_editor(self, *_args) -> None:
         if not hasattr(self, "favorite_voice_alias"):
@@ -2006,6 +2129,9 @@ class JoeWindow(QMainWindow):
         self.save_srt_button = QPushButton("Exportar SRT…")
         self.save_srt_button.clicked.connect(self._save_srt)
         self.save_srt_button.setEnabled(False)
+        self.save_vtt_button = QPushButton("Exportar VTT…")
+        self.save_vtt_button.clicked.connect(self._save_vtt)
+        self.save_vtt_button.setEnabled(False)
 
         buttons = QHBoxLayout()
         buttons.addWidget(self.asr_button)
@@ -2013,6 +2139,7 @@ class JoeWindow(QMainWindow):
         buttons.addWidget(self.copy_button)
         buttons.addWidget(self.save_txt_button)
         buttons.addWidget(self.save_srt_button)
+        buttons.addWidget(self.save_vtt_button)
 
         self.asr_info = QLabel(
             "O áudio é processado neste computador. A primeira transcrição baixa os pesos "
@@ -2453,6 +2580,7 @@ class JoeWindow(QMainWindow):
             self.transcript.clear()
             self.transcript_segments = []
             self.save_srt_button.setEnabled(False)
+            self.save_vtt_button.setEnabled(False)
 
     @staticmethod
     def _xfce_hotkey_property() -> str:
@@ -3061,6 +3189,7 @@ class JoeWindow(QMainWindow):
         if self.timestamps_check.isChecked() and not self.transcript_segments:
             note += " Os tempos de segmento não foram retornados por este backend."
         self.save_srt_button.setEnabled(bool(self.transcript_segments))
+        self.save_vtt_button.setEnabled(bool(self.transcript_segments))
         self.asr_info.setText(f"{self.transcription_backend} — {note}".strip(" —"))
 
     def _copy_transcript(self) -> None:
@@ -3133,6 +3262,49 @@ class JoeWindow(QMainWindow):
             QMessageBox.critical(self, "Erro ao exportar SRT", str(exc))
             return
         self.statusBar().showMessage(f"Legendas salvas: {path}", 5000)
+
+    def _save_vtt(self) -> None:
+        if not self.transcript_segments:
+            QMessageBox.information(
+                self,
+                "Tempos indisponíveis",
+                "Este backend não retornou segmentos com marcações de tempo.",
+            )
+            return
+        path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Exportar legendas WebVTT",
+            str(Path.home() / "transcricao.vtt"),
+            "WebVTT (*.vtt)",
+        )
+        if not path:
+            return
+        if not path.lower().endswith(".vtt"):
+            path += ".vtt"
+
+        edited_lines = [
+            line.strip()
+            for line in self.transcript.toPlainText().splitlines()
+            if line.strip()
+        ]
+        if len(edited_lines) != len(self.transcript_segments):
+            QMessageBox.information(
+                self,
+                "Revise os segmentos",
+                "Para exportar o texto editado, mantenha uma linha para cada segmento "
+                "com tempo. Não adicione nem remova linhas.",
+            )
+            return
+        edited_segments = [
+            {**segment, "text": edited_lines[index]}
+            for index, segment in enumerate(self.transcript_segments)
+        ]
+        try:
+            Path(path).write_text(build_vtt(edited_segments), encoding="utf-8")
+        except (OSError, TypeError, ValueError) as exc:
+            QMessageBox.critical(self, "Erro ao exportar VTT", str(exc))
+            return
+        self.statusBar().showMessage(f"Legendas WebVTT salvas: {path}", 5000)
 
     def _run_task(
         self,

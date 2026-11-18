@@ -25,10 +25,10 @@ A fila será mantida em memória nesta fase; fechar o Joe exige confirmação e 
 
 ## Fase 3 — Perfis de voz e transcrição avançada
 
-- Perfis que agrupam voz, apelido, idioma e opções de pronúncia.
-- Editor de transcrição sincronizado com o áudio.
-- Exportação VTT e melhorias em legendas.
-- Avaliar diarização e timestamps por palavra de acordo com o suporte real dos modelos.
+- [x] Perfis que agrupam voz, apelido, idioma, normalização e dicionário de pronúncia.
+- [x] Exportação WebVTT quando o backend retorna segmentos com timestamps.
+- [ ] Editor de transcrição sincronizado com o áudio e navegação por segmento.
+- [ ] Avaliar diarização e timestamps por palavra de acordo com o suporte real dos modelos.
 
 ## Fase 4 — Distribuição e endurecimento
 

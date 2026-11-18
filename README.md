@@ -166,6 +166,12 @@ O Joe grava automaticamente, enquanto você digita ou altera os campos, os texto
 ### Histórico
 A aba **Histórico** mantém um índice SQLite no armazenamento de dados do usuário. Cada registro guarda caminho, data, duração, tamanho, voz, backend e métricas de geração. Pesquise por nome do arquivo, voz ou backend, reproduza o WAV, abra a pasta ou remova o registro. **Remover do histórico não apaga o áudio**; a ação **Excluir WAV…** pede confirmação e só então apaga o arquivo. O texto original não é armazenado por padrão. Para ativar esse armazenamento, use Configurações → Arquivos e atalho → Guardar também o texto original no histórico. A aba Texto → Áudio também inclui um player compartilhado com o atalho, com forma de onda, busca, volume e velocidades de 0,75× a 2×; volume e velocidade são lembrados entre sessões.
 
+### Perfis de voz
+Em Configurações → Perfis de voz, salve uma combinação de voz, idioma, normalização e dicionário de pronúncia. Dê um nome ao perfil e use **Aplicar perfil** para restaurar todas essas opções de uma vez. Excluir um perfil remove apenas sua configuração; os arquivos de voz e favoritos ficam preservados.
+
+### Exportação WebVTT
+Na aba Áudio → Texto, quando o backend retorna segmentos com timestamps, você pode exportar SRT e WebVTT. A edição da transcrição continua usando uma linha para cada segmento temporizado; o Joe mantém os tempos originais e substitui apenas o texto editado.
+
 ### Áudio → Texto
 1. Selecione um arquivo de áudio.
 2. Opcionalmente, habilite marcações de tempo por segmento.

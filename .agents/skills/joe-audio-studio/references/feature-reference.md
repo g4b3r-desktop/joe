@@ -32,6 +32,13 @@ O texto original não deve ser alterado pela normalização. A geração deve us
 - A persistência dos favoritos fica separada em `src/joe/voice_favorites.py`; mantenha caminhos estáveis e ignore dados corrompidos sem derrubar o app.
 - Preparar uma gravação de referência com Pocket TTS exporta um arquivo `.safetensors`. Ele pode ser carregado como estado local; não é reproduzível como áudio.
 
+## Perfis de voz e legendas
+
+- Perfis de voz ficam em QSettings por meio de `voice_profiles.py` e agrupam caminho de voz, apelido, idioma, normalização e dicionário de pronúncia.
+- Um perfil não copia nem altera arquivos de voz/favoritos; excluir perfil remove somente seus metadados.
+- SRT e WebVTT usam os timestamps realmente retornados pelo backend. O botão VTT permanece desabilitado quando não existem segmentos temporizados.
+- Ao exportar transcrições editadas, manter uma linha não vazia por segmento; o app aplica as linhas editadas aos timestamps existentes em vez de inventar sincronização.
+
 ## Histórico e player
 
 - Os WAVs TTS gerados manualmente são indexados localmente em SQLite por `audio_history.py`.
