@@ -9,7 +9,6 @@ import sys
 import tempfile
 import time
 import traceback
-import wave
 from collections.abc import Callable
 from pathlib import Path
 
@@ -52,6 +51,13 @@ from PySide6.QtWidgets import (
 )
 
 from joe.audio_chunks import merge_wav_files, split_text_into_chunks
+from joe.audio_performance import (
+    AudioPerformance,
+    format_duration,
+    format_elapsed_status,
+    format_performance_report,
+    wav_duration_seconds,
+)
 from joe.local_ipc import LocalCommandServer, send_local_command
 from joe.services.colab_api import ColabAPIClient
 from joe.services.parakeet import ParakeetReduxService
@@ -90,9 +96,16 @@ class ChunkWorkerSignals(QObject):
 
 
 class ClipboardChunkWorker(QRunnable):
-    """Generate independent speech chunks and assemble one final WAV."""
+    """Gera blocos de fala, mede o tempo no desktop e une o WAV final."""
 
-    def __init__(self, chunks, generator, output_directory: Path, final_path: Path):
+    def __init__(
+        self,
+        chunks,
+        generator,
+        output_directory: Path,
+        final_path: Path,
+        remote: bool = False,
+    ):
         super().__init__()
         import threading
 
@@ -100,6 +113,7 @@ class ClipboardChunkWorker(QRunnable):
         self.generator = generator
         self.output_directory = output_directory
         self.final_path = final_path
+        self.remote = remote
         self.cancel_event = threading.Event()
         self.signals = ChunkWorkerSignals()
 
@@ -107,8 +121,10 @@ class ClipboardChunkWorker(QRunnable):
         self.cancel_event.set()
 
     def run(self) -> None:
+        started_at = time.perf_counter()
         generated: list[Path] = []
         total = len(self.chunks)
+
         try:
             for index, text in enumerate(self.chunks, start=1):
                 if self.cancel_event.is_set():
@@ -117,31 +133,12 @@ class ClipboardChunkWorker(QRunnable):
 
                 destination = self.output_directory / f"part_{index:03d}.wav"
                 self.signals.progress.emit(f"Gerando trecho {index} de {total}…")
-                last_error = None
-                for attempt in range(2):
-                    try:
-                        if destination.exists():
-                            destination.unlink()
-                        result = Path(self.generator(text, destination))
-                        if not result.is_file() or result.stat().st_size == 0:
-                            raise RuntimeError("O serviço TTS não produziu um WAV válido.")
-                        last_error = None
-                        break
-                    except Exception as exc:  # noqa: BLE001
-                        last_error = exc
-                        if attempt == 0:
-                            self.signals.progress.emit(
-                                f"Trecho {index}: falha temporária; tentando novamente…"
-                            )
-                if last_error is not None:
-                    raise RuntimeError(
-                        f"Falha no trecho {index} de {total} após duas tentativas: "
-                        f"{last_error}"
-                    ) from last_error
+                result = self._generate_chunk(index, total, text, destination)
 
                 if self.cancel_event.is_set():
                     self.signals.cancelled.emit()
                     return
+
                 generated.append(result)
                 self.signals.chunk_ready.emit(index, str(result), total)
 
@@ -151,9 +148,46 @@ class ClipboardChunkWorker(QRunnable):
 
             self.signals.progress.emit("Unindo os trechos em um único WAV…")
             merged = merge_wav_files(generated, self.final_path)
-            self.signals.finished.emit(merged)
+            performance = AudioPerformance(
+                elapsed_seconds=max(time.perf_counter() - started_at, 0.000001),
+                audio_duration_seconds=wav_duration_seconds(merged),
+                character_count=sum(len(chunk) for chunk in self.chunks),
+                remote=self.remote,
+            )
+            self.signals.finished.emit(
+                {"path": str(merged), "performance": performance}
+            )
         except Exception as exc:  # noqa: BLE001
             self.signals.failed.emit(str(exc))
+
+    def _generate_chunk(
+        self,
+        index: int,
+        total: int,
+        text: str,
+        destination: Path,
+    ) -> Path:
+        """Tenta cada bloco duas vezes antes de interromper a tarefa."""
+        last_error = None
+
+        for attempt in range(2):
+            try:
+                if destination.exists():
+                    destination.unlink()
+                result = Path(self.generator(text, destination))
+                if not result.is_file() or result.stat().st_size == 0:
+                    raise RuntimeError("O serviço TTS não produziu um WAV válido.")
+                return result
+            except Exception as exc:  # noqa: BLE001
+                last_error = exc
+                if attempt == 0:
+                    self.signals.progress.emit(
+                        f"Trecho {index}: falha temporária; tentando novamente…"
+                    )
+
+        raise RuntimeError(
+            f"Falha no trecho {index} de {total} após duas tentativas: {last_error}"
+        ) from last_error
 
 
 class VoiceLibraryDialog(QDialog):
@@ -320,11 +354,16 @@ class ClipboardAudioDialog(QDialog):
         self.waiting_for_chunk = False
         self.playing_final_audio = False
         self.is_closing = False
+        self.generation_started_at: float | None = None
+        self.performance_remote = False
+        self.performance_timer = QTimer(self)
+        self.performance_timer.setInterval(500)
+        self.performance_timer.timeout.connect(self._update_performance_elapsed)
 
         self.setWindowTitle("Joe — Texto copiado para áudio")
         self.setWindowFlags(self.windowFlags() | Qt.WindowType.Tool)
         self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
-        self.resize(460, 270)
+        self.resize(480, 330)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(18, 16, 18, 16)
@@ -338,6 +377,13 @@ class ClipboardAudioDialog(QDialog):
         self.status_label = QLabel("Preparando trechos de áudio…")
         self.status_label.setWordWrap(True)
         layout.addWidget(self.status_label)
+
+        self.performance_label = QLabel(
+            "Medição de velocidade feita pelo Joe aparecerá aqui."
+        )
+        self.performance_label.setObjectName("muted")
+        self.performance_label.setWordWrap(True)
+        layout.addWidget(self.performance_label)
 
         buttons = QHBoxLayout()
         self.play_button = QPushButton("Reproduzir")
@@ -367,6 +413,26 @@ class ClipboardAudioDialog(QDialog):
             compact = compact[:257].rstrip() + "…"
         self.preview_label.setText(compact)
 
+    def start_measurement(self, remote: bool = False) -> None:
+        """Inicia o cronômetro do desktop para a geração em blocos."""
+        self.performance_remote = remote
+        self.generation_started_at = time.perf_counter()
+        self.performance_label.setText(
+            "Medição do Joe neste computador — "
+            f"{format_elapsed_status(0)}"
+        )
+        self.performance_timer.start()
+
+    def _update_performance_elapsed(self) -> None:
+        if self.generation_started_at is None:
+            self.performance_timer.stop()
+            return
+        elapsed = time.perf_counter() - self.generation_started_at
+        self.performance_label.setText(
+            "Medição do Joe neste computador — "
+            f"{format_elapsed_status(elapsed)}"
+        )
+
     def set_progress(self, message: str) -> None:
         if not self.is_closing:
             self.status_label.setText(message)
@@ -383,9 +449,18 @@ class ClipboardAudioDialog(QDialog):
         if self.waiting_for_chunk and self.play_requested:
             self._play_next_chunk()
 
-    def set_ready(self, audio_path: Path) -> None:
-        self.audio_path = audio_path
+    def set_ready(self, result: dict) -> None:
+        self.performance_timer.stop()
+        self.generation_started_at = None
+        self.audio_path = Path(result["path"])
         self.generation_finished = True
+        performance = result.get("performance")
+        if isinstance(performance, AudioPerformance):
+            self.performance_label.setText(format_performance_report(performance))
+        else:
+            self.performance_label.setText(
+                "Áudio pronto; não foi possível calcular todas as métricas."
+            )
         self.play_button.setEnabled(bool(self.chunk_paths))
         self.save_button.setEnabled(True)
         if not self.play_requested:
@@ -396,6 +471,11 @@ class ClipboardAudioDialog(QDialog):
             self._play_next_chunk()
 
     def set_failed(self, message: str) -> None:
+        self.performance_timer.stop()
+        self.generation_started_at = None
+        self.performance_label.setText(
+            "Medição interrompida porque a geração não foi concluída."
+        )
         self.generation_finished = True
         self.status_label.setText(
             f"Falha ao gerar o áudio completo: {message}. "
@@ -513,6 +593,8 @@ class ClipboardAudioDialog(QDialog):
 
     def closeEvent(self, event) -> None:
         self.is_closing = True
+        self.performance_timer.stop()
+        self.generation_started_at = None
         self.play_requested = False
         current_source = self.player.source().toLocalFile()
         chunk_sources = {str(path.resolve()) for path in self.chunk_paths}
@@ -989,8 +1071,8 @@ class JoeWindow(QMainWindow):
         self.tts_info.setWordWrap(True)
 
         self.tts_speed_info = QLabel(
-            "Velocidade de geração: ainda não há uma medição. "
-            "Após gerar, serão exibidos tempo, duração do áudio e velocidade efetiva."
+            "A medição é feita pelo Joe neste computador. "
+            "Após gerar, serão exibidos tempo total, duração do WAV e velocidade efetiva."
         )
         self.tts_speed_info.setObjectName("muted")
         self.tts_speed_info.setWordWrap(True)
@@ -1002,6 +1084,7 @@ class JoeWindow(QMainWindow):
         layout.addLayout(options)
         layout.addLayout(action_row)
         layout.addWidget(self.tts_info)
+        layout.addWidget(self.tts_speed_info)
         return page
 
     def _build_asr_tab(self) -> QWidget:
@@ -1703,6 +1786,7 @@ class JoeWindow(QMainWindow):
         )
         dialog.temp_dir = temp_dir
         dialog.set_text_preview(copied_text)
+        dialog.start_measurement(remote=remote is not None)
         dialog.closed.connect(lambda: self._clipboard_dialog_closed(dialog))
         self.clipboard_audio_window = dialog
         self.clipboard_temp_dir = temp_dir
@@ -1711,7 +1795,11 @@ class JoeWindow(QMainWindow):
         dialog.activateWindow()
 
         worker = ClipboardChunkWorker(
-            chunks, generate_clipboard_chunk, temp_dir, destination
+            chunks,
+            generate_clipboard_chunk,
+            temp_dir,
+            destination,
+            remote=remote is not None,
         )
         self.clipboard_generation_worker = worker
 
@@ -1736,7 +1824,9 @@ class JoeWindow(QMainWindow):
             if dialog.is_closing:
                 cleanup_closed_dialog()
                 return
-            dialog.set_ready(Path(result))
+            dialog.set_ready(
+                result if isinstance(result, dict) else {"path": str(result)}
+            )
             self.statusBar().showMessage("Áudio do clipboard gerado e unido.", 5000)
 
         def failed(message: str) -> None:
@@ -1824,59 +1914,33 @@ class JoeWindow(QMainWindow):
                 destination.write_bytes(audio_data)
                 return destination
 
-            status = "Gerando áudio no Google Colab…"
-            backend = "Google Colab (inclui envio e espera pela API)"
+            status = "Gerando áudio pela API remota…"
+            is_remote = True
         else:
             def generate_audio() -> Path:
                 return self.tts.generate(speech_text, language, str(destination), voice)
 
             status = "Gerando áudio com Pocket TTS local…"
-            backend = "Pocket TTS local (inclui carregamento do modelo, se necessário)"
+            is_remote = False
 
         def generate_with_metrics() -> dict:
-            started = time.perf_counter()
-            output_path = generate_audio()
-            elapsed = max(time.perf_counter() - started, 0.000001)
-            audio_duration = self._wav_duration_seconds(Path(output_path))
-            return {
-                "path": str(output_path),
-                "elapsed": elapsed,
-                "audio_duration": audio_duration,
-                "characters": len(speech_text),
-                "backend": backend,
-            }
+            started_at = time.perf_counter()
+            output_path = Path(generate_audio())
+            performance = AudioPerformance(
+                elapsed_seconds=max(time.perf_counter() - started_at, 0.000001),
+                audio_duration_seconds=wav_duration_seconds(output_path),
+                character_count=len(speech_text),
+                remote=is_remote,
+            )
+            return {"path": str(output_path), "performance": performance}
 
         self.tts_generation_started_at = time.monotonic()
-        self.tts_speed_info.setText("Gerando áudio… tempo decorrido: 00:00")
+        self.tts_speed_info.setText(
+            "Medição do Joe neste computador — "
+            f"{format_elapsed_status(0)}"
+        )
         self.tts_elapsed_timer.start()
         self._run_task(status, generate_with_metrics, self._audio_generated)
-
-    @staticmethod
-    def _wav_duration_seconds(path: Path) -> float:
-        """Read WAV duration without loading all audio samples into memory."""
-        try:
-            with wave.open(str(path), "rb") as audio_file:
-                rate = audio_file.getframerate()
-                return audio_file.getnframes() / rate if rate else 0.0
-        except (OSError, EOFError, wave.Error):
-            try:
-                import soundfile as sf
-                return float(sf.info(str(path)).duration)
-            except Exception:  # noqa: BLE001
-                return 0.0
-
-    @staticmethod
-    def _format_duration(seconds: float) -> str:
-        value = max(0.0, float(seconds))
-        hours = int(value // 3600)
-        minutes = int((value % 3600) // 60)
-        if hours:
-            secs = value % 60
-            return f"{hours:02d}:{minutes:02d}:{secs:04.1f}"
-        if minutes:
-            secs = value % 60
-            return f"{minutes:02d}:{secs:04.1f}"
-        return f"{value:.1f}s".replace(".", ",")
 
     def _update_tts_elapsed(self) -> None:
         if self.tts_generation_started_at is None:
@@ -1884,41 +1948,25 @@ class JoeWindow(QMainWindow):
             return
         elapsed = time.monotonic() - self.tts_generation_started_at
         self.tts_speed_info.setText(
-            "Gerando áudio… tempo decorrido: "
-            f"{self._format_duration(elapsed)}"
+            "Medição do Joe neste computador — "
+            f"{format_elapsed_status(elapsed)}"
         )
 
     def _audio_generated(self, result: object) -> None:
         self.tts_elapsed_timer.stop()
         self.tts_generation_started_at = None
+
         metrics = result if isinstance(result, dict) else {}
-        audio_path = metrics.get("path", result)
-        self.generated_audio = Path(audio_path)
+        self.generated_audio = Path(metrics.get("path", result))
         self.tts_play_button.setEnabled(True)
         self.tts_info.setText(f"Áudio salvo em: {self.generated_audio}")
 
-        elapsed = float(metrics.get("elapsed", 0.0) or 0.0)
-        audio_duration = float(metrics.get("audio_duration", 0.0) or 0.0)
-        characters = int(metrics.get("characters", 0) or 0)
-        backend = str(metrics.get("backend", "TTS"))
-        if elapsed > 0 and audio_duration > 0:
-            realtime_speed = audio_duration / elapsed
-            chars_per_second = characters / elapsed if characters else 0.0
-            speed_text = f"{realtime_speed:.2f}× tempo real".replace(".", ",")
-            chars_text = f"{chars_per_second:.1f}".replace(".", ",")
-            self.tts_speed_info.setText(
-                f"Desempenho — {backend}\n"
-                f"Tempo de geração: {self._format_duration(elapsed)}  •  "
-                f"Duração do áudio: {self._format_duration(audio_duration)}\n"
-                f"Velocidade efetiva: {speed_text}  •  "
-                f"Texto processado: {chars_text} caracteres/s\n"
-                "Acima de 1× significa que o áudio foi gerado mais rápido do que sua reprodução."
-            )
+        performance = metrics.get("performance")
+        if isinstance(performance, AudioPerformance):
+            self.tts_speed_info.setText(format_performance_report(performance))
         else:
             self.tts_speed_info.setText(
-                f"Desempenho — {backend}\n"
-                f"Tempo de geração: {self._format_duration(elapsed)}. "
-                "Não foi possível ler a duração do WAV para calcular a velocidade."
+                "Áudio gerado, mas não foi possível calcular as métricas de desempenho."
             )
 
     def _play_generated_audio(self) -> None:
@@ -2070,7 +2118,9 @@ class JoeWindow(QMainWindow):
             if self.tts_generation_started_at is not None:
                 self.tts_elapsed_timer.stop()
                 self.tts_generation_started_at = None
-                self.tts_speed_info.setText("Falha ao gerar o áudio. Consulte os detalhes do erro.")
+                self.tts_speed_info.setText(
+                    "Geração interrompida. Consulte os detalhes do erro."
+                )
             self._set_busy(False, "Falha")
             QMessageBox.critical(self, "Falha no processamento", message)
 
