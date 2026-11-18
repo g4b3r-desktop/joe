@@ -191,12 +191,11 @@ def _numeric_words(raw: str, language: str) -> str:
 def _replace_dates(text: str, language: str) -> str:
     months = _MONTHS.get(language, _MONTHS["portuguese"])
 
-    def replace(match: re.Match[str]) -> str:
-        day, month, year = (int(part) for part in match.groups())
+    def format_date(day: int, month: int, year: int) -> str | None:
         try:
             date(year, month, day)
         except ValueError:
-            return match.group(0)
+            return None
 
         day_words = _number_to_words(day, language)
         year_words = _number_to_words(year, language)
@@ -212,12 +211,15 @@ def _replace_dates(text: str, language: str) -> str:
             return f"{day_words} {month_name} {year_words}"
         return f"{day_words} de {month_name} de {year_words}"
 
-    text = _DATE_PATTERN.sub(replace, text)
+    def replace_dmy(match: re.Match[str]) -> str:
+        day, month, year = (int(part) for part in match.groups())
+        return format_date(day, month, year) or match.group(0)
 
     def replace_iso(match: re.Match[str]) -> str:
         year, month, day = (int(part) for part in match.groups())
-        return replace(type("DateMatch", (), {"groups": lambda self: (str(day), str(month), str(year)), "group": lambda self, index: match.group(index)})())
+        return format_date(day, month, year) or match.group(0)
 
+    text = _DATE_PATTERN.sub(replace_dmy, text)
     return _ISO_DATE_PATTERN.sub(replace_iso, text)
 
 
