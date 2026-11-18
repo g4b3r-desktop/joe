@@ -237,11 +237,10 @@ class VoiceLibraryDialog(QDialog):
         layout.addLayout(filters)
 
         self.files = QListWidget()
-        self.files.itemClicked.connect(lambda _item: self._preview())
         self.files.itemDoubleClicked.connect(lambda _item: self._accept_selection())
         self.files.setToolTip(
-            "Clique uma vez em um áudio para ouvir. Dê duplo clique ou use "
-            "“Usar esta voz” para selecionar a voz."
+            "Clique em um áudio ou navegue com as setas ↑/↓ para ouvir. "
+            "Dê duplo clique ou use “Usar esta voz” para selecionar a voz."
         )
         layout.addWidget(self.files, 1)
         self.status = QLabel("Procurando arquivos nas subpastas…")
@@ -261,6 +260,9 @@ class VoiceLibraryDialog(QDialog):
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
         self._scan()
+        # A conexão vem depois do scan para não tocar automaticamente a seleção restaurada.
+        self.files.itemClicked.connect(self._preview_item)
+        self.files.currentItemChanged.connect(self._preview_selection_changed)
 
     def _scan(self) -> None:
         found = []
@@ -350,18 +352,44 @@ class VoiceLibraryDialog(QDialog):
             return None
         return Path(item.data(Qt.ItemDataRole.UserRole))
 
-    def _preview(self) -> None:
-        path = self._current_path()
-        if path is None:
-            self.status.setText("Selecione um arquivo primeiro.")
-        elif path.suffix.lower() == ".safetensors":
+    def _preview_selection_changed(self, current, _previous) -> None:
+        """Preview audio whenever keyboard navigation changes the selected item."""
+        if current is not None and not current.isHidden():
+            self._preview_item(current)
+
+    def _preview_item(self, item) -> None:
+        """Play an audio item selected by mouse or keyboard, without restarting it twice."""
+        if item is None or item.isHidden():
+            return
+
+        path = Path(item.data(Qt.ItemDataRole.UserRole))
+        if path.suffix.lower() == ".safetensors":
+            self.player.stop()
+            self.player.setSource(QUrl())
             self.status.setText(
-                "Este é um estado de voz, não uma gravação. Selecione WAV/MP3 para ouvir."
+                "Este é um estado de voz, não uma gravação. Selecione um arquivo de áudio."
             )
-        else:
-            self.player.setSource(QUrl.fromLocalFile(str(path.resolve())))
-            self.player.play()
+            return
+
+        source = QUrl.fromLocalFile(str(path.resolve()))
+        if (
+            self.player.source() == source
+            and self.player.playbackState() == QMediaPlayer.PlaybackState.PlayingState
+        ):
             self.status.setText(f"Reproduzindo: {path.name}")
+            return
+
+        self.player.setSource(source)
+        self.player.play()
+        self.status.setText(f"Reproduzindo: {path.name}")
+
+    def _preview(self) -> None:
+        """Keep the explicit preview action compatible with existing callers."""
+        item = self.files.currentItem()
+        if item is None:
+            self.status.setText("Selecione um arquivo primeiro.")
+            return
+        self._preview_item(item)
 
     def _accept_selection(self) -> None:
         path = self._current_path()
