@@ -1342,6 +1342,7 @@ class JoeWindow(QMainWindow):
         dialog.setWindowTitle("Configurações — Texto para áudio")
         dialog.resize(760, 760)
         self.tts_settings_dialog = dialog
+
         dialog_layout = QVBoxLayout(dialog)
         dialog_layout.setContentsMargins(22, 20, 22, 18)
         dialog_layout.setSpacing(14)
@@ -1941,7 +1942,8 @@ class JoeWindow(QMainWindow):
         layout.addWidget(table, 1)
 
         actions = QHBoxLayout()
-        add_button = QPushButton("Adicionar")        edit_button = QPushButton("Editar")
+        add_button = QPushButton("Adicionar")
+        edit_button = QPushButton("Editar")
         remove_button = QPushButton("Remover")
         actions.addWidget(add_button)
         actions.addWidget(edit_button)
