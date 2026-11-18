@@ -6,7 +6,7 @@ Este diretório contém o backend executado dentro de uma sessão Google Colab.
 
 - Joe_Colab_API.ipynb: notebook de instalação, inicialização e publicação do túnel temporário.
 - api_server.py: API FastAPI com autenticação Bearer e inferência Pocket TTS / Parakeet Redux.
-- requirements.txt: dependências Python do runtime.
+- requirements.txt: dependências Python do runtime, incluindo o extra `quantize` do Pocket TTS.
 
 ## Teste local do servidor (desenvolvimento)
 
@@ -36,5 +36,7 @@ Authorization: Bearer <JOE_API_TOKEN>
 Todas as rotas são autenticadas. A inferência roda em um worker sequencial e suporta até duas tarefas ativas (uma em execução e uma aguardando). O cliente usa polling para evitar manter chamadas abertas durante o tempo de inferência e contornar o limite de leitura de resposta do túnel Cloudflare. Os resultados expiram em 30 minutos se não forem retirados. Swagger, ReDoc e OpenAPI foram desativados.
 
 ## Segurança operacional
+
+O pacote `pocket-tts[quantize]` instala o backend de quantização utilizado por `TTSModel.load_model(quantize=True)`. O notebook instala esse extra a partir de `requirements.txt` antes de iniciar a API.
 
 O notebook cria um token aleatório novo a cada sessão. Não grave o token em células, arquivos do repositório, variáveis persistentes do Drive ou screenshots compartilhados. A URL do Quick Tunnel também é temporária. O serviço aceita uploads até 80 MB e texto até 20 mil caracteres. O túnel público é para desenvolvimento/uso pessoal; não é uma implantação de produção.
