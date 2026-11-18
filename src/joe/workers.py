@@ -46,13 +46,57 @@ class FunctionWorker(QRunnable):
                 self.signals.cancelled.emit()
                 return
             details = traceback.format_exc()
-            self.signals.failed.emit(f"{exc}\\n\\n{details}")
+            self.signals.failed.emit(str(exc) + chr(10) * 2 + details)
             return
 
         if self.cancel_requested:
             self.signals.cancelled.emit()
         else:
             self.signals.finished.emit(result)
+
+
+class TTSQueueWorkerSignals(QObject):
+    progress = Signal(int, int, str, str)
+    item_completed = Signal(object)
+    item_failed = Signal(str, str)
+    finished = Signal()
+    cancelled = Signal()
+
+
+class TTSQueueWorker(QRunnable):
+    """Run queued TTS jobs sequentially; a failed item does not block the rest."""
+
+    def __init__(self, items, generator: Callable[[dict], dict]) -> None:
+        super().__init__()
+        self.items = [dict(item) for item in items]
+        self.generator = generator
+        self.cancel_token = CancellationToken()
+        self.signals = TTSQueueWorkerSignals()
+
+    def cancel(self) -> None:
+        self.cancel_token.request()
+
+    def run(self) -> None:
+        total = len(self.items)
+        for index, item in enumerate(self.items, start=1):
+            if self.cancel_token.is_requested:
+                self.signals.cancelled.emit()
+                return
+            item_id = str(item.get("id", ""))
+            title = str(item.get("title", "Tarefa"))
+            self.signals.progress.emit(index, total, item_id, title)
+            try:
+                result = self.generator(item)
+            except Exception as exc:  # noqa: BLE001
+                self.signals.item_failed.emit(item_id, str(exc))
+                continue
+            result["item_id"] = item_id
+            self.signals.item_completed.emit(result)
+
+        if self.cancel_token.is_requested:
+            self.signals.cancelled.emit()
+        else:
+            self.signals.finished.emit()
 
 
 class ChunkWorkerSignals(QObject):

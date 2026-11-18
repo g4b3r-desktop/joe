@@ -8,6 +8,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from uuid import uuid4
 from collections.abc import Callable
 from pathlib import Path
 
@@ -63,13 +64,22 @@ from joe.services.colab_api import ColabAPIClient
 from joe.services.parakeet import ParakeetReduxService
 from joe.services.pocket_tts import PocketTTSService
 from joe.text_normalization import normalize_text_for_tts
+from joe.tts_queue import (
+    FAILED_STATUS,
+    PENDING_STATUS,
+    RUNNING_STATUS,
+    pending_queue_items,
+    queue_status_counts,
+    remove_queue_item,
+    update_queue_item,
+)
 from joe.voice_favorites import (
     canonical_voice_path,
     load_voice_favorites,
     serialize_voice_favorites,
 )
 from joe.utils import build_srt, build_audio_output_path
-from joe.workers import ClipboardChunkWorker, FunctionWorker
+from joe.workers import ClipboardChunkWorker, FunctionWorker, TTSQueueWorker
 from joe.audio_history import (
     add_audio_history_entry,
     load_audio_history,
@@ -77,6 +87,7 @@ from joe.audio_history import (
     serialize_audio_history,
 )
 from joe.ui.audio_history_dialog import AudioHistoryDialog
+from joe.ui.tts_queue_dialog import TTSQueueDialog
 
 
 class VoiceLibraryDialog(QDialog):
@@ -753,6 +764,9 @@ class JoeWindow(QMainWindow):
             self.app_settings.value("audio_history", "[]")
         )
         self.pending_audio_history: dict[str, str] = {}
+        self.tts_queue: list[dict] = []
+        self.tts_queue_worker: TTSQueueWorker | None = None
+        self.tts_queue_dialog: TTSQueueDialog | None = None
 
         self.player = QMediaPlayer(self)
         self.audio_output = QAudioOutput(self)
@@ -1053,6 +1067,12 @@ class JoeWindow(QMainWindow):
         self.tts_history_button.setToolTip("Consultar áudios gerados anteriormente")
         self.tts_history_button.clicked.connect(self._open_audio_history)
 
+        self.tts_queue_add_button = QPushButton("Adicionar à fila")
+        self.tts_queue_add_button.clicked.connect(self._enqueue_tts_text)
+        self.tts_queue_button = QPushButton("Fila (0)")
+        self.tts_queue_button.setToolTip("Ver, reordenar e processar textos em sequência")
+        self.tts_queue_button.clicked.connect(self._open_tts_queue)
+
         self.tts_settings_button = QPushButton("⚙ Configurações")
         self.tts_settings_button.setToolTip(
             "Idioma, voz, pronúncia, pasta de saída e opções do atalho"
@@ -1064,6 +1084,8 @@ class JoeWindow(QMainWindow):
         action_row.addWidget(self.tts_play_button)
         action_row.addWidget(self.tts_favorites_button)
         action_row.addWidget(self.tts_history_button)
+        action_row.addWidget(self.tts_queue_add_button)
+        action_row.addWidget(self.tts_queue_button)
         action_row.addStretch(1)
         action_row.addWidget(self.tts_settings_button)
 
@@ -1370,7 +1392,7 @@ class JoeWindow(QMainWindow):
         if not path.is_file():
             return
         voice_path = metadata.get("voice_path", "")
-        voice_alias = self.favorite_voices.get(canonical_voice_path(voice_path), "")
+        voice_alias = metadata.get("voice_alias") or self.favorite_voices.get(canonical_voice_path(voice_path), "")
         entry = make_audio_history_entry(
             path,
             duration_seconds=(
@@ -2096,9 +2118,9 @@ class JoeWindow(QMainWindow):
             )
             return
 
-        if self.active_worker is not None:
+        if self.active_worker is not None or self.tts_queue_worker is not None:
             self.statusBar().showMessage(
-                "Aguarde a tarefa atual terminar antes de gerar outro áudio.", 5000
+                "Aguarde a tarefa atual ou a fila terminar antes de gerar outro áudio.", 5000
             )
             if self.clipboard_only_mode:
                 QTimer.singleShot(0, QApplication.quit)
@@ -2255,6 +2277,255 @@ class JoeWindow(QMainWindow):
         worker.signals.failed.connect(failed)
         worker.signals.cancelled.connect(cancelled)
         self.thread_pool.start(worker)
+
+    def _enqueue_tts_text(self) -> None:
+        original_text = self.tts_text.toPlainText().strip()
+        if not original_text:
+            QMessageBox.information(self, "Texto vazio", "Digite o texto que deseja colocar na fila.")
+            return
+
+        output_directory_text = self.tts_output_directory.text().strip()
+        if not output_directory_text:
+            QMessageBox.information(
+                self, "Pasta não definida", "Escolha uma pasta para salvar os áudios."
+            )
+            return
+        output_directory = Path(output_directory_text).expanduser()
+        language = str(self.tts_language.currentData())
+        try:
+            speech_text = self._prepared_speech_text(original_text, language)
+            remote = (
+                self._colab_client()
+                if self.processing_mode.currentData() == "colab"
+                else None
+            )
+        except Exception as exc:  # noqa: BLE001
+            QMessageBox.critical(self, "Não foi possível adicionar à fila", str(exc))
+            return
+
+        if self.tts_auto_filename.isChecked():
+            try:
+                destination = build_audio_output_path(output_directory)
+            except OSError as exc:
+                QMessageBox.critical(self, "Erro na pasta de saída", str(exc))
+                return
+        else:
+            output, _ = QFileDialog.getSaveFileName(
+                self,
+                "Definir arquivo para esta tarefa da fila",
+                str(output_directory / "joe-audio.wav"),
+                "Áudio WAV (*.wav)",
+            )
+            if not output:
+                return
+            if not output.lower().endswith(".wav"):
+                output += ".wav"
+            destination = Path(output).expanduser()
+            try:
+                destination.parent.mkdir(parents=True, exist_ok=True)
+            except OSError as exc:
+                QMessageBox.critical(self, "Erro na pasta de saída", str(exc))
+                return
+
+        voice_path = self.voice_path.text().strip()
+        voice_alias = self.favorite_voices.get(canonical_voice_path(voice_path), "")
+        title = " ".join(original_text.split())
+        if len(title) > 72:
+            title = title[:69].rstrip() + "…"
+        item = {
+            "id": uuid4().hex,
+            "title": title or "Texto sem título",
+            "speech_text": speech_text,
+            "character_count": len(speech_text),
+            "language": language,
+            "voice_path": voice_path,
+            "voice_alias": voice_alias,
+            "output_path": str(destination),
+            "backend": "Google Colab" if remote is not None else "Local",
+            "remote_client": remote,
+            "status": PENDING_STATUS,
+        }
+        self.tts_queue.append(item)
+        self._refresh_tts_queue_dialog()
+        self.statusBar().showMessage("Texto adicionado à fila de geração.", 4000)
+        self._open_tts_queue()
+
+    def _open_tts_queue(self) -> None:
+        if self.tts_queue_dialog is None:
+            self.tts_queue_dialog = TTSQueueDialog(
+                self._start_tts_queue,
+                self._remove_tts_queue_item,
+                self._move_tts_queue_item,
+                self._clear_tts_queue,
+                self,
+            )
+        self._refresh_tts_queue_dialog()
+        self.tts_queue_dialog.show()
+        self.tts_queue_dialog.raise_()
+        self.tts_queue_dialog.activateWindow()
+
+    def _refresh_tts_queue_dialog(self) -> None:
+        if hasattr(self, "tts_queue_button"):
+            self.tts_queue_button.setText(f"Fila ({len(self.tts_queue)})")
+        if self.tts_queue_dialog is not None:
+            self.tts_queue_dialog.refresh(
+                self.tts_queue,
+                running=self.tts_queue_worker is not None,
+            )
+
+    def _remove_tts_queue_item(self, item_id: str) -> None:
+        self.tts_queue = remove_queue_item(self.tts_queue, item_id)
+        self._refresh_tts_queue_dialog()
+
+    def _move_tts_queue_item(self, item_id: str, target_index: int) -> None:
+        current_index = next(
+            (i for i, item in enumerate(self.tts_queue) if item.get("id") == item_id),
+            None,
+        )
+        if current_index is None or not 0 <= target_index < len(self.tts_queue):
+            return
+        item = self.tts_queue.pop(current_index)
+        self.tts_queue.insert(target_index, item)
+        self._refresh_tts_queue_dialog()
+
+    def _clear_tts_queue(self) -> None:
+        if self.tts_queue_worker is not None:
+            return
+        self.tts_queue.clear()
+        self._refresh_tts_queue_dialog()
+
+    def _generate_queued_tts_item(self, item: dict) -> dict:
+        started_at = time.perf_counter()
+        destination = Path(item["output_path"]).expanduser()
+        client = item.get("remote_client")
+        if client is not None:
+            audio_data = client.generate_audio(
+                item["speech_text"], item["language"], item.get("voice_path") or None
+            )
+            destination.write_bytes(audio_data)
+        else:
+            self.tts.generate(
+                item["speech_text"],
+                item["language"],
+                str(destination),
+                item.get("voice_path") or None,
+            )
+        performance = AudioPerformance(
+            elapsed_seconds=max(time.perf_counter() - started_at, 0.000001),
+            audio_duration_seconds=wav_duration_seconds(destination),
+            character_count=int(item["character_count"]),
+            remote=client is not None,
+        )
+        return {
+            "path": str(destination),
+            "performance": performance,
+            "metadata": {
+                "language": item["language"],
+                "voice_path": item.get("voice_path", ""),
+                "voice_alias": item.get("voice_alias", ""),
+                "backend": item["backend"],
+                "source": "Fila de geração",
+            },
+        }
+
+    def _start_tts_queue(self) -> None:
+        if (
+            self.tts_queue_worker is not None
+            or self.active_worker is not None
+            or self.clipboard_generation_worker is not None
+        ):
+            self.statusBar().showMessage("Já existe uma tarefa em andamento.", 5000)
+            return
+        items = pending_queue_items(self.tts_queue)
+        if not items:
+            QMessageBox.information(
+                self, "Fila vazia", "Adicione textos ou tente novamente as tarefas com falha."
+            )
+            return
+
+        for item in items:
+            self.tts_queue = update_queue_item(
+                self.tts_queue, item["id"], RUNNING_STATUS
+            )
+        worker = TTSQueueWorker(items, self._generate_queued_tts_item)
+        self.tts_queue_worker = worker
+        self._set_busy(True, "Processando fila de geração…")
+        self._refresh_tts_queue_dialog()
+
+        worker.signals.progress.connect(self._tts_queue_progress)
+        worker.signals.item_completed.connect(self._tts_queue_item_completed)
+        worker.signals.item_failed.connect(self._tts_queue_item_failed)
+        worker.signals.finished.connect(self._tts_queue_finished)
+        worker.signals.cancelled.connect(self._tts_queue_cancelled)
+        self.thread_pool.start(worker)
+
+    def _tts_queue_progress(
+        self, index: int, total: int, item_id: str, title: str
+    ) -> None:
+        self.statusBar().showMessage(
+            f"Fila: tarefa {index} de {total} — {title}", 8000
+        )
+        self.tts_queue = update_queue_item(
+            self.tts_queue, item_id, RUNNING_STATUS
+        )
+        self._refresh_tts_queue_dialog()
+
+    def _tts_queue_item_completed(self, result: dict) -> None:
+        item_id = str(result.get("item_id", ""))
+        item = next((entry for entry in self.tts_queue if entry.get("id") == item_id), None)
+        path = Path(result["path"])
+        performance = result.get("performance")
+        metadata = result.get("metadata", {})
+        if item is not None:
+            metadata = {
+                "language": item.get("language", ""),
+                "voice_path": item.get("voice_path", ""),
+                "voice_alias": item.get("voice_alias", ""),
+                "backend": item.get("backend", ""),
+                "source": "Fila de geração",
+            }
+        self._record_audio_history(
+            path,
+            performance if isinstance(performance, AudioPerformance) else None,
+            metadata,
+        )
+        self.generated_audio = path
+        self.tts_play_button.setEnabled(path.is_file())
+        self.tts_info.setText(f"Áudio salvo em: {path}")
+        if isinstance(performance, AudioPerformance):
+            self.tts_speed_info.setText(format_performance_report(performance))
+        self.tts_queue = remove_queue_item(self.tts_queue, item_id)
+        self._refresh_tts_queue_dialog()
+
+    def _tts_queue_item_failed(self, item_id: str, message: str) -> None:
+        detail = message.split(chr(10) * 2, 1)[0].strip() or "Erro desconhecido"
+        self.tts_queue = update_queue_item(
+            self.tts_queue, item_id, FAILED_STATUS, detail
+        )
+        self._refresh_tts_queue_dialog()
+
+    def _tts_queue_finished(self) -> None:
+        self.tts_queue_worker = None
+        self._set_busy(False, "Fila concluída")
+        counts = queue_status_counts(self.tts_queue)
+        summary = (
+            f"Fila concluída. {counts['failed']} tarefa(s) com falha permanecem disponíveis para tentar novamente."
+        )
+        self.statusBar().showMessage(summary, 10000)
+        self._refresh_tts_queue_dialog()
+
+    def _tts_queue_cancelled(self) -> None:
+        self.tts_queue_worker = None
+        self.tts_queue = [
+            {**item, "status": PENDING_STATUS}
+            if item.get("status") == RUNNING_STATUS else item
+            for item in self.tts_queue
+        ]
+        self._set_busy(False, "Fila cancelada")
+        self.statusBar().showMessage(
+            "Fila cancelada. As tarefas não concluídas permanecem pendentes.", 8000
+        )
+        self._refresh_tts_queue_dialog()
 
     def _generate_audio(self) -> None:
         text = self.tts_text.toPlainText().strip()
@@ -2518,11 +2789,15 @@ class JoeWindow(QMainWindow):
     def _refresh_cancel_button(self) -> None:
         if not hasattr(self, "cancel_task_button"):
             return
+        queue_active = self.tts_queue_worker is not None
         clipboard_active = self.clipboard_generation_worker is not None
         task_active = self.active_worker is not None
-        active = clipboard_active or task_active
+        active = queue_active or clipboard_active or task_active
         self.cancel_task_button.setVisible(active)
-        if clipboard_active:
+        if queue_active:
+            self.cancel_task_button.setText("Cancelar fila")
+            self.cancel_task_button.setEnabled(True)
+        elif clipboard_active:
             self.cancel_task_button.setText("Cancelar geração")
             self.cancel_task_button.setEnabled(True)
         else:
@@ -2530,6 +2805,14 @@ class JoeWindow(QMainWindow):
             self.cancel_task_button.setEnabled(task_active)
 
     def _cancel_active_task(self) -> None:
+        if self.tts_queue_worker is not None:
+            self.tts_queue_worker.cancel()
+            self.cancel_task_button.setEnabled(False)
+            self.statusBar().showMessage(
+                "Cancelamento solicitado. A tarefa atual será concluída; as próximas ficam pendentes.",
+                8000,
+            )
+            return
         if self.clipboard_generation_worker is not None:
             self.clipboard_generation_worker.cancel()
             self.cancel_task_button.setEnabled(False)
@@ -2599,6 +2882,7 @@ class JoeWindow(QMainWindow):
             self.tts_play_button,
             self.tts_favorites_button,
             self.tts_history_button,
+            self.tts_queue_add_button,
             self.tts_settings_button,
             self.tts_language,
             self.clipboard_chunk_size,

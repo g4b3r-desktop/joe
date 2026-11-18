@@ -199,3 +199,10 @@ O botão **Cancelar tarefa** na barra inferior solicita o cancelamento da geraç
 ## Histórico de áudios
 
 A aba Texto → Áudio oferece **Histórico** para localizar WAVs gerados no Joe. O histórico guarda caminho, data, duração, tempo de geração, idioma, voz/apelido, backend e origem (texto ou atalho). O texto original não é armazenado. Remover um registro do histórico não exclui o arquivo de áudio.
+
+
+## Fila de geração TTS
+
+Use **Adicionar à fila** para guardar o texto atual com idioma, voz, backend e destino escolhidos naquele momento. **Fila (N)** abre a fila, permite reordenar/remover tarefas e iniciar a geração sequencial. Uma falha em um item não impede os próximos; o item com falha permanece na fila e pode ser tentado novamente. **Cancelar fila** interrompe a sequência depois que a operação de modelo/API atualmente em andamento devolver o controle. As tarefas não concluídas permanecem pendentes.
+
+Por privacidade, os textos da fila existem somente na memória da sessão e não são gravados em QSettings. Fechar o Joe descarta as tarefas pendentes; WAVs concluídos permanecem no disco e no Histórico.
