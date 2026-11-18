@@ -17,6 +17,7 @@ dependencies = [
   "pocket-tts[quantize]",
   "moondream>=2.4.1",
   "httpx>=0.27",
+  "num2words>=0.5.14",
 ]
 
 [project.optional-dependencies]
