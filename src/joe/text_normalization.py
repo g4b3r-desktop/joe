@@ -251,15 +251,19 @@ def _replace_times(text: str, language: str) -> str:
         "portuguese": "e", "english": "and", "spanish": "y",
         "french": "et", "german": "und", "italian": "e", "dutch": "en",
     }
-    one_words = {
+    one_hour_words = {
         "portuguese": "uma", "english": "one", "spanish": "una",
         "french": "une", "german": "ein", "italian": "una", "dutch": "één",
+    }
+    one_minute_words = {
+        "portuguese": "um", "english": "one", "spanish": "un",
+        "french": "une", "german": "eine", "italian": "un", "dutch": "één",
     }
 
     def replace(match: re.Match[str]) -> str:
         hour = int(match.group(1))
         minute = int(match.group(2))
-        hour_words = one_words.get(language, "um") if hour == 1 else _number_to_words(
+        hour_words = one_hour_words.get(language, "um") if hour == 1 else _number_to_words(
             hour, language
         )
         hour_unit = hour_units.get(language, ("", ""))[0 if hour == 1 else 1]
@@ -267,7 +271,7 @@ def _replace_times(text: str, language: str) -> str:
             return f"{hour_words} {hour_unit}".strip()
 
         minute_words = (
-            one_words.get(language, "um")
+            one_minute_words.get(language, "um")
             if minute == 1
             else _number_to_words(minute, language)
         )
