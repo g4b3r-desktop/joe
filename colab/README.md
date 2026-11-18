@@ -28,10 +28,12 @@ Authorization: Bearer <JOE_API_TOKEN>
 ## Rotas
 
 - GET /health: status do servidor, GPU e estado dos modelos.
-- POST /v1/tts: multipart com text, language e campo de arquivo voice opcional; retorna áudio WAV.
-- POST /v1/transcribe: multipart com arquivo audio e campo timestamps (none, segment ou word); retorna texto, segmentos, backend e dispositivo.
+- POST /v1/jobs/tts: multipart com text, language e campo de arquivo voice opcional; retorna job_id.
+- POST /v1/jobs/transcribe: multipart com arquivo audio e campo timestamps (none, segment ou word); retorna job_id.
+- GET /v1/jobs/{job_id}: consulta queued, running, completed ou failed.
+- GET /v1/jobs/{job_id}/result: baixa o WAV ou recebe o JSON quando completed.
 
-Todas as rotas são autenticadas. Swagger, ReDoc e OpenAPI foram desativados.
+Todas as rotas são autenticadas. A inferência roda em um worker sequencial e suporta até duas tarefas ativas (uma em execução e uma aguardando). O cliente usa polling para evitar manter chamadas abertas durante o tempo de inferência e contornar o limite de leitura de resposta do túnel Cloudflare. Os resultados expiram em 30 minutos se não forem retirados. Swagger, ReDoc e OpenAPI foram desativados.
 
 ## Segurança operacional
 
