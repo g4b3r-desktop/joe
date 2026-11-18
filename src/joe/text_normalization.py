@@ -219,7 +219,11 @@ def _replace_dates(text: str, language: str) -> str:
         return f"{day_words} {month_name} {year_words}"
 
     def replace_dmy(match: re.Match[str]) -> str:
-        day, month, year = (int(part) for part in match.groups())
+        first, second, year = (int(part) for part in match.groups())
+        if language == "english":
+            month, day = first, second
+        else:
+            day, month = first, second
         return format_date(day, month, year) or match.group(0)
 
     def replace_iso(match: re.Match[str]) -> str:
