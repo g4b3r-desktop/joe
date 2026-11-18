@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import re
+from datetime import datetime
+from pathlib import Path
 from typing import Any
 
 
@@ -23,3 +26,25 @@ def build_srt(segments: list[dict[str, Any]]) -> str:
         end = format_srt_time(float(segment.get("end", 0.0)))
         blocks.append(f"{index}\n{start} --> {end}\n{text}")
     return "\n\n".join(blocks) + ("\n" if blocks else "")
+
+
+def build_audio_output_path(
+    directory: str | Path,
+    prefix: str = "joe_audio",
+    timestamp: datetime | None = None,
+) -> Path:
+    """Create the output directory and return a unique, generic WAV filename."""
+    output_dir = Path(directory).expanduser()
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    safe_prefix = re.sub(r"[^A-Za-z0-9._-]+", "_", prefix.strip()).strip("._-")
+    if not safe_prefix:
+        safe_prefix = "joe_audio"
+
+    date_part = (timestamp or datetime.now()).strftime("%Y%m%d_%H%M%S")
+    candidate = output_dir / f"{safe_prefix}_{date_part}.wav"
+    suffix = 1
+    while candidate.exists():
+        candidate = output_dir / f"{safe_prefix}_{date_part}_{suffix:03d}.wav"
+        suffix += 1
+    return candidate
