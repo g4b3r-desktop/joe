@@ -71,5 +71,5 @@ def build_vtt(segments: list[dict[str, Any]]) -> str:
             continue
         start = format_vtt_time(float(segment.get("start", 0.0)))
         end = format_vtt_time(float(segment.get("end", 0.0)))
-        blocks.append(f"{start} --> {end}\\n{text}")
-    return "WEBVTT\\n\\n" + "\\n\\n".join(blocks) + ("\\n" if blocks else "")
+        blocks.append(f"{start} --> {end}\n{text}")
+    return "WEBVTT\n\n" + "\n\n".join(blocks) + ("\n" if blocks else "")
