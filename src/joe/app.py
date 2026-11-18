@@ -165,7 +165,11 @@ class ClipboardAudioDialog(QDialog):
         if not self.audio_path or not self.audio_path.is_file():
             return
 
-        initial_directory = Path(self.output_directory).expanduser()
+        initial_directory = (
+            Path(self.output_directory).expanduser()
+            if self.output_directory.strip()
+            else Path.home()
+        )
         if not initial_directory.is_dir():
             initial_directory = Path.home()
         suggested = initial_directory / "joe_clipboard_audio.wav"
