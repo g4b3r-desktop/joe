@@ -32,6 +32,15 @@ O texto original não deve ser alterado pela normalização. A geração deve us
 - A persistência dos favoritos fica separada em `src/joe/voice_favorites.py`; mantenha caminhos estáveis e ignore dados corrompidos sem derrubar o app.
 - Preparar uma gravação de referência com Pocket TTS exporta um arquivo `.safetensors`. Ele pode ser carregado como estado local; não é reproduzível como áudio.
 
+## Histórico e player
+
+- Os WAVs TTS gerados manualmente são indexados localmente em SQLite por `audio_history.py`.
+- O índice salva data, caminho, duração, tamanho, voz, backend e métricas de geração. O texto original fica desativado por padrão e só é armazenado mediante opção explícita.
+- Remover um registro não remove o WAV. A exclusão do arquivo é uma ação separada com confirmação.
+- `audio_player.py` é um widget reutilizável que controla a mesma instância QMediaPlayer compartilhada com a janela compacta.
+- O módulo `audio_waveform.py` calcula picos em streaming, com memória limitada; o worker constrói a forma de onda fora da thread da interface.
+- O player oferece seek, clique na forma de onda, volume e velocidades configuráveis. Não criar players adicionais sem revisar como a janela compacta e as prévias de voz compartilham o player.
+
 ## Fila TTS e cancelamento
 
 - A geração manual da tela Texto → Áudio usa uma fila FIFO em memória, separada da UI no módulo src/joe/tts_queue.py.

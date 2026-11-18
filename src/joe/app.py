@@ -72,6 +72,7 @@ from joe.voice_favorites import (
 from joe.utils import build_srt, build_audio_output_path
 from joe.tts_queue import TTSJobQueue, TTSQueueEntry
 from joe.audio_history import AudioHistoryStore
+from joe.audio_player import AudioPlayerWidget
 
 
 class WorkerSignals(QObject):
@@ -1011,6 +1012,24 @@ class JoeWindow(QMainWindow):
         self.player = QMediaPlayer(self)
         self.audio_output = QAudioOutput(self)
         self.player.setAudioOutput(self.audio_output)
+        saved_volume = self.app_settings.value("player_volume", 80, type=int)
+        try:
+            saved_rate = float(self.app_settings.value("player_rate", 1.0))
+        except (TypeError, ValueError):
+            saved_rate = 1.0
+        self.audio_player = AudioPlayerWidget(
+            self.player,
+            self.audio_output,
+            volume=saved_volume,
+            playback_rate=saved_rate,
+            on_volume_changed=lambda value: self.app_settings.setValue(
+                "player_volume", value
+            ),
+            on_rate_changed=lambda value: self.app_settings.setValue(
+                "player_rate", value
+            ),
+            parent=self,
+        )
 
         self._build_ui()
         self._refresh_tts_queue_controls()
@@ -1536,6 +1555,11 @@ class JoeWindow(QMainWindow):
         layout.addWidget(description)
         layout.addWidget(self.tts_text, 1)
         layout.addLayout(action_row)
+        player_group = QGroupBox("Player de áudio")
+        player_layout = QVBoxLayout(player_group)
+        player_layout.setContentsMargins(10, 8, 10, 8)
+        player_layout.addWidget(self.audio_player)
+        layout.addWidget(player_group)
         layout.addWidget(self.tts_info)
         layout.addWidget(self.tts_speed_info)
         return page
@@ -2873,6 +2897,7 @@ class JoeWindow(QMainWindow):
         metrics = result if isinstance(result, dict) else {}
         self.generated_audio = Path(metrics.get("path", result))
         self.tts_play_button.setEnabled(True)
+        self.audio_player.set_audio_path(self.generated_audio)
         self.tts_info.setText(f"Áudio salvo em: {self.generated_audio}")
 
         performance = metrics.get("performance")
@@ -2914,11 +2939,7 @@ class JoeWindow(QMainWindow):
     def _play_generated_audio(self) -> None:
         if not self.generated_audio or not self.generated_audio.is_file():
             return
-        if self.player.source().isValid() and self.player.playbackState() == QMediaPlayer.PlaybackState.PlayingState:
-            self.player.stop()
-            return
-        self.player.setSource(QUrl.fromLocalFile(str(self.generated_audio.resolve())))
-        self.player.play()
+        self.audio_player.play_file(self.generated_audio)
 
     def _transcribe_audio(self) -> None:
         source = self.audio_path.text().strip()
