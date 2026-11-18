@@ -37,9 +37,13 @@ def build_audio_output_path(
     output_dir = Path(directory).expanduser()
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    safe_prefix = re.sub(r"[^A-Za-z0-9._-]+", "_", prefix.strip()).strip("._-")
-    if not safe_prefix:
-        safe_prefix = "joe_audio"
+    safe_characters: list[str] = []
+    for character in prefix.strip():
+        if character.isalnum() or character in "._-":
+            safe_characters.append(character)
+        elif safe_characters and safe_characters[-1] != "_":
+            safe_characters.append("_")
+    safe_prefix = "".join(safe_characters).strip("._-") or "joe_audio"
 
     date_part = (timestamp or datetime.now()).strftime("%Y%m%d_%H%M%S")
     candidate = output_dir / f"{safe_prefix}_{date_part}.wav"
