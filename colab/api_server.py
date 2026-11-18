@@ -38,6 +38,8 @@ _tts_models: dict[str, Any] = {}
 _tts_voice_states: dict[tuple[str, str], Any] = {}
 _asr_context: Any = None
 _asr_model: Any = None
+_asr_processor: Any = None
+_asr_backend = "não carregado"
 
 
 def require_token(authorization: str | None = Header(default=None)) -> None:
@@ -91,28 +93,71 @@ def _generate_tts(text: str, language: str, voice_file: str | None) -> bytes:
 
 
 def _get_asr_model() -> Any:
-    global _asr_context, _asr_model
-    if _asr_model is None:
-        device = "cuda" if torch.cuda.is_available() else "cpu"
-        _asr_context = md.photon(PARAKEET_MODEL_ID, device=device)
+    global _asr_context, _asr_model, _asr_processor, _asr_backend
+    if _asr_model is not None:
+        return _asr_model
+
+    if torch.cuda.is_available():
+        _asr_context = md.photon(PARAKEET_MODEL_ID, device="cuda")
         _asr_model = _asr_context.__enter__()
+        _asr_backend = f"Parakeet Redux / Photon CUDA ({torch.cuda.get_device_name(0)})"
+        return _asr_model
+
+    # Compatibility fallback when this Colab runtime has no GPU.
+    from transformers import AutoModel, AutoProcessor
+
+    _asr_processor = AutoProcessor.from_pretrained(
+        PARAKEET_MODEL_ID,
+        trust_remote_code=True,
+    )
+    _asr_model = AutoModel.from_pretrained(
+        PARAKEET_MODEL_ID,
+        trust_remote_code=True,
+        dtype=torch.float32,
+    ).to("cpu").eval()
+    _asr_backend = "Parakeet Redux / Transformers CPU"
     return _asr_model
 
 
 def _transcribe(audio_path: str, timestamps: str) -> dict[str, Any]:
     with _asr_lock:
-        speech = _get_asr_model()
-        if timestamps in {"segment", "word"}:
-            result = speech.transcribe(audio=audio_path, timestamps=timestamps)
+        model = _get_asr_model()
+        if _asr_backend.startswith("Parakeet Redux / Photon"):
+            if timestamps in {"segment", "word"}:
+                result = model.transcribe(audio=audio_path, timestamps=timestamps)
+            else:
+                result = model.transcribe(audio=audio_path)
         else:
-            result = speech.transcribe(audio=audio_path)
+            import numpy as np
+            import soundfile as audio_io
+            from math import gcd
+            from scipy.signal import resample_poly
+
+            waveform, sample_rate = audio_io.read(
+                audio_path, dtype="float32", always_2d=False
+            )
+            if waveform.ndim == 2:
+                waveform = waveform.mean(axis=1)
+            waveform = np.asarray(waveform, dtype=np.float32)
+            if sample_rate != 16_000:
+                divisor = gcd(int(sample_rate), 16_000)
+                waveform = resample_poly(
+                    waveform,
+                    16_000 // divisor,
+                    int(sample_rate) // divisor,
+                ).astype(np.float32)
+            result = model.transcribe(waveform, _asr_processor)
+
+    if isinstance(result, (list, tuple)):
+        result = result[0] if result else ""
+    if not isinstance(result, dict):
+        result = {"text": str(result), "segments": []}
     return {
         "text": str(result.get("text", "")).strip(),
         "segments": result.get("segments", []),
-        "backend": "Parakeet Redux / Photon",
-        "device": "CUDA" if torch.cuda.is_available() else "CPU",
+        "backend": _asr_backend,
+        "device": "CUDA" if "CUDA" in _asr_backend else "CPU",
     }
-
 
 @app.get("/health")
 def health(_: None = Depends(require_token)) -> dict[str, Any]:
@@ -128,6 +173,7 @@ def health(_: None = Depends(require_token)) -> dict[str, Any]:
         "tts": "kyutai/pocket-tts",
         "asr": PARakeet_MODEL_ID,
         "asr_loaded": _asr_model is not None,
+        "asr_backend": _asr_backend,
         "tts_loaded_languages": sorted(_tts_models.keys()),
         "cuda_available": torch.cuda.is_available(),
         "gpu_name": gpu_name,
