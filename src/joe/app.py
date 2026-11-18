@@ -157,6 +157,9 @@ class JoeWindow(QMainWindow):
 
         self.colab_url = QLineEdit(str(self.app_settings.value("colab_url", "")))
         self.colab_url.setPlaceholderText("https://seu-tunel.trycloudflare.com")
+        self.colab_url.textChanged.connect(
+            lambda value: self._save_text_setting("colab_url", value)
+        )
 
         self.colab_token = QLineEdit(
             str(self.app_settings.value("colab_token", ""))
@@ -379,6 +382,7 @@ class JoeWindow(QMainWindow):
         )
         self.tts_output_directory = QLineEdit(saved_output_dir)
         self.tts_output_directory.setPlaceholderText("Pasta onde os WAV serão salvos")
+        self.tts_output_directory.textChanged.connect(self._save_tts_output_settings)
         self.tts_output_directory.editingFinished.connect(self._save_tts_output_settings)
 
         self.tts_browse_output_button = QPushButton("Escolher pasta…")
