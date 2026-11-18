@@ -83,13 +83,13 @@ class ColabAPIClient:
         voice_path: str | Path | None = None,
     ) -> bytes:
         data = {"text": text, "language": language}
-        files = None
+        files: list[Any] = []
         opened = None
         try:
             if voice_path:
                 path = Path(voice_path)
                 opened = path.open("rb")
-                files = {"voice": (path.name, opened, "application/octet-stream")}
+                files = [("voice", (path.name, opened, "application/octet-stream"))]
             response = self._request("POST", "/v1/jobs/tts", data=data, files=files)
         finally:
             if opened:
