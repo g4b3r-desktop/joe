@@ -86,3 +86,10 @@ def test_invalid_numeric_grouping_is_preserved():
     result = normalize_text_for_tts("Código 1.234.5.")
 
     assert "1.234.5" in result
+
+
+
+def test_english_slash_date_uses_month_day_year_order():
+    result = normalize_text_for_tts("The meeting is on 11/18/2026.", language="english")
+
+    assert "November eighteenth" in result
