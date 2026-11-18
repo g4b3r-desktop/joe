@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import json
+import os
+import shlex
 import shutil
+import subprocess
 import sys
 import tempfile
 import traceback
@@ -44,6 +47,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from joe.local_ipc import LocalCommandServer, send_local_command
 from joe.services.colab_api import ColabAPIClient
 from joe.services.parakeet import ParakeetReduxService
 from joe.services.pocket_tts import PocketTTSService
@@ -74,6 +78,7 @@ class FunctionWorker(QRunnable):
 
 class HotkeyBridge(QObject):
     activated = Signal()
+    command_received = Signal(str)
 
 
 class ClipboardAudioDialog(QDialog):
@@ -221,8 +226,13 @@ class JoeWindow(QMainWindow):
         self.clipboard_audio_window: ClipboardAudioDialog | None = None
         self.clipboard_temp_dir: Path | None = None
         self.hotkey_listener = None
+        self.local_command_server: LocalCommandServer | None = None
         self.hotkey_bridge = HotkeyBridge(self)
         self.hotkey_bridge.activated.connect(self._generate_audio_from_clipboard)
+        self.hotkey_bridge.command_received.connect(self._handle_local_command)
+        self.hotkey_monitor_timer = QTimer(self)
+        self.hotkey_monitor_timer.setInterval(2500)
+        self.hotkey_monitor_timer.timeout.connect(self._check_global_hotkey)
 
         # Health checks monitor connectivity only; they do not keep Colab awake.
         self.colab_monitor_pool = QThreadPool(self)
@@ -274,6 +284,9 @@ class JoeWindow(QMainWindow):
         )
         clipboard_action.triggered.connect(self._generate_audio_from_clipboard)
         file_menu.addAction(clipboard_action)
+        restart_hotkey_action = QAction("Reativar atalho global", self)
+        restart_hotkey_action.triggered.connect(self._restart_global_hotkey)
+        file_menu.addAction(restart_hotkey_action)
 
         help_menu = self.menuBar().addMenu("Ajuda")
         about_action = QAction("Sobre o Joe", self)
@@ -1042,24 +1055,97 @@ class JoeWindow(QMainWindow):
             self.transcript_segments = []
             self.save_srt_button.setEnabled(False)
 
+    @staticmethod
+    def _xfce_hotkey_property() -> str:
+        return "/commands/custom/<Primary><Shift>space"
+
+    @staticmethod
+    def _xfce_hotkey_command() -> str:
+        run_script = Path(__file__).resolve().parents[2] / "run.sh"
+        return f'/usr/bin/bash "{run_script}" --clipboard-audio'
+
+    def _xfce_hotkey_is_registered(self) -> bool:
+        if not shutil.which("xfconf-query"):
+            return False
+        try:
+            result = subprocess.run(
+                ["xfconf-query", "--channel", "xfce4-keyboard-shortcuts",
+                 "--property", self._xfce_hotkey_property()],
+                capture_output=True, text=True, timeout=2, check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            return False
+        return result.returncode == 0 and result.stdout.strip() == self._xfce_hotkey_command()
+
+    def _stop_global_hotkey(self) -> None:
+        self.hotkey_monitor_timer.stop()
+        listener, self.hotkey_listener = self.hotkey_listener, None
+        if listener is not None:
+            try:
+                listener.stop()
+                listener.join(timeout=0.5)
+            except Exception:  # noqa: BLE001
+                pass
+
+    def _restart_global_hotkey(self) -> None:
+        self._stop_global_hotkey()
+        self._start_global_hotkey()
+
+    def _check_global_hotkey(self) -> None:
+        listener = self.hotkey_listener
+        if listener is None or listener.is_alive():
+            return
+        detail = "o listener encerrou inesperadamente"
+        try:
+            listener.join(timeout=0)
+        except Exception as exc:  # noqa: BLE001
+            detail = str(exc).splitlines()[0] or detail
+        self.hotkey_listener = None
+        self.hotkey_monitor_timer.stop()
+        self.statusBar().showMessage(
+            f"Atalho global parou: {detail}. Use Arquivo → Reativar atalho global.",
+            15000,
+        )
+
+    def _handle_local_command(self, command: str) -> None:
+        if command == "clipboard-audio":
+            self._generate_audio_from_clipboard()
+        elif command == "activate":
+            if self.isMinimized():
+                self.showNormal()
+            self.raise_()
+            self.activateWindow()
+
     def _start_global_hotkey(self) -> None:
+        # Prefer the Xfce shortcut manager; it works when Joe is not focused.
+        if self._xfce_hotkey_is_registered():
+            self._stop_global_hotkey()
+            self.statusBar().showMessage(
+                "Atalho global do Xfce ativo: Ctrl+Shift+Espaço", 8000
+            )
+            return
         try:
             from pynput import keyboard
-
             listener = keyboard.GlobalHotKeys(
-                {"<ctrl>+<shift>+<space>": self.hotkey_bridge.activated.emit}
+                {"<ctrl>+<shift>+<space>": lambda: self.hotkey_bridge.activated.emit()}
             )
             listener.start()
             self.hotkey_listener = listener
-            self.statusBar().showMessage(
-                "Atalho global ativo: Ctrl+Shift+Espaço", 6000
-            )
+            self.hotkey_monitor_timer.start()
+            QTimer.singleShot(700, self._check_global_hotkey)
         except Exception as exc:  # noqa: BLE001
             self.hotkey_listener = None
+            self.hotkey_monitor_timer.stop()
+            session_type = os.environ.get("XDG_SESSION_TYPE", "desconhecido")
+            if session_type == "wayland" or os.environ.get("WAYLAND_DISPLAY"):
+                reason = "Wayland limita a captura global pelo pynput; use o atalho nativo do desktop."
+            elif not os.environ.get("DISPLAY"):
+                reason = "DISPLAY não está definido; inicie o Joe pela sessão gráfica."
+            else:
+                reason = str(exc).splitlines()[0]
             self.statusBar().showMessage(
-                "Atalho global indisponível. Use Arquivo → Gerar áudio do texto copiado. "
-                f"Detalhe: {str(exc).splitlines()[0]}",
-                12000,
+                f"Atalho global indisponível: {reason}. Use Arquivo → Gerar áudio do texto copiado.",
+                15000,
             )
 
     @staticmethod
@@ -1446,12 +1532,10 @@ class JoeWindow(QMainWindow):
 
     def closeEvent(self, event) -> None:
         self.colab_monitor_timer.stop()
-        if self.hotkey_listener is not None:
-            try:
-                self.hotkey_listener.stop()
-            except Exception:  # noqa: BLE001
-                pass
-            self.hotkey_listener = None
+        self._stop_global_hotkey()
+        if self.local_command_server is not None:
+            self.local_command_server.stop()
+            self.local_command_server = None
         if self.clipboard_audio_window is not None:
             self.clipboard_audio_window.close()
         if self.colab_monitor_pool.activeThreadCount():
@@ -1468,6 +1552,13 @@ class JoeWindow(QMainWindow):
 
 
 def main() -> None:
+    clipboard_requested = "--clipboard-audio" in sys.argv
+    if clipboard_requested:
+        sys.argv = [arg for arg in sys.argv if arg != "--clipboard-audio"]
+    command = "clipboard-audio" if clipboard_requested else "activate"
+    if send_local_command(command):
+        return
+
     app = QApplication(sys.argv)
     app.setApplicationName("Joe Audio Studio")
     app.setOrganizationName("g4b3r-desktop")
@@ -1475,7 +1566,22 @@ def main() -> None:
     if icon_path.is_file():
         app.setWindowIcon(QIcon(str(icon_path)))
     window = JoeWindow()
+    server = LocalCommandServer(window.hotkey_bridge.command_received.emit)
+    try:
+        server.start()
+    except FileExistsError:
+        if send_local_command(command):
+            window.close()
+            return
+        window.statusBar().showMessage("Não foi possível conectar à instância aberta do Joe.", 12000)
+    except (OSError, RuntimeError) as exc:
+        window.statusBar().showMessage(f"Atalho IPC indisponível: {exc}", 12000)
+    else:
+        window.local_command_server = server
+
     window.show()
+    if clipboard_requested:
+        QTimer.singleShot(250, window._generate_audio_from_clipboard)
     sys.exit(app.exec())
 
 
