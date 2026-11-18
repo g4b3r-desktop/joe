@@ -221,7 +221,7 @@ class TTSQueueWorker(QRunnable):
             self.entry.output_path.unlink(missing_ok=True)
             self.signals.failed.emit(
                 self.entry.task_id,
-                f"{exc}\\n\\n{traceback.format_exc()}",
+                f"{exc}\n\n{traceback.format_exc()}",
             )
             return
 
@@ -290,7 +290,7 @@ class TTSQueueDialog(QDialog):
         self.items.clear()
         for entry in self.queue.entries:
             item = QListWidgetItem(
-                f"{entry.status}  •  {entry.label}\\n{entry.output_path.name}"
+                f"{entry.status}  •  {entry.label}\n{entry.output_path.name}"
             )
             item.setData(Qt.ItemDataRole.UserRole, entry.task_id)
             self.items.addItem(item)
@@ -2431,7 +2431,7 @@ class JoeWindow(QMainWindow):
             except OSError as exc:
                 QMessageBox.critical(
                     self, "Erro na pasta de saída",
-                    f"Não foi possível preparar a pasta:\\n{exc}",
+                    f"Não foi possível preparar a pasta:\n{exc}",
                 )
                 return
         else:
@@ -2453,7 +2453,7 @@ class JoeWindow(QMainWindow):
             except OSError as exc:
                 QMessageBox.critical(
                     self, "Erro na pasta de saída",
-                    f"Não foi possível criar a pasta:\\n{exc}",
+                    f"Não foi possível criar a pasta:\n{exc}",
                 )
                 return
 
@@ -2566,7 +2566,7 @@ class JoeWindow(QMainWindow):
         self.active_worker = None
         self.tts_elapsed_timer.stop()
         self.tts_generation_started_at = None
-        detail = message.split("\\n\\n", 1)[0].strip() or "Erro desconhecido"
+        detail = message.split("\n\n", 1)[0].strip() or "Erro desconhecido"
         self.tts_speed_info.setText("A geração falhou. Consulte os detalhes do erro.")
         self._set_busy(False, "Falha na geração")
         self._refresh_tts_queue_controls()
@@ -2671,7 +2671,8 @@ class JoeWindow(QMainWindow):
 
         want_timestamps = self.timestamps_check.isChecked()
         if self.processing_mode.currentData() == "colab":
-            try:                remote = self._colab_client()
+            try:
+                remote = self._colab_client()
             except ValueError as exc:
                 QMessageBox.information(self, "Configure a API do Colab", str(exc))
                 return
