@@ -105,6 +105,9 @@ python -m pip install torch --index-url https://download.pytorch.org/whl/cu132
 
 ## Uso
 
+### Salvamento automático de rascunhos e campos
+O Joe grava automaticamente, enquanto você digita ou altera os campos, os textos do Texto → Áudio, a transcrição e sua edição, os caminhos de arquivos, a pasta de saída, idioma, dispositivo, opções, URL e token do Colab e a última aba aberta. Esses dados são restaurados ao iniciar o aplicativo, mesmo que você não tenha gerado áudio ou iniciado uma transcrição. O token do Colab é armazenado nas configurações locais do usuário sem criptografia; proteja o arquivo de configuração e sua conta do sistema.
+
 ### Texto → Áudio
 1. Digite ou cole o texto. A caixa de texto mantém o conteúdo original.
 2. Por padrão, o Joe normaliza números, datas, horários, porcentagens, valores em reais, abreviações e siglas antes de enviar uma cópia ao Pocket TTS. Essa normalização automática pode ser desativada sem desligar o dicionário personalizado.
