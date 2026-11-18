@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hmac
+import hashlib
 import os
 import tempfile
 import threading
@@ -82,9 +83,13 @@ def _get_tts_model(language: str) -> Any:
 
 def _generate_tts(text: str, language: str, voice_file: str | None) -> bytes:
     voice_source = voice_file or DEFAULT_VOICE
+    voice_identity = (
+        hashlib.sha256(Path(voice_file).read_bytes()).hexdigest()
+        if voice_file else DEFAULT_VOICE
+    )
     with _tts_lock:
         model = _get_tts_model(language)
-        key = (language, voice_source)
+        key = (language, voice_identity)
         voice_state = _tts_voice_states.get(key)
         if voice_state is None:
             voice_state = model.get_state_for_audio_prompt(voice_source)
@@ -177,7 +182,7 @@ def health(_: None = Depends(require_token)) -> dict[str, Any]:
         "ok": True,
         "service": "joe-colab-api",
         "tts": "kyutai/pocket-tts",
-        "asr": PARakeet_MODEL_ID,
+        "asr": PARAKEET_MODEL_ID,
         "asr_loaded": _asr_model is not None,
         "asr_backend": _asr_backend,
         "tts_loaded_languages": sorted(_tts_models.keys()),
