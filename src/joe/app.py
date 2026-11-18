@@ -9,7 +9,7 @@ from pathlib import Path
 import torch  # noqa: F401
 
 # isort: split
-from PySide6.QtCore import QObject, QRunnable, QSettings, QThreadPool, QUrl, Signal
+from PySide6.QtCore import QObject, QRunnable, QSettings, QThreadPool, QTime, QTimer, QUrl, Signal
 from PySide6.QtGui import QAction, QDesktopServices
 from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
 from PySide6.QtWidgets import (
@@ -72,6 +72,15 @@ class JoeWindow(QMainWindow):
         self.thread_pool.setMaxThreadCount(1)
         self.active_worker: FunctionWorker | None = None
 
+        # Health checks monitor connectivity only; they do not keep Colab awake.
+        self.colab_monitor_pool = QThreadPool(self)
+        self.colab_monitor_pool.setMaxThreadCount(1)
+        self.colab_monitor_worker: FunctionWorker | None = None
+        self.colab_monitor_manual = False
+        self.colab_monitor_timer = QTimer(self)
+        self.colab_monitor_timer.setInterval(60_000)
+        self.colab_monitor_timer.timeout.connect(self._refresh_colab_status)
+
         self.generated_audio: Path | None = None
         self.transcript_segments: list[dict] = []
         self.transcription_backend = ""
@@ -83,6 +92,7 @@ class JoeWindow(QMainWindow):
         self._build_ui()
         self.setStyleSheet(self._stylesheet())
         self.statusBar().showMessage("Pronto — os modelos serão carregados sob demanda.")
+        self._update_colab_monitoring()
 
     def _build_ui(self) -> None:
         tabs = QTabWidget()
@@ -134,6 +144,7 @@ class JoeWindow(QMainWindow):
         self.colab_token = QLineEdit()
         self.colab_token.setEchoMode(QLineEdit.EchoMode.Password)
         self.colab_token.setPlaceholderText("Cole o token gerado pelo notebook")
+        self.colab_token.editingFinished.connect(self._update_colab_monitoring)
 
         form = QFormLayout()
         form.addRow("Modo de execução", self.processing_mode)
@@ -147,12 +158,19 @@ class JoeWindow(QMainWindow):
         self.colab_open_button = QPushButton("Abrir notebook no Google Colab")
         self.colab_open_button.clicked.connect(self._open_colab_notebook)
 
+        self.colab_status = QLabel("Estado da API: não configurado")
+        self.colab_status.setObjectName("muted")
+        self.colab_status.setWordWrap(True)
+
         self.colab_info = QLabel(
             "1. Abra o notebook no Google Colab e execute as células.\n"
             "2. Copie a URL trycloudflare.com e o token exibidos no final.\n"
-            "3. Cole os dois campos acima, teste a conexão e selecione Google Colab no modo.\n\n"
-            "A URL e o token não são iguais: a URL muda quando o túnel é reiniciado. "
-            "O token fica apenas na memória do Joe e não é gravado nas configurações."
+            "3. Cole os dois campos acima e selecione Google Colab no modo.\n\n"
+            "O Joe verifica a conexão a cada 60 segundos enquanto o modo Colab está selecionado. "
+            "Essa verificação apenas detecta desconexões: não impede o Colab de encerrar o runtime "
+            "por inatividade ou por seus limites de sessão.\n"
+            "A URL muda quando o túnel é reiniciado. O token fica apenas na memória do Joe "
+            "e não é gravado nas configurações."
         )
         self.colab_info.setObjectName("muted")
         self.colab_info.setWordWrap(True)
@@ -168,6 +186,7 @@ class JoeWindow(QMainWindow):
         layout.addWidget(description)
         layout.addLayout(form)
         layout.addLayout(buttons)
+        layout.addWidget(self.colab_status)
         layout.addWidget(self.colab_info)
         layout.addStretch(1)
 
@@ -180,6 +199,7 @@ class JoeWindow(QMainWindow):
         if hasattr(self, "colab_url"):
             self.app_settings.setValue("colab_url", self.colab_url.text().strip())
         self._update_mode_widgets()
+        self._update_colab_monitoring()
 
     def _update_mode_widgets(self) -> None:
         if hasattr(self, "asr_device") and hasattr(self, "processing_mode"):
@@ -188,28 +208,92 @@ class JoeWindow(QMainWindow):
     def _colab_client(self) -> ColabAPIClient:
         return ColabAPIClient(self.colab_url.text(), self.colab_token.text())
 
-    def _test_colab_connection(self) -> None:
+    def _update_colab_monitoring(self, *_args) -> None:
+        if not hasattr(self, "processing_mode") or not hasattr(self, "colab_status"):
+            return
+
+        if self.processing_mode.currentData() != "colab":
+            self.colab_monitor_timer.stop()
+            self.colab_status.setText("Estado da API: modo local ativo; conexão remota não necessária.")
+            return
+
+        if not self.colab_url.text().strip() or not self.colab_token.text().strip():
+            self.colab_monitor_timer.stop()
+            self.colab_status.setText(
+                "Estado da API: aguardando a URL HTTPS e o token do notebook."
+            )
+            return
+
+        if not self.colab_monitor_timer.isActive():
+            self.colab_monitor_timer.start()
+        self._refresh_colab_status()
+
+    def _refresh_colab_status(self) -> None:
+        if self.processing_mode.currentData() != "colab":
+            return
+        if not self.colab_url.text().strip() or not self.colab_token.text().strip():
+            return
+        self._start_colab_check(manual=False)
+
+    def _start_colab_check(self, manual: bool) -> None:
+        if self.colab_monitor_worker is not None:
+            if manual:
+                self.statusBar().showMessage("A verificação da API já está em andamento.", 4000)
+            return
         try:
             client = self._colab_client()
         except ValueError as exc:
-            QMessageBox.information(self, "Configuração incompleta", str(exc))
+            self.colab_status.setText(f"Estado da API: configuração incompleta — {exc}")
+            if manual:
+                QMessageBox.information(self, "Configuração incompleta", str(exc))
             return
-        self._run_task(
-            "Testando conexão com a API do Colab…",
-            client.test_connection,
-            self._colab_connection_finished,
-        )
+
+        self.colab_monitor_manual = manual
+        self.colab_status.setText("Estado da API: verificando conexão…")
+        worker = FunctionWorker(client.test_connection)
+        self.colab_monitor_worker = worker
+        worker.signals.finished.connect(self._colab_connection_finished)
+        worker.signals.failed.connect(self._colab_monitor_failed)
+        self.colab_monitor_pool.start(worker)
+
+    def _test_colab_connection(self) -> None:
+        self._start_colab_check(manual=True)
 
     def _colab_connection_finished(self, result: object) -> None:
+        self.colab_monitor_worker = None
+        self.colab_monitor_manual = False
         data = result if isinstance(result, dict) else {}
         gpu = data.get("gpu_name") or ("CUDA disponível" if data.get("cuda_available") else "CPU")
+        checked_at = QTime.currentTime().toString("HH:mm:ss")
+        self.colab_status.setText(f"API online — última verificação às {checked_at}.")
         self.colab_info.setText(
             f"Conexão confirmada. Servidor: {data.get('service', 'Joe Colab API')}\n"
             f"ASR: {data.get('asr', 'Parakeet Redux')}\n"
             f"GPU: {gpu}\n"
-            f"Parakeet carregado: {'sim' if data.get('asr_loaded') else 'ainda não'}"
+            f"Parakeet carregado: {'sim' if data.get('asr_loaded') else 'ainda não'}\n\n"
+            "O monitoramento confirma conectividade, mas não mantém o runtime do Colab ativo."
         )
         self.statusBar().showMessage("API do Google Colab conectada.", 5000)
+
+    def _colab_monitor_failed(self, message: str) -> None:
+        manual = self.colab_monitor_manual
+        self.colab_monitor_worker = None
+        self.colab_monitor_manual = False
+        detail = message.split("\n\n", 1)[0].strip() or "Não foi possível alcançar a API."
+        checked_at = QTime.currentTime().toString("HH:mm:ss")
+        self.colab_status.setText(
+            f"API indisponível — {detail} (verificado às {checked_at}). "
+            "Confira a sessão do Colab e a URL/token do túnel."
+        )
+        self.statusBar().showMessage("API do Colab indisponível.", 6000)
+        if manual:
+            QMessageBox.warning(
+                self,
+                "API do Colab indisponível",
+                f"{detail}\n\n"
+                "Se o runtime foi encerrado, execute novamente o notebook e informe "
+                "a nova URL do túnel e o token.",
+            )
 
     def _open_colab_notebook(self) -> None:
         url = (
@@ -704,6 +788,9 @@ class JoeWindow(QMainWindow):
         )
 
     def closeEvent(self, event) -> None:
+        self.colab_monitor_timer.stop()
+        if self.colab_monitor_pool.activeThreadCount():
+            self.colab_monitor_pool.waitForDone(5000)
         if self.thread_pool.activeThreadCount():
             self.statusBar().showMessage("Aguardando a tarefa atual terminar…")
             self.thread_pool.waitForDone(-1)
