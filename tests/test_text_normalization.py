@@ -93,3 +93,14 @@ def test_english_slash_date_uses_month_day_year_order():
     result = normalize_text_for_tts("The meeting is on 11/18/2026.", language="english")
 
     assert "November eighteenth" in result
+
+
+
+def test_custom_dictionary_remains_active_when_automatic_normalization_is_disabled():
+    result = normalize_text_for_tts(
+        "GPU custa 25%.",
+        pronunciation_dictionary={"GPU": "gê pê u"},
+        apply_automatic=False,
+    )
+
+    assert result == "gê pê u custa 25%."
