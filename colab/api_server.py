@@ -352,11 +352,11 @@ def get_job_result(job_id: str) -> Any:
             raise HTTPException(status_code=409, detail="A tarefa ainda está em andamento.")
         if job["status"] == "failed":
             message = job["error"] or "Falha desconhecida na inferência."
-            _JOBS.pop(job_id, None)
             raise HTTPException(status_code=500, detail=message)
         kind = job["kind"]
         result = job["result"]
-        _JOBS.pop(job_id, None)
+        # Keep completed results available until TTL/eviction so the desktop can
+        # retry a download after a transient tunnel/network interruption.
     if kind == "tts":
         return Response(
             content=result,

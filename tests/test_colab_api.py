@@ -49,3 +49,48 @@ def test_colab_tts_rejects_non_wav_results(monkeypatch):
 
     with pytest.raises(ColabAPIError, match="RIFF/WAVE"):
         client.generate_audio("Olá", "portuguese")
+
+
+
+def test_colab_job_polling_retries_transient_connection_errors(monkeypatch):
+    import httpx
+
+    from joe.services.colab_api import ColabAPIError
+
+    client = ColabAPIClient("https://example.trycloudflare.com", "x" * 40)
+    calls = []
+
+    def request(method, endpoint, **_kwargs):
+        calls.append((method, endpoint))
+        if len(calls) == 1:
+            raise ColabAPIError("temporary tunnel failure", retryable=True)
+        if endpoint == "/v1/jobs/job-123":
+            return httpx.Response(200, json={"status": "completed"})
+        return httpx.Response(200, content=b"RIFF" + b"\x00" * 4 + b"WAVE")
+
+    monkeypatch.setattr(client, "_request", request)
+    monkeypatch.setattr("joe.services.colab_api.time.sleep", lambda _seconds: None)
+
+    result = client._wait_for_result("job-123", job_timeout=1)
+
+    assert result.content[0:4] == b"RIFF"
+    assert len(calls) == 3
+
+
+def test_colab_job_polling_does_not_retry_authentication_errors(monkeypatch):
+    from joe.services.colab_api import ColabAPIError
+
+    client = ColabAPIClient("https://example.trycloudflare.com", "x" * 40)
+    calls = []
+
+    def request(*_args, **_kwargs):
+        calls.append(True)
+        raise ColabAPIError("Token recusado")
+
+    monkeypatch.setattr(client, "_request", request)
+    monkeypatch.setattr("joe.services.colab_api.time.sleep", lambda _seconds: None)
+
+    with pytest.raises(ColabAPIError, match="Token recusado"):
+        client._wait_for_result("job-123", job_timeout=1)
+
+    assert len(calls) == 1

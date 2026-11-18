@@ -10,6 +10,10 @@ import httpx
 class ColabAPIError(RuntimeError):
     """Raised when the remote Joe API cannot complete a request."""
 
+    def __init__(self, message: str, *, retryable: bool = False) -> None:
+        super().__init__(message)
+        self.retryable = retryable
+
 
 class ColabAPIClient:
     """HTTP client for a Joe API started in Google Colab."""
@@ -43,7 +47,8 @@ class ColabAPIClient:
         except httpx.RequestError as exc:
             raise ColabAPIError(
                 "Não foi possível alcançar a API do Colab. Verifique se o notebook "
-                "continua executando e se a URL do túnel ainda é válida."
+                "continua executando e se a URL do túnel ainda é válida.",
+                retryable=True,
             ) from exc
 
         if response.is_error:
@@ -53,7 +58,11 @@ class ColabAPIClient:
                 detail = response.text
             if response.status_code in {401, 403}:
                 raise ColabAPIError("Token recusado pela API do Colab. Confira o token.")
-            raise ColabAPIError(f"API do Colab respondeu HTTP {response.status_code}: {detail}")
+            retryable = response.status_code in {408, 425, 429, 500, 502, 503, 504}
+            raise ColabAPIError(
+                f"API do Colab respondeu HTTP {response.status_code}: {detail}",
+                retryable=retryable,
+            )
         return response
 
     def test_connection(self) -> dict[str, Any]:
@@ -61,16 +70,28 @@ class ColabAPIClient:
 
     def _wait_for_result(self, job_id: str, job_timeout: float = 1800.0) -> httpx.Response:
         deadline = time.monotonic() + job_timeout
+        transient_failures = 0
         while time.monotonic() < deadline:
-            status = self._request("GET", f"/v1/jobs/{job_id}").json()
-            state = status.get("status")
-            if state == "completed":
-                return self._request("GET", f"/v1/jobs/{job_id}/result")
-            if state == "failed":
-                raise ColabAPIError(
-                    f"Falha na tarefa remota: {status.get('error') or 'erro desconhecido'}"
-                )
-            time.sleep(1.2)
+            try:
+                status = self._request("GET", f"/v1/jobs/{job_id}").json()
+                state = status.get("status")
+                if state == "completed":
+                    return self._request("GET", f"/v1/jobs/{job_id}/result")
+                if state == "failed":
+                    raise ColabAPIError(
+                        f"Falha na tarefa remota: {status.get('error') or 'erro desconhecido'}"
+                    )
+                transient_failures = 0
+                delay = 1.2
+            except ColabAPIError as exc:
+                if not exc.retryable:
+                    raise
+                transient_failures += 1
+                delay = min(1.2 * (2 ** (transient_failures - 1)), 8.0)
+
+            remaining = deadline - time.monotonic()
+            if remaining > 0:
+                time.sleep(min(delay, remaining))
         raise ColabAPIError(
             "A inferência no Colab excedeu 30 minutos. Confira o estado do runtime "
             "e tente novamente com um arquivo menor."
