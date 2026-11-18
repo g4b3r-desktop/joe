@@ -108,7 +108,8 @@ _PT_ACRONYMS = {
 }
 _PT_WORD_LIKE_BRANDS = {
     "BLENDER", "BOM", "COLAB", "FIM", "JOE", "LINUX", "NAO", "NÃO",
-    "NVIDIA", "OK", "OPENAI", "POCKET", "PYTHON", "QWEN", "SIM", "STEAM",
+    "LASER", "NASA", "NVIDIA", "OK", "ONU", "OPENAI", "POCKET",
+    "PYTHON", "QWEN", "SIM", "STEAM", "UNESCO",
 }
 
 _DATE_PATTERN = re.compile(r"(?<!\d)(\d{1,2})[/-](\d{1,2})[/-](\d{4})(?!\d)")
@@ -298,7 +299,7 @@ def normalize_text_for_tts(
         pronunciation = str(pronunciation).strip()
         if not term or not pronunciation:
             continue
-        placeholder = f"\uE000{index}\uE001"
+        placeholder = f"\uE000PRON{index}TOKEN\uE001"
         pattern = re.compile(rf"(?<!\w){re.escape(term)}(?!\w)", re.IGNORECASE)
         if pattern.search(normalized):
             normalized = pattern.sub(lambda _match, key=placeholder: key, normalized)
