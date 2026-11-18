@@ -160,6 +160,12 @@ O Joe grava automaticamente, enquanto você digita ou altera os campos, os texto
 8. Em **Arquivos e atalho de texto copiado**, altere a pasta de saída, escolha o salvamento automático com nome genérico e ajuste o tamanho dos blocos usados pelo atalho global.
 9. A medição de velocidade é feita pelo próprio Joe no computador, sem depender de métricas calculadas no notebook. Na tela Texto → Áudio e na janela compacta do atalho, o aplicativo mostra o tempo decorrido durante a geração; ao concluir, apresenta tempo total, duração do WAV, velocidade efetiva em múltiplos do tempo real (áudio produzido ÷ tempo gasto) e caracteres processados por segundo. No modo remoto, o cronômetro do desktop inclui envio, fila e espera pela resposta da API; no modo local, inclui o carregamento do modelo quando necessário.
 
+### Fila de geração de áudio
+
+O botão **Fila de geração** abre um painel para adicionar o texto atual, acompanhar o progresso por tarefa, cancelar itens, marcar tarefas urgentes, repetir falhas e limpar tarefas concluídas. As gerações TTS são executadas em sequência; uma falha é registrada na fila e não impede o processamento das próximas tarefas. Cada tarefa captura o texto preparado, idioma, voz, destino e backend escolhidos no momento do envio.
+
+A fila existe somente na memória da sessão atual. Os textos não são gravados pela fila nem exibidos na lista; os arquivos WAV concluídos ficam no destino escolhido. O cancelamento local é cooperativo entre blocos de até 280 caracteres: uma inferência que já começou precisa terminar antes de o worker parar. No Colab, tarefas ainda aguardando podem ser canceladas; se a inferência remota já começou, o servidor sinaliza o cancelamento e descarta o resultado quando a chamada terminar.
+
 ### Áudio → Texto
 1. Selecione um arquivo de áudio.
 2. Opcionalmente, habilite marcações de tempo por segmento.
@@ -183,7 +189,7 @@ ruff check .
 
 ## Estado
 
-MVP inicial: interface desktop, geração WAV, transcrição de arquivo, cópia/salvamento de texto, exportação SRT quando o backend fornece timestamps, seleção local CPU/CUDA e integração com API do Google Colab. Gravação direta do microfone, fila de tarefas e empacotamento AppImage/DEB ficam para etapas posteriores.
+MVP: interface desktop, geração WAV em fila sequencial com progresso por tarefa, cancelamento cooperativo, prioridade urgente e repetição de falhas, transcrição de arquivo, cópia/salvamento de texto, exportação SRT quando o backend fornece timestamps, seleção local CPU/CUDA e integração com API do Google Colab. Gravação direta do microfone e empacotamento AppImage/DEB ficam para etapas posteriores.
 
 ## Licenças dos modelos
 

@@ -32,8 +32,9 @@ Authorization: Bearer <JOE_API_TOKEN>
 - POST /v1/jobs/transcribe: multipart com arquivo audio e campo timestamps (none, segment ou word); retorna job_id.
 - GET /v1/jobs/{job_id}: consulta queued, running, completed ou failed.
 - GET /v1/jobs/{job_id}/result: baixa o WAV ou recebe o JSON quando completed.
+- DELETE /v1/jobs/{job_id}: cancela uma tarefa aguardando execução ou solicita o descarte do resultado quando a inferência já começou.
 
-Todas as rotas são autenticadas. A inferência roda em um worker sequencial e suporta até duas tarefas ativas (uma em execução e uma aguardando). O cliente usa polling para evitar manter chamadas abertas durante o tempo de inferência e contornar o limite de leitura de resposta do túnel Cloudflare. Os resultados expiram em 30 minutos se não forem retirados. Swagger, ReDoc e OpenAPI foram desativados.
+Todas as rotas são autenticadas. A inferência roda em um worker sequencial e suporta até duas tarefas ativas (uma em execução e uma aguardando). O cliente usa polling para evitar manter chamadas abertas durante o tempo de inferência e contornar o limite de leitura de resposta do túnel Cloudflare. O cancelamento interrompe imediatamente tarefas ainda na fila; uma inferência em execução não pode ser interrompida com segurança no meio do kernel/modelo, então o servidor marca a tarefa para cancelamento e descarta o resultado assim que a chamada termina. Os resultados expiram em 30 minutos se não forem retirados. Swagger, ReDoc e OpenAPI foram desativados.
 
 ## Segurança operacional
 

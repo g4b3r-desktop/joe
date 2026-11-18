@@ -94,3 +94,47 @@ def test_colab_job_polling_does_not_retry_authentication_errors(monkeypatch):
         client._wait_for_result("job-123", job_timeout=1)
 
     assert len(calls) == 1
+
+
+
+def test_colab_job_polling_requests_remote_cancellation(monkeypatch):
+    from threading import Event
+
+    from joe.services.colab_api import ColabAPIError
+
+    client = ColabAPIClient("https://example.trycloudflare.com", "x" * 40)
+    cancel_event = Event()
+    cancel_calls = []
+
+    def request(method, endpoint, **_kwargs):
+        if method == "GET":
+            cancel_event.set()
+            return __import__("httpx").Response(200, json={"status": "running"})
+        cancel_calls.append((method, endpoint))
+        return __import__("httpx").Response(200, json={"status": "cancelling"})
+
+    monkeypatch.setattr(client, "_request", request)
+
+    with pytest.raises(ColabAPIError, match="Geração cancelada") as error:
+        client._wait_for_result("job-123", job_timeout=1, cancel_event=cancel_event)
+
+    assert error.value.cancelled
+    assert cancel_calls == [("DELETE", "/v1/jobs/job-123")]
+
+
+def test_colab_job_polling_stops_when_remote_reports_cancelled(monkeypatch):
+    import httpx
+
+    from joe.services.colab_api import ColabAPIError
+
+    client = ColabAPIClient("https://example.trycloudflare.com", "x" * 40)
+    monkeypatch.setattr(
+        client,
+        "_request",
+        lambda *_args, **_kwargs: httpx.Response(200, json={"status": "cancelled"}),
+    )
+
+    with pytest.raises(ColabAPIError, match="tarefa remota foi cancelada") as error:
+        client._wait_for_result("job-123", job_timeout=1)
+
+    assert error.value.cancelled

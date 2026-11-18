@@ -226,17 +226,33 @@ def health(_: None = Depends(require_token)) -> dict[str, Any]:
 
 def _run_job(job_id: str, function: Any, args: tuple[Any, ...]) -> None:
     with _JOB_LOCK:
-        _JOBS[job_id]["status"] = "running"
+        job = _JOBS[job_id]
+        if job["cancel_requested"]:
+            job["status"] = "cancelled"
+            return
+        job["status"] = "running"
     try:
         result = function(*args)
     except Exception as exc:
         with _JOB_LOCK:
-            _JOBS[job_id]["status"] = "failed"
-            _JOBS[job_id]["error"] = str(exc)
+            job = _JOBS[job_id]
+            if job["cancel_requested"]:
+                job["status"] = "cancelled"
+                job["result"] = None
+                job["error"] = None
+            else:
+                job["status"] = "failed"
+                job["error"] = str(exc)
     else:
         with _JOB_LOCK:
-            _JOBS[job_id]["status"] = "completed"
-            _JOBS[job_id]["result"] = result
+            job = _JOBS[job_id]
+            if job["cancel_requested"]:
+                job["status"] = "cancelled"
+                job["result"] = None
+                job["error"] = None
+            else:
+                job["status"] = "completed"
+                job["result"] = result
 
 
 def _submit_job(kind: str, function: Any, *args: Any) -> str:
@@ -244,7 +260,7 @@ def _submit_job(kind: str, function: Any, *args: Any) -> str:
     with _JOB_LOCK:
         expired = [
             job_id for job_id, job in _JOBS.items()
-            if job["status"] in {"completed", "failed"}
+            if job["status"] in {"completed", "failed", "cancelled"}
             and now - job["created_at"] > _JOB_TTL_SECONDS
         ]
         for job_id in expired:
@@ -259,7 +275,10 @@ def _submit_job(kind: str, function: Any, *args: Any) -> str:
                 raise HTTPException(status_code=429, detail="Armazenamento de tarefas cheio.")
             _, oldest_job_id = min(completed)
             _JOBS.pop(oldest_job_id, None)
-        active = sum(job["status"] in {"queued", "running"} for job in _JOBS.values())
+        active = sum(
+            job["status"] in {"queued", "running", "cancelling"}
+            for job in _JOBS.values()
+        )
         if active >= _MAX_ACTIVE_JOBS:
             raise HTTPException(status_code=429, detail="Fila de inferência cheia. Tente novamente mais tarde.")
         job_id = uuid.uuid4().hex
@@ -269,8 +288,13 @@ def _submit_job(kind: str, function: Any, *args: Any) -> str:
             "created_at": now,
             "result": None,
             "error": None,
+            "cancel_requested": False,
+            "future": None,
         }
-    _JOB_EXECUTOR.submit(_run_job, job_id, function, args)
+    future = _JOB_EXECUTOR.submit(_run_job, job_id, function, args)
+    with _JOB_LOCK:
+        if job_id in _JOBS:
+            _JOBS[job_id]["future"] = future
     return job_id
 
 
@@ -328,6 +352,24 @@ async def submit_transcription_job(
     return {"job_id": job_id, "status": "queued"}
 
 
+@app.delete("/v1/jobs/{job_id}", dependencies=[Depends(require_token)])
+def cancel_job(job_id: str) -> dict[str, str]:
+    """Cancel queued work or discard the result after an active inference returns."""
+    with _JOB_LOCK:
+        job = _JOBS.get(job_id)
+        if job is None:
+            raise HTTPException(status_code=404, detail="Tarefa não encontrada ou expirada.")
+        if job["status"] in {"completed", "failed", "cancelled"}:
+            return {"job_id": job_id, "status": job["status"]}
+        job["cancel_requested"] = True
+        future = job.get("future")
+        if future is not None and future.cancel():
+            job["status"] = "cancelled"
+        else:
+            job["status"] = "cancelling"
+        return {"job_id": job_id, "status": job["status"]}
+
+
 @app.get("/v1/jobs/{job_id}", dependencies=[Depends(require_token)])
 def get_job_status(job_id: str) -> dict[str, Any]:
     with _JOB_LOCK:
@@ -348,8 +390,10 @@ def get_job_result(job_id: str) -> Any:
         job = _JOBS.get(job_id)
         if job is None:
             raise HTTPException(status_code=404, detail="Tarefa não encontrada ou expirada.")
-        if job["status"] in {"queued", "running"}:
+        if job["status"] in {"queued", "running", "cancelling"}:
             raise HTTPException(status_code=409, detail="A tarefa ainda está em andamento.")
+        if job["status"] == "cancelled":
+            raise HTTPException(status_code=410, detail="A tarefa foi cancelada.")
         if job["status"] == "failed":
             message = job["error"] or "Falha desconhecida na inferência."
             raise HTTPException(status_code=500, detail=message)

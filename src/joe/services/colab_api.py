@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import time
 from pathlib import Path
+from threading import Event
 from typing import Any
 
 import httpx
@@ -10,9 +11,16 @@ import httpx
 class ColabAPIError(RuntimeError):
     """Raised when the remote Joe API cannot complete a request."""
 
-    def __init__(self, message: str, *, retryable: bool = False) -> None:
+    def __init__(
+        self,
+        message: str,
+        *,
+        retryable: bool = False,
+        cancelled: bool = False,
+    ) -> None:
         super().__init__(message)
         self.retryable = retryable
+        self.cancelled = cancelled
 
 
 class ColabAPIClient:
@@ -68,30 +76,62 @@ class ColabAPIClient:
     def test_connection(self) -> dict[str, Any]:
         return self._request("GET", "/health").json()
 
-    def _wait_for_result(self, job_id: str, job_timeout: float = 1800.0) -> httpx.Response:
+    def cancel_job(self, job_id: str) -> dict[str, Any]:
+        """Ask the Colab runtime to stop waiting work or discard a running result."""
+        return self._request("DELETE", f"/v1/jobs/{job_id}").json()
+
+    def _wait_for_result(
+        self,
+        job_id: str,
+        job_timeout: float = 1800.0,
+        cancel_event: Event | None = None,
+    ) -> httpx.Response:
         deadline = time.monotonic() + job_timeout
         transient_failures = 0
+
+        def cancel_remote_job() -> None:
+            try:
+                self.cancel_job(job_id)
+            except ColabAPIError:
+                # The desktop cancellation remains final if the tunnel disappeared.
+                pass
+            raise ColabAPIError(
+                "Geração cancelada. Uma inferência já iniciada no Colab pode terminar "
+                "no runtime, mas o resultado será descartado.",
+                cancelled=True,
+            )
+
         while time.monotonic() < deadline:
+            if cancel_event is not None and cancel_event.is_set():
+                cancel_remote_job()
             try:
                 status = self._request("GET", f"/v1/jobs/{job_id}").json()
                 state = status.get("status")
                 if state == "completed":
+                    if cancel_event is not None and cancel_event.is_set():
+                        cancel_remote_job()
                     return self._request("GET", f"/v1/jobs/{job_id}/result")
                 if state == "failed":
                     raise ColabAPIError(
                         f"Falha na tarefa remota: {status.get('error') or 'erro desconhecido'}"
                     )
+                if state == "cancelled":
+                    raise ColabAPIError("A tarefa remota foi cancelada.", cancelled=True)
                 transient_failures = 0
                 delay = 1.2
             except ColabAPIError as exc:
-                if not exc.retryable:
+                if exc.cancelled or not exc.retryable:
                     raise
                 transient_failures += 1
                 delay = min(1.2 * (2 ** (transient_failures - 1)), 8.0)
 
             remaining = deadline - time.monotonic()
             if remaining > 0:
-                time.sleep(min(delay, remaining))
+                wait_seconds = min(delay, remaining)
+                if cancel_event is not None:
+                    cancel_event.wait(wait_seconds)
+                else:
+                    time.sleep(wait_seconds)
         raise ColabAPIError(
             "A inferência no Colab excedeu 30 minutos. Confira o estado do runtime "
             "e tente novamente com um arquivo menor."
@@ -102,6 +142,7 @@ class ColabAPIClient:
         text: str,
         language: str,
         voice_path: str | Path | None = None,
+        cancel_event: Event | None = None,
     ) -> bytes:
         data = {"text": text, "language": language}
         files: list[Any] = []
@@ -123,7 +164,7 @@ class ColabAPIClient:
         job_id = response.json().get("job_id")
         if not job_id:
             raise ColabAPIError("A API não retornou o identificador da tarefa TTS.")
-        audio = self._wait_for_result(job_id).content
+        audio = self._wait_for_result(job_id, cancel_event=cancel_event).content
         if not audio.startswith(b"RIFF") or audio[8:12] != b"WAVE":
             raise ColabAPIError(
                 "A API remota não retornou um WAV válido (cabeçalho RIFF/WAVE ausente). "
