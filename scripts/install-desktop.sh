@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ROOT_DIR="$(cd -- "$(dirname -- "\${BASH_SOURCE[0]}")/.." && pwd -P)"
-APPLICATIONS_DIR="\${XDG_DATA_HOME:-$HOME/.local/share}/applications"
+ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
+APPLICATIONS_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/applications"
 DESKTOP_FILE="$APPLICATIONS_DIR/joe.desktop"
 MODE="install"
 CREATE_DESKTOP=0
@@ -29,7 +29,7 @@ EOF
 done
 
 find_desktop_dir() {
-  local candidate="\${XDG_DESKTOP_DIR:-}"
+  local candidate="${XDG_DESKTOP_DIR:-}"
   if [[ -z "$candidate" ]] && command -v xdg-user-dir >/dev/null 2>&1; then
     candidate="$(xdg-user-dir DESKTOP 2>/dev/null || true)"
   fi
@@ -79,7 +79,7 @@ run_script = root / "run.sh"
 def quote_exec_argument(value: str) -> str:
     # Desktop Entry Exec quoting: escape reserved characters inside double quotes.
     escaped = value.replace("\\", "\\\\")
-    for char in ('"', "\`", "$"):
+    for char in ('"', "`", "$"):
         escaped = escaped.replace(char, "\\" + char)
     escaped = escaped.replace("%", "%%")
     return f'"{escaped}"'
