@@ -73,6 +73,12 @@ from joe.tts_queue import (
     remove_queue_item,
     update_queue_item,
 )
+from joe.voice_profiles import (
+    load_voice_profiles,
+    remove_voice_profile,
+    serialize_voice_profiles,
+    upsert_voice_profile,
+)
 from joe.voice_favorites import (
     canonical_voice_path,
     load_voice_favorites,
@@ -88,6 +94,7 @@ from joe.audio_history import (
 )
 from joe.ui.audio_history_dialog import AudioHistoryDialog
 from joe.ui.tts_queue_dialog import TTSQueueDialog
+from joe.ui.voice_profiles_dialog import VoiceProfilesDialog
 
 
 class VoiceLibraryDialog(QDialog):
@@ -764,6 +771,9 @@ class JoeWindow(QMainWindow):
         self.favorite_voices = load_voice_favorites(
             self.app_settings.value("favorite_voices", "{}")
         )
+        self.voice_profiles = load_voice_profiles(
+            self.app_settings.value("voice_profiles", "{}")
+        )
         self.audio_history = load_audio_history(
             self.app_settings.value("audio_history", "[]")
         )
@@ -1067,6 +1077,10 @@ class JoeWindow(QMainWindow):
         )
         self.tts_favorites_button.clicked.connect(self._open_favorite_voices)
 
+        self.tts_profiles_button = QPushButton("Perfis")
+        self.tts_profiles_button.setToolTip("Salvar e aplicar combinações de voz e pronúncia")
+        self.tts_profiles_button.clicked.connect(self._open_voice_profiles)
+
         self.tts_history_button = QPushButton("Histórico")
         self.tts_history_button.setToolTip("Consultar áudios gerados anteriormente")
         self.tts_history_button.clicked.connect(self._open_audio_history)
@@ -1087,6 +1101,7 @@ class JoeWindow(QMainWindow):
         action_row.addWidget(self.tts_generate_button)
         action_row.addWidget(self.tts_play_button)
         action_row.addWidget(self.tts_favorites_button)
+        action_row.addWidget(self.tts_profiles_button)
         action_row.addWidget(self.tts_history_button)
         action_row.addWidget(self.tts_queue_add_button)
         action_row.addWidget(self.tts_queue_button)
@@ -1455,6 +1470,69 @@ class JoeWindow(QMainWindow):
         self.app_settings.setValue(
             "audio_history", serialize_audio_history(self.audio_history)
         )
+
+    def _snapshot_voice_profile(self) -> dict:
+        voice_path = self.voice_path.text().strip()
+        return {
+            "voice_path": voice_path,
+            "language": str(self.tts_language.currentData()),
+            "tts_normalization_enabled": self.tts_normalization_enabled.isChecked(),
+            "pronunciation_dictionary": dict(self.pronunciation_dictionary),
+            "voice_alias": self.favorite_voices.get(canonical_voice_path(voice_path), ""),
+        }
+
+    def _save_voice_profiles(self) -> None:
+        self.app_settings.setValue(
+            "voice_profiles", serialize_voice_profiles(self.voice_profiles)
+        )
+
+    def _save_voice_profile(self, name: str) -> dict:
+        profile = self._snapshot_voice_profile()
+        self.voice_profiles = upsert_voice_profile(self.voice_profiles, name, profile)
+        self._save_voice_profiles()
+        self.statusBar().showMessage(f"Perfil “{name}” salvo.", 4000)
+        return profile
+
+    def _update_voice_profile(self, name: str) -> dict:
+        return self._save_voice_profile(name)
+
+    def _delete_voice_profile(self, name: str) -> None:
+        self.voice_profiles = remove_voice_profile(self.voice_profiles, name)
+        self._save_voice_profiles()
+        if str(self.app_settings.value("active_voice_profile", "")) == name:
+            self.app_settings.remove("active_voice_profile")
+        self.statusBar().showMessage(f"Perfil “{name}” excluído.", 4000)
+
+    def _apply_voice_profile(self, profile: dict) -> None:
+        language = str(profile.get("language", "portuguese"))
+        language_index = self.tts_language.findData(language)
+        if language_index >= 0:
+            self.tts_language.setCurrentIndex(language_index)
+        self.voice_path.setText(str(profile.get("voice_path", "")))
+        self.tts_normalization_enabled.setChecked(
+            bool(profile.get("tts_normalization_enabled", True))
+        )
+        dictionary = profile.get("pronunciation_dictionary", {})
+        if isinstance(dictionary, dict):
+            self._save_pronunciation_dictionary(dictionary)
+        active_name = next(
+            (name for name, value in self.voice_profiles.items() if value == profile), ""
+        )
+        self.app_settings.setValue("active_voice_profile", active_name)
+        self.statusBar().showMessage("Perfil de voz aplicado.", 5000)
+
+    def _open_voice_profiles(self) -> None:
+        active = str(self.app_settings.value("active_voice_profile", ""))
+        dialog = VoiceProfilesDialog(
+            self.voice_profiles,
+            active,
+            self._apply_voice_profile,
+            self._save_voice_profile,
+            self._update_voice_profile,
+            self._delete_voice_profile,
+            self,
+        )
+        dialog.exec()
 
     def _open_favorite_voices(self) -> None:
         self.favorite_voices = self._load_favorite_voices()
@@ -2894,6 +2972,7 @@ class JoeWindow(QMainWindow):
             self.tts_generate_button,
             self.tts_play_button,
             self.tts_favorites_button,
+            self.tts_profiles_button,
             self.tts_history_button,
             self.tts_queue_add_button,
             self.tts_settings_button,

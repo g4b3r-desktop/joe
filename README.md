@@ -209,3 +209,8 @@ Por privacidade, os textos da fila existem somente na memória da sessão e não
 
 
 Os áudios produzidos pelo atalho do clipboard entram no Histórico somente depois de usar **Salvar áudio…**. O WAV temporário da janela compacta é apagado ao fechar e, por isso, não deixa um registro quebrado.
+
+
+## Perfis de voz
+
+O botão **Perfis** na tela Texto → Áudio abre o gerenciador de perfis. Um perfil guarda o arquivo/estado de voz, idioma, opção de normalização e dicionário pessoal de pronúncia. É possível salvar a configuração atual com um nome, aplicar, atualizar ou excluir um perfil. Os perfis ficam em QSettings; excluir um perfil não apaga arquivos de voz nem favoritos.

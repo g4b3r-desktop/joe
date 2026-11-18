@@ -97,3 +97,11 @@ O módulo `text_normalization.py` mantém uma cópia preparada do texto e conté
 - Quando o usuário salva uma cópia permanente pela janela compacta, registre o caminho salvo e associe as métricas e a voz utilizadas.
 - Ao encerrar o Joe durante uma fila, peça cancelamento cooperativo e aguarde o backend retornar; não mate uma inferência nativa à força.
 - A fila deve marcar como **Gerando** somente o item que está efetivamente sendo processado. Destinos duplicados entre itens pendentes devem ser recusados para evitar sobrescrita.
+
+
+## Perfis de voz
+
+- Os perfis nomeados são snapshots de voice_path, language, tts_normalization_enabled, pronunciation_dictionary e apelido informativo da voz.
+- Persistência em QSettings por voice_profiles; o perfil ativo é lembrado separadamente.
+- Aplicar um perfil atualiza os controles existentes e usa o mecanismo já existente para persistir o dicionário.
+- Excluir um perfil não remove áudio, estado .safetensors ou favorito.

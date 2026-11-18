@@ -58,6 +58,8 @@ Snapshot de referência: branch `feature/colab-model-api`, commit `e6ecda33e7c31
 | `src/joe/audio_performance.py` | Métricas compartilhadas nas telas: duração, tempo total, razão tempo real e caracteres por segundo |
 | `src/joe/local_ipc.py` | Servidor/cliente AF_UNIX para comandos locais da instância ativa |
 | `src/joe/voice_favorites.py` | Canonicalização de caminhos, leitura e serialização dos apelidos favoritos |
+| `src/joe/voice_profiles.py` | Validação, leitura e gravação de perfis nomeados de voz e pronúncia |
+| `src/joe/ui/voice_profiles_dialog.py` | Diálogo para aplicar, salvar, atualizar e remover perfis de voz |
 | `src/joe/text_normalization.py` | Conversão de números, datas, horas, moeda, porcentagem, abreviações e siglas para fala |
 | `scripts/install-linux.sh` | Ambiente virtual, PyTorch CPU/CUDA e instalação editável |
 | `scripts/install-desktop.sh` | `joe.desktop`, ícone, atalho Xfce e desinstalação segura dos itens gerenciados pelo Joe |
