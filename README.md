@@ -163,6 +163,9 @@ O Joe grava automaticamente, enquanto você digita ou altera os campos, os texto
 8. Em **Arquivos e atalho de texto copiado**, altere a pasta de saída, escolha o salvamento automático com nome genérico e ajuste o tamanho dos blocos usados pelo atalho global.
 9. A medição de velocidade é feita pelo próprio Joe no computador, sem depender de métricas calculadas no notebook. Na tela Texto → Áudio e na janela compacta do atalho, o aplicativo mostra o tempo decorrido durante a geração; ao concluir, apresenta tempo total, duração do WAV, velocidade efetiva em múltiplos do tempo real (áudio produzido ÷ tempo gasto) e caracteres processados por segundo. No modo remoto, o cronômetro do desktop inclui envio, fila e espera pela resposta da API; no modo local, inclui o carregamento do modelo quando necessário.
 
+### Histórico
+A aba **Histórico** mantém um índice SQLite no armazenamento de dados do usuário. Cada registro guarda caminho, data, duração, tamanho, voz, backend e métricas de geração. Pesquise por nome do arquivo, voz ou backend, reproduza o WAV, abra a pasta ou remova o registro. **Remover do histórico não apaga o áudio**; a ação **Excluir WAV…** pede confirmação e só então apaga o arquivo. O texto original não é armazenado por padrão. Para ativar esse armazenamento, use Configurações → Arquivos e atalho → Guardar também o texto original no histórico.
+
 ### Áudio → Texto
 1. Selecione um arquivo de áudio.
 2. Opcionalmente, habilite marcações de tempo por segmento.

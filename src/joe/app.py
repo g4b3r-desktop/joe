@@ -71,6 +71,7 @@ from joe.voice_favorites import (
 )
 from joe.utils import build_srt, build_audio_output_path
 from joe.tts_queue import TTSJobQueue, TTSQueueEntry
+from joe.audio_history import AudioHistoryStore
 
 
 class WorkerSignals(QObject):
@@ -966,6 +967,12 @@ class JoeWindow(QMainWindow):
         self.tts = PocketTTSService()
         self.asr = ParakeetReduxService()
         self.app_settings = QSettings("g4b3r-desktop", "JoeAudioStudio")
+        app_data_directory = QStandardPaths.writableLocation(
+            QStandardPaths.StandardLocation.AppDataLocation
+        ) or str(Path.home() / ".local" / "share" / "joe-audio-studio")
+        self.history_store = AudioHistoryStore(
+            Path(app_data_directory) / "audio_history.sqlite3"
+        )
         self.thread_pool = QThreadPool(self)
         self.thread_pool.setMaxThreadCount(1)
         self.active_worker: FunctionWorker | TTSQueueWorker | None = None
@@ -1023,6 +1030,7 @@ class JoeWindow(QMainWindow):
         tabs.addTab(self._build_tts_tab(), "Texto → Áudio")
         tabs.addTab(self._build_asr_tab(), "Áudio → Texto")
         tabs.addTab(self._build_colab_tab(), "Google Colab / API")
+        tabs.addTab(self._build_history_tab(), "Histórico")
         tabs.setCurrentIndex(self.app_settings.value("last_tab", 0, type=int))
         tabs.currentChanged.connect(
             lambda index: self.app_settings.setValue("last_tab", index)
@@ -1052,6 +1060,199 @@ class JoeWindow(QMainWindow):
         about_action = QAction("Sobre o Joe", self)
         about_action.triggered.connect(self._show_about)
         help_menu.addAction(about_action)
+
+    def _build_history_tab(self) -> QWidget:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(24, 22, 24, 22)
+        layout.setSpacing(12)
+
+        title = QLabel("Histórico de áudios")
+        title.setObjectName("pageTitle")
+        description = QLabel(
+            "Os WAVs gerados ficam indexados neste computador. Remover um registro "
+            "não apaga o arquivo; a exclusão do WAV exige uma ação separada."
+        )
+        description.setObjectName("muted")
+        description.setWordWrap(True)
+
+        self.history_search = QLineEdit()
+        self.history_search.setPlaceholderText("Pesquisar arquivo, voz ou backend…")
+        self.history_search.textChanged.connect(self._refresh_audio_history)
+
+        self.history_table = QTableWidget(0, 7)
+        self.history_table.setHorizontalHeaderLabels(
+            ["Data", "Arquivo", "Duração", "Voz", "Origem", "Velocidade", "Tamanho"]
+        )
+        self.history_table.setSelectionBehavior(
+            QAbstractItemView.SelectionBehavior.SelectRows
+        )
+        self.history_table.setSelectionMode(
+            QAbstractItemView.SelectionMode.SingleSelection
+        )
+        self.history_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.history_table.setAlternatingRowColors(True)
+        self.history_table.horizontalHeader().setSectionResizeMode(
+            QHeaderView.ResizeMode.ResizeToContents
+        )
+        self.history_table.horizontalHeader().setStretchLastSection(True)
+        self.history_table.itemDoubleClicked.connect(
+            lambda _item: self._play_history_selected()
+        )
+
+        actions = QHBoxLayout()
+        self.history_play_button = QPushButton("▶ Reproduzir")
+        self.history_play_button.clicked.connect(self._play_history_selected)
+        self.history_folder_button = QPushButton("Abrir pasta")
+        self.history_folder_button.clicked.connect(self._open_history_folder)
+        self.history_remove_button = QPushButton("Remover do histórico")
+        self.history_remove_button.clicked.connect(self._remove_history_selected)
+        self.history_delete_button = QPushButton("Excluir WAV…")
+        self.history_delete_button.clicked.connect(self._delete_history_audio)
+        actions.addWidget(self.history_play_button)
+        actions.addWidget(self.history_folder_button)
+        actions.addStretch(1)
+        actions.addWidget(self.history_remove_button)
+        actions.addWidget(self.history_delete_button)
+
+        self.history_status = QLabel()
+        self.history_status.setObjectName("muted")
+
+        layout.addWidget(title)
+        layout.addWidget(description)
+        layout.addWidget(self.history_search)
+        layout.addWidget(self.history_table, 1)
+        layout.addLayout(actions)
+        layout.addWidget(self.history_status)
+        self._refresh_audio_history()
+        return page
+
+    @staticmethod
+    def _format_file_size(size_bytes: int) -> str:
+        value = max(0, int(size_bytes))
+        if value >= 1024 ** 3:
+            return f"{value / (1024 ** 3):.2f} GB"
+        if value >= 1024 ** 2:
+            return f"{value / (1024 ** 2):.1f} MB"
+        if value >= 1024:
+            return f"{value / 1024:.1f} KB"
+        return f"{value} B"
+
+    def _refresh_audio_history(self, *_args) -> None:
+        if not hasattr(self, "history_table"):
+            return
+        search = self.history_search.text().strip()
+        try:
+            entries = self.history_store.list_entries(search=search)
+        except Exception as exc:  # noqa: BLE001
+            self.history_status.setText(f"Não foi possível ler o histórico: {exc}")
+            return
+
+        self.history_table.setRowCount(len(entries))
+        for row, entry in enumerate(entries):
+            created = entry.created_at.replace("T", " ")[:19]
+            voice = entry.voice_alias or (
+                Path(entry.voice_path).name if entry.voice_path else "Padrão"
+            )
+            speed = f"{entry.realtime_speed:.2f}×" if entry.realtime_speed else "—"
+            values = [
+                created,
+                entry.path.name,
+                format_duration(entry.duration_seconds),
+                voice,
+                entry.backend or "—",
+                speed,
+                self._format_file_size(entry.size_bytes),
+            ]
+            for column, value in enumerate(values):
+                item = QTableWidgetItem(str(value))
+                if column == 0:
+                    item.setData(Qt.ItemDataRole.UserRole, entry.entry_id)
+                if column == 1:
+                    item.setToolTip(str(entry.path))
+                self.history_table.setItem(row, column, item)
+
+        self.history_status.setText(
+            f"{len(entries)} registro(s) exibido(s). "
+            "O texto original só é guardado quando essa opção é ativada em Configurações."
+        )
+
+    def _selected_history_entry(self):
+        row = self.history_table.currentRow()
+        if row < 0:
+            return None
+        item = self.history_table.item(row, 0)
+        if item is None:
+            return None
+        return self.history_store.get(int(item.data(Qt.ItemDataRole.UserRole)))
+
+    def _play_history_selected(self) -> None:
+        entry = self._selected_history_entry()
+        if entry is None:
+            return
+        if not entry.path.is_file():
+            QMessageBox.warning(
+                self, "Arquivo não encontrado",
+                f"O WAV não está mais no local registrado:\n{entry.path}",
+            )
+            return
+        self.generated_audio = entry.path
+        self.tts_info.setText(f"Áudio selecionado no histórico: {entry.path}")
+        self.tts_play_button.setEnabled(True)
+        self._play_generated_audio()
+
+    def _open_history_folder(self) -> None:
+        entry = self._selected_history_entry()
+        if entry is None:
+            return
+        folder = entry.path.parent
+        if folder.is_dir():
+            QDesktopServices.openUrl(QUrl.fromLocalFile(str(folder)))
+        else:
+            QMessageBox.information(
+                self, "Pasta não encontrada", f"A pasta não existe mais:\n{folder}"
+            )
+
+    def _remove_history_selected(self) -> None:
+        entry = self._selected_history_entry()
+        if entry is None:
+            return
+        answer = QMessageBox.question(
+            self,
+            "Remover registro",
+            "Remover este item apenas do histórico? O arquivo WAV será mantido.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        self.history_store.remove_entry(entry.entry_id)
+        self._refresh_audio_history()
+
+    def _delete_history_audio(self) -> None:
+        entry = self._selected_history_entry()
+        if entry is None:
+            return
+        answer = QMessageBox.question(
+            self,
+            "Excluir arquivo WAV",
+            f"Excluir permanentemente o áudio abaixo e remover seu registro?\n\n"
+            f"{entry.path}",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            entry.path.unlink(missing_ok=True)
+        except OSError as exc:
+            QMessageBox.critical(self, "Não foi possível excluir o WAV", str(exc))
+            return
+        if self.generated_audio == entry.path:
+            self.generated_audio = None
+            self.tts_play_button.setEnabled(False)
+        self.history_store.remove_entry(entry.entry_id)
+        self._refresh_audio_history()
 
     def _build_colab_tab(self) -> QWidget:
         page = QWidget()
@@ -1514,6 +1715,16 @@ class JoeWindow(QMainWindow):
         )
         self.tts_auto_filename.toggled.connect(self._save_tts_output_settings)
 
+        self.history_save_text = QCheckBox(
+            "Guardar também o texto original no histórico (opcional)"
+        )
+        self.history_save_text.setChecked(
+            self.app_settings.value("history_save_text", False, type=bool)
+        )
+        self.history_save_text.toggled.connect(
+            lambda checked: self.app_settings.setValue("history_save_text", checked)
+        )
+
         self.clipboard_chunk_size = QComboBox()
         for size in (180, 280, 420, 560):
             self.clipboard_chunk_size.addItem(f"{size} caracteres", size)
@@ -1532,6 +1743,7 @@ class JoeWindow(QMainWindow):
         output_form = QFormLayout(output_group)
         output_form.addRow("Pasta para salvar", output_folder_row)
         output_form.addRow("", self.tts_auto_filename)
+        output_form.addRow("", self.history_save_text)
         output_form.addRow("Tamanho dos blocos do atalho", self.clipboard_chunk_size)
         dialog_layout.addWidget(output_group)
 
@@ -2515,7 +2727,18 @@ class JoeWindow(QMainWindow):
                 character_count=len(speech_text),
                 remote=is_remote,
             )
-            return {"path": str(output_path), "performance": performance}
+            voice_key = canonical_voice_path(voice) if voice else ""
+            voice_alias = self.favorite_voices.get(voice_key, "")
+            return {
+                "path": str(output_path),
+                "performance": performance,
+                "history": {
+                    "voice_path": voice,
+                    "voice_alias": voice_alias,
+                    "backend": "Google Colab" if is_remote else "Local",
+                    "text": text,
+                },
+            }
 
         label = " ".join(text.split())
         if len(label) > 76:
@@ -2653,6 +2876,34 @@ class JoeWindow(QMainWindow):
         self.tts_info.setText(f"Áudio salvo em: {self.generated_audio}")
 
         performance = metrics.get("performance")
+        history = metrics.get("history", {})
+        try:
+            elapsed = performance.elapsed_seconds if isinstance(
+                performance, AudioPerformance
+            ) else 0.0
+            character_count = performance.character_count if isinstance(
+                performance, AudioPerformance
+            ) else 0
+            self.history_store.add(
+                self.generated_audio,
+                voice_path=history.get("voice_path"),
+                voice_alias=history.get("voice_alias", ""),
+                backend=history.get("backend", ""),
+                elapsed_seconds=elapsed,
+                chars_per_second=(character_count / elapsed) if elapsed > 0 else 0.0,
+                text=(
+                    history.get("text")
+                    if self.history_save_text.isChecked()
+                    else None
+                ),
+            )
+            self._refresh_audio_history()
+        except Exception as exc:  # noqa: BLE001
+            self.statusBar().showMessage(
+                f"Áudio gerado, mas não foi possível registrá-lo no histórico: {exc}",
+                8000,
+            )
+
         if isinstance(performance, AudioPerformance):
             self.tts_speed_info.setText(format_performance_report(performance))
         else:

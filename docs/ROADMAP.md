@@ -18,10 +18,10 @@ A fila será mantida em memória nesta fase; fechar o Joe exige confirmação e 
 
 ## Fase 2 — Histórico e player
 
-- Histórico pesquisável de WAVs, com data, duração, tamanho, voz, backend e métricas.
-- Associar texto original e metadados ao arquivo, com opção para não guardar o texto.
-- Player com waveform, seek, volume e velocidade de reprodução.
-- Operações de arquivo com confirmação e proteção contra exclusões acidentais.
+- [x] Histórico SQLite local e pesquisável de WAVs, com data, duração, tamanho, voz, backend e métricas.
+- [x] Metadados do texto associados ao áudio somente quando a opção de privacidade é ativada.
+- [x] Separar remoção de registro e exclusão real do WAV, com confirmação.
+- [ ] Player com waveform, seek, volume e velocidade de reprodução.
 
 ## Fase 3 — Perfis de voz e transcrição avançada
 
