@@ -621,12 +621,13 @@ class JoeWindow(QMainWindow):
             QMessageBox.information(self, "Texto vazio", "Digite o texto que deseja converter.")
             return
 
-        output_directory = Path(self.tts_output_directory.text().strip()).expanduser()
-        if not str(output_directory):
+        output_directory_text = self.tts_output_directory.text().strip()
+        if not output_directory_text:
             QMessageBox.information(
                 self, "Pasta não definida", "Escolha uma pasta para salvar os áudios."
             )
             return
+        output_directory = Path(output_directory_text).expanduser()
 
         if self.tts_auto_filename.isChecked():
             try:
