@@ -57,6 +57,9 @@ python -m pip install --upgrade pip
 python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
 python -m pip install -e ".[asr-fallback]"
 python -m joe
+
+# Para usar CUDA 13.2 no Parakeet, substitua a instalação do torch por:
+python -m pip install torch --index-url https://download.pytorch.org/whl/cu132
 ~~~
 
 ## Uso
@@ -84,6 +87,7 @@ Os modelos são baixados uma vez e armazenados nos caches padrão do Hugging Fac
 
 ~~~bash
 source .venv/bin/activate
+python -m pip install -e ".[dev]"
 python -m pytest
 ruff check .
 ~~~
