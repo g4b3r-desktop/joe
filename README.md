@@ -194,3 +194,8 @@ MVP inicial: interface desktop, geração WAV, transcrição de arquivo, cópia/
 ## Cancelamento de tarefas
 
 O botão **Cancelar tarefa** na barra inferior solicita o cancelamento da geração ou transcrição ativa. Operações em espera e tarefas de blocos param nos próximos pontos seguros. Uma inferência já iniciada dentro do modelo ou uma chamada HTTP síncrona não pode ser interrompida à força pela interface; nesse caso, o Joe aguarda o backend retornar e descarta o resultado em vez de salvá-lo como concluído. O cancelamento não encerra o runtime do Colab.
+
+
+## Histórico de áudios
+
+A aba Texto → Áudio oferece **Histórico** para localizar WAVs gerados no Joe. O histórico guarda caminho, data, duração, tempo de geração, idioma, voz/apelido, backend e origem (texto ou atalho). O texto original não é armazenado. Remover um registro do histórico não exclui o arquivo de áudio.

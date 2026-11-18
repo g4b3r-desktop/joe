@@ -70,6 +70,13 @@ from joe.voice_favorites import (
 )
 from joe.utils import build_srt, build_audio_output_path
 from joe.workers import ClipboardChunkWorker, FunctionWorker
+from joe.audio_history import (
+    add_audio_history_entry,
+    load_audio_history,
+    make_audio_history_entry,
+    serialize_audio_history,
+)
+from joe.ui.audio_history_dialog import AudioHistoryDialog
 
 
 class VoiceLibraryDialog(QDialog):
@@ -742,6 +749,10 @@ class JoeWindow(QMainWindow):
         self.favorite_voices = load_voice_favorites(
             self.app_settings.value("favorite_voices", "{}")
         )
+        self.audio_history = load_audio_history(
+            self.app_settings.value("audio_history", "[]")
+        )
+        self.pending_audio_history: dict[str, str] = {}
 
         self.player = QMediaPlayer(self)
         self.audio_output = QAudioOutput(self)
@@ -1038,6 +1049,10 @@ class JoeWindow(QMainWindow):
         )
         self.tts_favorites_button.clicked.connect(self._open_favorite_voices)
 
+        self.tts_history_button = QPushButton("Histórico")
+        self.tts_history_button.setToolTip("Consultar áudios gerados anteriormente")
+        self.tts_history_button.clicked.connect(self._open_audio_history)
+
         self.tts_settings_button = QPushButton("⚙ Configurações")
         self.tts_settings_button.setToolTip(
             "Idioma, voz, pronúncia, pasta de saída e opções do atalho"
@@ -1048,6 +1063,7 @@ class JoeWindow(QMainWindow):
         action_row.addWidget(self.tts_generate_button)
         action_row.addWidget(self.tts_play_button)
         action_row.addWidget(self.tts_favorites_button)
+        action_row.addWidget(self.tts_history_button)
         action_row.addStretch(1)
         action_row.addWidget(self.tts_settings_button)
 
@@ -1344,6 +1360,75 @@ class JoeWindow(QMainWindow):
         self._save_favorite_voices()
         self._sync_favorite_editor()
         self.statusBar().showMessage(f"Voz “{alias}” removida dos favoritos.", 4000)
+
+    def _record_audio_history(
+        self,
+        path: Path,
+        performance: AudioPerformance | None,
+        metadata: dict[str, str],
+    ) -> None:
+        if not path.is_file():
+            return
+        voice_path = metadata.get("voice_path", "")
+        voice_alias = self.favorite_voices.get(canonical_voice_path(voice_path), "")
+        entry = make_audio_history_entry(
+            path,
+            duration_seconds=(
+                performance.audio_duration_seconds
+                if performance is not None else wav_duration_seconds(path)
+            ),
+            elapsed_seconds=performance.elapsed_seconds if performance is not None else 0.0,
+            character_count=performance.character_count if performance is not None else 0,
+            language=metadata.get("language", ""),
+            voice_path=voice_path,
+            voice_alias=voice_alias,
+            backend=metadata.get("backend", ""),
+            source=metadata.get("source", "Texto → Áudio"),
+        )
+        self.audio_history = add_audio_history_entry(self.audio_history, entry)
+        self.app_settings.setValue(
+            "audio_history", serialize_audio_history(self.audio_history)
+        )
+        self.tts_history_button.setEnabled(True)
+
+    def _open_audio_history(self) -> None:
+        dialog = AudioHistoryDialog(
+            self.audio_history,
+            self._play_history_entry,
+            self._open_history_folder,
+            self._remove_audio_history_entry,
+            self,
+        )
+        dialog.exec()
+
+    def _play_history_entry(self, entry: dict) -> None:
+        path = Path(entry["path"]).expanduser()
+        if not path.is_file():
+            QMessageBox.information(
+                self, "Arquivo não encontrado", f"O áudio não existe mais:\\n{path}"
+            )
+            return
+        self.player.stop()
+        self.player.setSource(QUrl.fromLocalFile(str(path.resolve())))
+        self.player.play()
+
+    def _open_history_folder(self, entry: dict) -> None:
+        path = Path(entry["path"]).expanduser()
+        directory = path.parent
+        if directory.is_dir():
+            QDesktopServices.openUrl(QUrl.fromLocalFile(str(directory.resolve())))
+
+    def _remove_audio_history_entry(self, entry: dict) -> None:
+        self.audio_history = [
+            current for current in self.audio_history
+            if not (
+                current.get("path") == entry.get("path")
+                and current.get("created_at") == entry.get("created_at")
+            )
+        ]
+        self.app_settings.setValue(
+            "audio_history", serialize_audio_history(self.audio_history)
+        )
 
     def _open_favorite_voices(self) -> None:
         self.favorite_voices = self._load_favorite_voices()
@@ -2121,8 +2206,18 @@ class JoeWindow(QMainWindow):
             if dialog.is_closing:
                 cleanup_closed_dialog()
                 return
-            dialog.set_ready(
-                result if isinstance(result, dict) else {"path": str(result)}
+            payload = result if isinstance(result, dict) else {"path": str(result)}
+            dialog.set_ready(payload)
+            performance = payload.get("performance")
+            self._record_audio_history(
+                Path(payload["path"]),
+                performance if isinstance(performance, AudioPerformance) else None,
+                {
+                    "language": language,
+                    "voice_path": voice or "",
+                    "backend": "Google Colab" if remote is not None else "Local",
+                    "source": "Atalho do clipboard",
+                },
             )
             self.statusBar().showMessage("Áudio do clipboard gerado e unido.", 5000)
 
@@ -2244,6 +2339,12 @@ class JoeWindow(QMainWindow):
             )
             return {"path": str(output_path), "performance": performance}
 
+        self.pending_audio_history = {
+            "language": language,
+            "voice_path": voice or "",
+            "backend": "Google Colab" if is_remote else "Local",
+            "source": "Texto → Áudio",
+        }
         self.tts_generation_started_at = time.monotonic()
         self.tts_speed_info.setText(
             "Medição do Joe neste computador — "
@@ -2278,6 +2379,12 @@ class JoeWindow(QMainWindow):
             self.tts_speed_info.setText(
                 "Áudio gerado, mas não foi possível calcular as métricas de desempenho."
             )
+        self._record_audio_history(
+            self.generated_audio,
+            performance if isinstance(performance, AudioPerformance) else None,
+            self.pending_audio_history,
+        )
+        self.pending_audio_history = {}
 
     def _play_generated_audio(self) -> None:
         if not self.generated_audio or not self.generated_audio.is_file():
@@ -2491,6 +2598,7 @@ class JoeWindow(QMainWindow):
             self.tts_generate_button,
             self.tts_play_button,
             self.tts_favorites_button,
+            self.tts_history_button,
             self.tts_settings_button,
             self.tts_language,
             self.clipboard_chunk_size,
