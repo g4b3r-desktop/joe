@@ -50,7 +50,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from joe.audio_chunks import merge_wav_files, split_text_into_chunks
+from joe.audio_chunks import split_text_into_chunks
 from joe.audio_performance import (
     AudioPerformance,
     format_duration,
