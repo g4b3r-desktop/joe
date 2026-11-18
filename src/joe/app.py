@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sys
 import traceback
 from collections.abc import Callable
@@ -17,9 +18,14 @@ from PySide6.QtGui import QAction, QDesktopServices
 from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
 from PySide6.QtWidgets import (
     QApplication,
+    QAbstractItemView,
     QCheckBox,
     QComboBox,
+    QDialog,
+    QDialogButtonBox,
     QFileDialog,
+    QHeaderView,
+    QInputDialog,
     QFormLayout,
     QHBoxLayout,
     QLabel,
@@ -29,6 +35,8 @@ from PySide6.QtWidgets import (
     QPushButton,
     QStatusBar,
     QTabWidget,
+    QTableWidget,
+    QTableWidgetItem,
     QTextEdit,
     QVBoxLayout,
     QWidget,
@@ -37,6 +45,7 @@ from PySide6.QtWidgets import (
 from joe.services.colab_api import ColabAPIClient
 from joe.services.parakeet import ParakeetReduxService
 from joe.services.pocket_tts import PocketTTSService
+from joe.text_normalization import normalize_text_for_tts
 from joe.utils import build_srt, build_audio_output_path
 
 
@@ -87,6 +96,7 @@ class JoeWindow(QMainWindow):
         self.generated_audio: Path | None = None
         self.transcript_segments: list[dict] = []
         self.transcription_backend = ""
+        self.pronunciation_dictionary = self._load_pronunciation_dictionary()
 
         self.player = QMediaPlayer(self)
         self.audio_output = QAudioOutput(self)
@@ -324,6 +334,26 @@ class JoeWindow(QMainWindow):
         )
         self.tts_text.setMinimumHeight(240)
 
+        self.tts_normalization_enabled = QCheckBox(
+            "Normalizar números, datas, siglas e abreviações para a fala"
+        )
+        self.tts_normalization_enabled.setChecked(
+            self.app_settings.value("tts_normalization_enabled", True, type=bool)
+        )
+        self.tts_normalization_enabled.toggled.connect(
+            self._save_tts_normalization_setting
+        )
+
+        self.tts_dictionary_button = QPushButton("Dicionário de pronúncia…")
+        self.tts_dictionary_button.clicked.connect(self._manage_pronunciation_dictionary)
+        self.tts_preview_button = QPushButton("Prévia do texto falado")
+        self.tts_preview_button.clicked.connect(self._preview_tts_text)
+
+        speech_tools_row = QHBoxLayout()
+        speech_tools_row.addWidget(self.tts_normalization_enabled, 1)
+        speech_tools_row.addWidget(self.tts_dictionary_button)
+        speech_tools_row.addWidget(self.tts_preview_button)
+
         default_output_dir = QStandardPaths.writableLocation(
             QStandardPaths.StandardLocation.MusicLocation
         )
@@ -394,9 +424,9 @@ class JoeWindow(QMainWindow):
         action_row.addStretch(1)
 
         self.tts_info = QLabel(
-            "Os áudios serão salvos na pasta escolhida, sem abrir a janela de salvamento "
-            "quando o nome automático estiver ativado. A primeira geração pode baixar "
-            "os pesos do modelo; depois, eles ficam armazenados no cache local."
+            "A normalização prepara uma cópia do texto para o Pocket TTS. "
+            "O texto original permanece intacto na caixa acima. Você pode cadastrar "
+            "pronúncias próprias no dicionário."
         )
         self.tts_info.setObjectName("muted")
         self.tts_info.setWordWrap(True)
@@ -404,6 +434,7 @@ class JoeWindow(QMainWindow):
         layout.addWidget(title)
         layout.addWidget(description)
         layout.addWidget(self.tts_text, 1)
+        layout.addLayout(speech_tools_row)
         layout.addLayout(options)
         layout.addLayout(action_row)
         layout.addWidget(self.tts_info)
@@ -571,6 +602,193 @@ class JoeWindow(QMainWindow):
         }
         """
 
+
+    def _load_pronunciation_dictionary(self) -> dict[str, str]:
+        raw = self.app_settings.value("pronunciation_dictionary", "{}")
+        try:
+            parsed = json.loads(str(raw))
+        except (TypeError, ValueError):
+            return {}
+        if not isinstance(parsed, dict):
+            return {}
+        return {
+            str(term).strip(): str(pronunciation).strip()
+            for term, pronunciation in parsed.items()
+            if str(term).strip() and str(pronunciation).strip()
+        }
+
+    def _save_pronunciation_dictionary(self, entries: dict[str, str]) -> None:
+        self.pronunciation_dictionary = {
+            str(term).strip(): str(pronunciation).strip()
+            for term, pronunciation in entries.items()
+            if str(term).strip() and str(pronunciation).strip()
+        }
+        self.app_settings.setValue(
+            "pronunciation_dictionary",
+            json.dumps(self.pronunciation_dictionary, ensure_ascii=False),
+        )
+        self.statusBar().showMessage(
+            f"Dicionário salvo: {len(self.pronunciation_dictionary)} pronúncia(s).", 4000
+        )
+
+    def _save_tts_normalization_setting(self, checked: bool) -> None:
+        self.app_settings.setValue("tts_normalization_enabled", bool(checked))
+
+    def _prepared_speech_text(self, original_text: str, language: str) -> str:
+        if not self.tts_normalization_enabled.isChecked():
+            return original_text
+        return normalize_text_for_tts(
+            original_text,
+            language=language,
+            pronunciation_dictionary=self.pronunciation_dictionary,
+        )
+
+    def _preview_tts_text(self) -> None:
+        original = self.tts_text.toPlainText()
+        if not original.strip():
+            QMessageBox.information(
+                self, "Texto vazio", "Digite ou cole um texto para visualizar a pronúncia."
+            )
+            return
+        try:
+            prepared = self._prepared_speech_text(
+                original, str(self.tts_language.currentData())
+            )
+        except Exception as exc:  # noqa: BLE001
+            QMessageBox.critical(self, "Erro na normalização", str(exc))
+            return
+
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Prévia do texto enviado ao TTS")
+        dialog.resize(640, 420)
+        layout = QVBoxLayout(dialog)
+        note = QLabel(
+            "Esta é a cópia preparada para a fala. O texto original não será alterado."
+        )
+        note.setWordWrap(True)
+        preview = QTextEdit()
+        preview.setReadOnly(True)
+        preview.setPlainText(prepared)
+        layout.addWidget(note)
+        layout.addWidget(preview, 1)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
+        copy_button = buttons.addButton(
+            "Copiar texto preparado", QDialogButtonBox.ButtonRole.ActionRole
+        )
+        copy_button.clicked.connect(lambda: QApplication.clipboard().setText(prepared))
+        buttons.rejected.connect(dialog.reject)
+        buttons.accepted.connect(dialog.accept)
+        layout.addWidget(buttons)
+        dialog.exec()
+
+    def _manage_pronunciation_dictionary(self) -> None:
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Dicionário de pronúncia")
+        dialog.resize(620, 420)
+        layout = QVBoxLayout(dialog)
+
+        help_text = QLabel(
+            "Cadastre uma palavra ou expressão e a forma como o TTS deve pronunciá-la. "
+            "A correspondência não diferencia maiúsculas de minúsculas."
+        )
+        help_text.setWordWrap(True)
+        layout.addWidget(help_text)
+
+        table = QTableWidget(0, 2)
+        table.setHorizontalHeaderLabels(["Palavra ou expressão", "Pronúncia desejada"])
+        table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        for term, pronunciation in sorted(self.pronunciation_dictionary.items()):
+            row = table.rowCount()
+            table.insertRow(row)
+            table.setItem(row, 0, QTableWidgetItem(term))
+            table.setItem(row, 1, QTableWidgetItem(pronunciation))
+        layout.addWidget(table, 1)
+
+        actions = QHBoxLayout()
+        add_button = QPushButton("Adicionar")
+        edit_button = QPushButton("Editar")
+        remove_button = QPushButton("Remover")
+        actions.addWidget(add_button)
+        actions.addWidget(edit_button)
+        actions.addWidget(remove_button)
+        actions.addStretch(1)
+        layout.addLayout(actions)
+
+        def set_row(row: int, term: str, pronunciation: str) -> None:
+            table.setItem(row, 0, QTableWidgetItem(term.strip()))
+            table.setItem(row, 1, QTableWidgetItem(pronunciation.strip()))
+
+        def add_entry() -> None:
+            term, accepted = QInputDialog.getText(
+                dialog, "Nova palavra", "Palavra ou expressão:"
+            )
+            if not accepted or not term.strip():
+                return
+            pronunciation, accepted = QInputDialog.getText(
+                dialog, "Pronúncia", f"Como pronunciar “{term.strip()}”?"
+            )
+            if not accepted or not pronunciation.strip():
+                return
+            for row in range(table.rowCount()):
+                existing = table.item(row, 0).text().casefold()
+                if existing == term.strip().casefold():
+                    set_row(row, term, pronunciation)
+                    return
+            row = table.rowCount()
+            table.insertRow(row)
+            set_row(row, term, pronunciation)
+
+        def edit_entry() -> None:
+            row = table.currentRow()
+            if row < 0:
+                return
+            current_term = table.item(row, 0).text()
+            current_pronunciation = table.item(row, 1).text()
+            term, accepted = QInputDialog.getText(
+                dialog, "Editar palavra", "Palavra ou expressão:",
+                text=current_term,
+            )
+            if not accepted or not term.strip():
+                return
+            pronunciation, accepted = QInputDialog.getText(
+                dialog, "Editar pronúncia", "Pronúncia desejada:",
+                text=current_pronunciation,
+            )
+            if accepted and pronunciation.strip():
+                set_row(row, term, pronunciation)
+
+        def remove_entry() -> None:
+            row = table.currentRow()
+            if row >= 0:
+                table.removeRow(row)
+
+        add_button.clicked.connect(add_entry)
+        edit_button.clicked.connect(edit_entry)
+        remove_button.clicked.connect(remove_entry)
+
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel
+        )
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+        layout.addWidget(buttons)
+
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            updated: dict[str, str] = {}
+            for row in range(table.rowCount()):
+                term_item = table.item(row, 0)
+                pronunciation_item = table.item(row, 1)
+                if term_item and pronunciation_item:
+                    term = term_item.text().strip()
+                    pronunciation = pronunciation_item.text().strip()
+                    if term and pronunciation:
+                        updated[term] = pronunciation
+            self._save_pronunciation_dictionary(updated)
+
     def _save_tts_output_settings(self, *_args) -> None:
         if not hasattr(self, "tts_output_directory"):
             return
@@ -660,6 +878,11 @@ class JoeWindow(QMainWindow):
                 return
 
         language = str(self.tts_language.currentData())
+        try:
+            speech_text = self._prepared_speech_text(text, language)
+        except Exception as exc:  # noqa: BLE001
+            QMessageBox.critical(self, "Erro na normalização", str(exc))
+            return
         voice = self.voice_path.text().strip() or None
         if self.processing_mode.currentData() == "colab":
             try:
@@ -669,14 +892,14 @@ class JoeWindow(QMainWindow):
                 return
 
             def generate_remote() -> Path:
-                audio_data = remote.generate_audio(text, language, voice)
+                audio_data = remote.generate_audio(speech_text, language, voice)
                 destination.write_bytes(audio_data)
                 return destination
 
             task = generate_remote
             status = "Gerando áudio no Google Colab…"
         else:
-            task = lambda: self.tts.generate(text, language, str(destination), voice)
+            task = lambda: self.tts.generate(speech_text, language, str(destination), voice)
             status = "Gerando áudio com Pocket TTS local…"
 
         self._run_task(status, task, self._audio_generated)
@@ -847,6 +1070,9 @@ class JoeWindow(QMainWindow):
             self.tts_output_directory,
             self.tts_browse_output_button,
             self.tts_auto_filename,
+            self.tts_normalization_enabled,
+            self.tts_dictionary_button,
+            self.tts_preview_button,
             self.audio_choose_button,
             self.asr_button,
             self.asr_device,
