@@ -227,6 +227,7 @@ class JoeWindow(QMainWindow):
         self.clipboard_temp_dir: Path | None = None
         self.hotkey_listener = None
         self.local_command_server: LocalCommandServer | None = None
+        self.clipboard_only_mode = False
         self.hotkey_bridge = HotkeyBridge(self)
         self.hotkey_bridge.activated.connect(self._generate_audio_from_clipboard)
         self.hotkey_bridge.command_received.connect(self._handle_local_command)
@@ -1161,6 +1162,8 @@ class JoeWindow(QMainWindow):
             if self.clipboard_temp_dir == dialog.temp_dir:
                 self.clipboard_temp_dir = None
             dialog.temp_dir = None
+        if self.clipboard_only_mode:
+            QTimer.singleShot(0, QApplication.quit)
 
     def _generate_audio_from_clipboard(self) -> None:
         if self.clipboard_generation_worker is not None:
@@ -1182,6 +1185,8 @@ class JoeWindow(QMainWindow):
                 "O clipboard está vazio. Copie um texto e pressione Ctrl+Shift+Espaço.",
                 6000,
             )
+            if self.clipboard_only_mode:
+                QTimer.singleShot(0, QApplication.quit)
             return
 
         if self.clipboard_audio_window is not None:
@@ -1197,12 +1202,16 @@ class JoeWindow(QMainWindow):
             )
         except Exception as exc:  # noqa: BLE001
             self.statusBar().showMessage(f"Não foi possível iniciar o TTS: {exc}", 8000)
+            if self.clipboard_only_mode:
+                QTimer.singleShot(0, QApplication.quit)
             return
 
         try:
             temp_dir = Path(tempfile.mkdtemp(prefix="joe-clipboard-audio-"))
         except OSError as exc:
             self.statusBar().showMessage(f"Não foi possível criar áudio temporário: {exc}", 8000)
+            if self.clipboard_only_mode:
+                QTimer.singleShot(0, QApplication.quit)
             return
 
         destination = temp_dir / "clipboard_audio.wav"
@@ -1579,9 +1588,12 @@ def main() -> None:
     else:
         window.local_command_server = server
 
-    window.show()
     if clipboard_requested:
+        # The hotkey launcher must show only the compact audio dialog, never the main window.
+        window.clipboard_only_mode = True
         QTimer.singleShot(250, window._generate_audio_from_clipboard)
+    else:
+        window.show()
     sys.exit(app.exec())
 
 
