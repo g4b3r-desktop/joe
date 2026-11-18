@@ -25,7 +25,8 @@ if len(API_TOKEN) < 32:
 MAX_AUDIO_BYTES = 80 * 1024 * 1024
 MAX_TEXT_CHARS = 20_000
 PARAKEET_MODEL_ID = "moondream/parakeet-redux"
-DEFAULT_VOICE = os.environ.get("JOE_TTS_DEFAULT_VOICE") or "hf://kyutai/pocket-tts/g-Vi8PgmSY0-enhanced-v2.wav@64ab7d24c479d736a83b8cc666c4a776fca30fda"
+DEFAULT_VOICE = os.environ.get("JOE_TTS_DEFAULT_VOICE") or None
+USE_DRIVE_MODELS = os.environ.get("JOE_TTS_USE_DRIVE_MODELS") == "1"
 
 app = FastAPI(
     title="Joe Colab Inference API",
@@ -78,6 +79,11 @@ def _get_tts_model(language: str) -> Any:
     model = _tts_models.get(language)
     if model is None:
         local_config = os.environ.get("JOE_TTS_CONFIG_PATH")
+        if USE_DRIVE_MODELS and (not local_config or language != "portuguese"):
+            raise RuntimeError(
+                "O Pocket TTS está configurado para usar modelos do Google Drive, "
+                "mas a configuração local do idioma não foi aplicada."
+            )
         if local_config and language == "portuguese":
             config_path = Path(local_config).expanduser()
             if not config_path.is_file():
@@ -93,9 +99,20 @@ def _get_tts_model(language: str) -> Any:
 
 def _generate_tts(text: str, language: str, voice_file: str | None) -> bytes:
     voice_source = voice_file or DEFAULT_VOICE
+    if not voice_source:
+        raise RuntimeError(
+            "Nenhuma voz de referência local foi configurada. "
+            "Envie um WAV pelo Joe ou configure um WAV no Google Drive."
+        )
+    if isinstance(voice_source, str) and not voice_source.startswith(("hf://", "https://")):
+        voice_path = Path(voice_source).expanduser()
+        if not voice_path.is_file():
+            raise FileNotFoundError(f"Arquivo de voz local não encontrado: {voice_path}")
+        voice_source = str(voice_path)
     voice_identity = (
-        hashlib.sha256(Path(voice_file).read_bytes()).hexdigest()
-        if voice_file else DEFAULT_VOICE
+        hashlib.sha256(Path(voice_source).read_bytes()).hexdigest()
+        if isinstance(voice_source, str) and Path(voice_source).is_file()
+        else str(voice_source)
     )
     with _tts_lock:
         model = _get_tts_model(language)
@@ -197,6 +214,8 @@ def health(_: None = Depends(require_token)) -> dict[str, Any]:
         "asr_backend": _asr_backend,
         "tts_loaded_languages": sorted(_tts_models.keys()),
         "tts_local_drive_config": bool(os.environ.get("JOE_TTS_CONFIG_PATH")),
+        "tts_drive_models_required": USE_DRIVE_MODELS,
+        "tts_default_voice_local": bool(DEFAULT_VOICE and Path(DEFAULT_VOICE).is_file()),
         "hf_cache_configured": bool(os.environ.get("HF_HOME")),
         "cuda_available": torch.cuda.is_available(),
         "gpu_name": gpu_name,
