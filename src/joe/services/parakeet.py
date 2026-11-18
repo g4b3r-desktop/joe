@@ -36,6 +36,7 @@ class ParakeetReduxService:
         self._speech: Any = None
         self._model: Any = None
         self._processor: Any = None
+        self._device = "cpu"
         self._backend_note = ""
 
     @property
@@ -92,17 +93,39 @@ class ParakeetReduxService:
 
         # The model repository provides custom Parakeet TDT code; trust_remote_code
         # is required by its documented reference implementation.
-        self._model = AutoModel.from_pretrained(
-            MODEL_ID,
-            trust_remote_code=True,
-            dtype=torch.float32,
-        )
-        self._model.to("cpu").eval()
         self._processor = AutoProcessor.from_pretrained(
             MODEL_ID,
             trust_remote_code=True,
         )
-        self._backend = "Transformers CPU"
+
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+        dtype = torch.float16 if device == "cuda" else torch.float32
+        try:
+            model = AutoModel.from_pretrained(
+                MODEL_ID,
+                trust_remote_code=True,
+                dtype=dtype,
+            )
+            model.to(device).eval()
+        except Exception as exc:
+            if device != "cuda":
+                raise
+            # A CUDA build may be installed on a machine with insufficient VRAM
+            # or an incompatible driver. Retry on CPU instead of failing outright.
+            del model
+            torch.cuda.empty_cache()
+            self._backend_note = f"CUDA indisponível ({exc}); fallback para CPU."
+            model = AutoModel.from_pretrained(
+                MODEL_ID,
+                trust_remote_code=True,
+                dtype=torch.float32,
+            )
+            model.to("cpu").eval()
+            device = "cpu"
+
+        self._model = model
+        self._device = device
+        self._backend = "Transformers CUDA (FP16)" if device == "cuda" else "Transformers CPU"
         if not self._backend_note:
             self._backend_note = (
                 "Backend de referência. Pode usar mais RAM e ser mais lento que o Photon."
