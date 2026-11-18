@@ -154,7 +154,7 @@ def _split_number(raw: str, language: str) -> tuple[str, str | None, bool]:
     elif decimal_separator in value:
         if value.count(decimal_separator) == 1:
             left, right = value.split(decimal_separator, 1)
-            if decimal_separator == "," or len(right) != 3:
+            if decimal_separator == "." or len(right) != 3:
                 integer_part, fractional_part = left, right
             else:
                 integer_part = value.replace(decimal_separator, "")
