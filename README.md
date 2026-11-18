@@ -109,7 +109,7 @@ python -m pip install torch --index-url https://download.pytorch.org/whl/cu132
 1. Digite ou cole o texto.
 2. Selecione o idioma da voz (português é o padrão).
 3. Opcionalmente, selecione um WAV/MP3 de referência para clonagem de voz.
-4. Na primeira utilização, escolha a pasta de saída. O Joe memoriza essa pasta; por padrão, usa a pasta **Música/Joe** do usuário.
+4. A pasta padrão já é **Música/Joe**. Você pode alterá-la uma vez no campo Pasta para salvar; o Joe memoriza a escolha para as próximas execuções.
 5. A opção **Salvar automaticamente com nome genérico** fica ativada por padrão. Os arquivos recebem nomes como `joe_audio_20261118_123045.wav`, sem abrir uma janela para escolher nome ou local a cada geração. Nomes repetidos no mesmo segundo recebem um sufixo para não sobrescrever arquivos.
 6. Desative essa opção quando quiser escolher manualmente o nome e o local de um áudio específico.
 7. Use **Reproduzir** para ouvir o resultado.
