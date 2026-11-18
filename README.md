@@ -4,7 +4,7 @@ Aplicativo desktop local para **texto → áudio** e **áudio → texto**, com i
 
 ## Modelos
 
-- **TTS — [Kyutai Pocket TTS](https://github.com/kyutai-labs/pocket-tts):** gera WAV localmente, roda na CPU e inclui suporte a português, espanhol, francês, italiano, alemão e neerlandês, além de inglês. Permite usar uma gravação própria como referência de voz.
+- **TTS — [Kyutai Pocket TTS](https://github.com/kyutai-labs/pocket-tts):** gera WAV localmente, roda na CPU e inclui suporte a português, espanhol, francês, italiano, alemão e neerlandês, além de inglês. Usa o extra `quantize` do Pocket TTS para instalar o backend de quantização recomendado e permite usar uma gravação própria como referência de voz.
 - **STT — [Moondream Parakeet Redux](https://huggingface.co/moondream/parakeet-redux):** transcrição local em 25 idiomas, com pesos compactados de aproximadamente 178 MB. Quando a implementação Photon compatível está disponível, ela é usada. Em CPUs sem AVX-512 VNNI, o app usa a implementação de referência Transformers; em FP32 ela pode expandir o uso de memória para cerca de 2,5 GB.
 
 Não há envio de áudio para serviços de nuvem. Na primeira execução, os pesos são baixados do Hugging Face e ficam no cache local para usos seguintes.
@@ -33,6 +33,8 @@ Crie o ambiente e instale a build CPU do PyTorch:
 ~~~bash
 bash scripts/install-linux.sh
 ~~~
+
+Se o Joe já estiver instalado, execute o script novamente para instalar o backend de quantização do TTS e atualizar as dependências.
 
 Para usar a RTX 3060 na transcrição Parakeet (PyTorch CUDA 13.2), use:
 

@@ -2,9 +2,13 @@ from __future__ import annotations
 
 import sys
 import traceback
+from collections.abc import Callable
 from pathlib import Path
-from typing import Callable
 
+# Import PyTorch before Qt Multimedia; importing it later from a Qt worker can abort natively.
+import torch  # noqa: F401
+
+# isort: split
 from PySide6.QtCore import QObject, QRunnable, QThreadPool, QUrl, Signal
 from PySide6.QtGui import QAction
 from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
@@ -48,7 +52,7 @@ class FunctionWorker(QRunnable):
     def run(self) -> None:
         try:
             self.signals.finished.emit(self.function())
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             details = traceback.format_exc()
             self.signals.failed.emit(f"{exc}\n\n{details}")
 
@@ -553,7 +557,7 @@ class JoeWindow(QMainWindow):
             "Os modelos são executados localmente após o download inicial.",
         )
 
-    def closeEvent(self, event) -> None:  # noqa: N802
+    def closeEvent(self, event) -> None:
         if self.thread_pool.activeThreadCount():
             self.statusBar().showMessage("Aguardando a tarefa atual terminar…")
             self.thread_pool.waitForDone(-1)
