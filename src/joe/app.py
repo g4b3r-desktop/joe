@@ -70,6 +70,7 @@ from joe.voice_favorites import (
     serialize_voice_favorites,
 )
 from joe.utils import build_srt, build_audio_output_path
+from joe.tts_queue import TTSJobQueue, TTSQueueEntry
 
 
 class WorkerSignals(QObject):
@@ -194,6 +195,135 @@ class ClipboardChunkWorker(QRunnable):
         raise RuntimeError(
             f"Falha no trecho {index} de {total} após duas tentativas: {last_error}"
         ) from last_error
+
+
+class TTSQueueWorkerSignals(QObject):
+    finished = Signal(str, object)
+    failed = Signal(str, str)
+    cancelled = Signal(str)
+
+
+class TTSQueueWorker(QRunnable):
+    """Executa um item TTS com cancelamento cooperativo após a chamada atual."""
+
+    def __init__(self, entry: TTSQueueEntry) -> None:
+        super().__init__()
+        self.entry = entry
+        self.signals = TTSQueueWorkerSignals()
+
+    def run(self) -> None:
+        if self.entry.cancel_event.is_set():
+            self.signals.cancelled.emit(self.entry.task_id)
+            return
+        try:
+            result = self.entry.generate()
+        except Exception as exc:  # noqa: BLE001
+            self.entry.output_path.unlink(missing_ok=True)
+            self.signals.failed.emit(
+                self.entry.task_id,
+                f"{exc}\\n\\n{traceback.format_exc()}",
+            )
+            return
+
+        if self.entry.cancel_event.is_set():
+            self.entry.output_path.unlink(missing_ok=True)
+            self.signals.cancelled.emit(self.entry.task_id)
+            return
+        self.signals.finished.emit(self.entry.task_id, result)
+
+
+class TTSQueueDialog(QDialog):
+    """Visualização da fila e ações de cancelamento/remoção."""
+
+    def __init__(
+        self,
+        queue: TTSJobQueue,
+        cancel_current: Callable[[], None],
+        remove_entry: Callable[[str], None],
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self.queue = queue
+        self.cancel_current_callback = cancel_current
+        self.remove_entry_callback = remove_entry
+        self.setWindowTitle("Fila de geração de áudio")
+        self.resize(680, 420)
+
+        layout = QVBoxLayout(self)
+        description = QLabel(
+            "As tarefas são processadas em sequência. Durante uma inferência, "
+            "o cancelamento aguarda a chamada atual retornar e descarta o WAV."
+        )
+        description.setWordWrap(True)
+        description.setObjectName("muted")
+        layout.addWidget(description)
+
+        self.items = QListWidget()
+        self.items.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        layout.addWidget(self.items, 1)
+
+        actions = QHBoxLayout()
+        self.cancel_button = QPushButton("Cancelar geração atual")
+        self.cancel_button.clicked.connect(self.cancel_current_callback)
+        self.remove_button = QPushButton("Remover item selecionado")
+        self.remove_button.clicked.connect(self._remove_selected)
+        close_button = QPushButton("Fechar")
+        close_button.clicked.connect(self.accept)
+        actions.addWidget(self.cancel_button)
+        actions.addWidget(self.remove_button)
+        actions.addStretch(1)
+        actions.addWidget(close_button)
+        layout.addLayout(actions)
+
+        self.refresh_timer = QTimer(self)
+        self.refresh_timer.setInterval(500)
+        self.refresh_timer.timeout.connect(self.refresh)
+        self.refresh_timer.start()
+        self.refresh()
+
+    def refresh(self) -> None:
+        selected_id = None
+        current_item = self.items.currentItem()
+        if current_item is not None:
+            selected_id = current_item.data(Qt.ItemDataRole.UserRole)
+
+        self.items.clear()
+        for entry in self.queue.entries:
+            item = QListWidgetItem(
+                f"{entry.status}  •  {entry.label}\\n{entry.output_path.name}"
+            )
+            item.setData(Qt.ItemDataRole.UserRole, entry.task_id)
+            self.items.addItem(item)
+            if entry.task_id == selected_id:
+                self.items.setCurrentItem(item)
+
+        if self.items.count() == 0:
+            self.items.addItem("A fila está vazia.")
+
+        active = self.queue.current
+        self.cancel_button.setEnabled(
+            active is not None and active.status == "Gerando"
+        )
+        selected = self.items.currentItem()
+        selected_id = selected.data(Qt.ItemDataRole.UserRole) if selected else None
+        removable = any(
+            entry.task_id == selected_id and entry is not active
+            for entry in self.queue.entries
+        )
+        self.remove_button.setEnabled(removable)
+
+    def _remove_selected(self) -> None:
+        current = self.items.currentItem()
+        if current is None:
+            return
+        task_id = current.data(Qt.ItemDataRole.UserRole)
+        if task_id:
+            self.remove_entry_callback(str(task_id))
+        self.refresh()
+
+    def closeEvent(self, event) -> None:  # noqa: N802
+        self.refresh_timer.stop()
+        super().closeEvent(event)
 
 
 class VoiceLibraryDialog(QDialog):
@@ -597,8 +727,7 @@ class ClipboardAudioDialog(QDialog):
             "Medição de velocidade feita pelo Joe aparecerá aqui."
         )
         self.performance_label.setObjectName("muted")
-        self.performance_label.setWordWrap(True)
-        layout.addWidget(self.performance_label)
+        self.performance_label.setWordWrap(True)        layout.addWidget(self.performance_label)
 
         buttons = QHBoxLayout()
         self.play_button = QPushButton("Reproduzir")
@@ -835,7 +964,8 @@ class JoeWindow(QMainWindow):
         self.app_settings = QSettings("g4b3r-desktop", "JoeAudioStudio")
         self.thread_pool = QThreadPool(self)
         self.thread_pool.setMaxThreadCount(1)
-        self.active_worker: FunctionWorker | None = None
+        self.active_worker: FunctionWorker | TTSQueueWorker | None = None
+        self.tts_queue = TTSJobQueue()
         self.clipboard_generation_worker: FunctionWorker | None = None
         self.clipboard_audio_window: ClipboardAudioDialog | None = None
         self.clipboard_temp_dir: Path | None = None
@@ -872,6 +1002,7 @@ class JoeWindow(QMainWindow):
         self.player.setAudioOutput(self.audio_output)
 
         self._build_ui()
+        self._refresh_tts_queue_controls()
         self.tts_favorites_button.setText(
             f"★ Favoritos ({len(self.favorite_voices)})"
         )
@@ -1144,6 +1275,17 @@ class JoeWindow(QMainWindow):
         self.tts_generate_button.setObjectName("primaryButton")
         self.tts_generate_button.clicked.connect(self._generate_audio)
 
+        self.tts_queue_button = QPushButton("Fila (0)")
+        self.tts_queue_button.setToolTip("Ver tarefas aguardando, em execução e concluídas")
+        self.tts_queue_button.clicked.connect(self._show_tts_queue)
+
+        self.tts_cancel_button = QPushButton("Cancelar atual")
+        self.tts_cancel_button.setToolTip(
+            "Solicita o cancelamento da geração em andamento"
+        )
+        self.tts_cancel_button.setEnabled(False)
+        self.tts_cancel_button.clicked.connect(self._cancel_current_tts_task)
+
         self.tts_play_button = QPushButton("Reproduzir último áudio")
         self.tts_play_button.setEnabled(False)
         self.tts_play_button.clicked.connect(self._play_generated_audio)
@@ -1162,6 +1304,8 @@ class JoeWindow(QMainWindow):
 
         action_row = QHBoxLayout()
         action_row.addWidget(self.tts_generate_button)
+        action_row.addWidget(self.tts_queue_button)
+        action_row.addWidget(self.tts_cancel_button)
         action_row.addWidget(self.tts_play_button)
         action_row.addWidget(self.tts_favorites_button)
         action_row.addStretch(1)
@@ -1197,7 +1341,6 @@ class JoeWindow(QMainWindow):
         dialog.setWindowTitle("Configurações — Texto para áudio")
         dialog.resize(760, 760)
         self.tts_settings_dialog = dialog
-
         dialog_layout = QVBoxLayout(dialog)
         dialog_layout.setContentsMargins(22, 20, 22, 18)
         dialog_layout.setSpacing(14)
@@ -1797,8 +1940,7 @@ class JoeWindow(QMainWindow):
         layout.addWidget(table, 1)
 
         actions = QHBoxLayout()
-        add_button = QPushButton("Adicionar")
-        edit_button = QPushButton("Editar")
+        add_button = QPushButton("Adicionar")        edit_button = QPushButton("Editar")
         remove_button = QPushButton("Remover")
         actions.addWidget(add_button)
         actions.addWidget(edit_button)
@@ -2229,6 +2371,7 @@ class JoeWindow(QMainWindow):
                 self.clipboard_temp_dir = None
             if self.clipboard_only_mode:
                 QTimer.singleShot(0, QApplication.quit)
+            QTimer.singleShot(0, self._start_next_tts_task)
 
         def finished(result: object) -> None:
             self.clipboard_generation_worker = None
@@ -2239,6 +2382,7 @@ class JoeWindow(QMainWindow):
                 result if isinstance(result, dict) else {"path": str(result)}
             )
             self.statusBar().showMessage("Áudio do clipboard gerado e unido.", 5000)
+            QTimer.singleShot(0, self._start_next_tts_task)
 
         def failed(message: str) -> None:
             self.clipboard_generation_worker = None
@@ -2250,10 +2394,12 @@ class JoeWindow(QMainWindow):
                 self.statusBar().showMessage(
                     f"Falha ao gerar áudio do clipboard: {detail}", 8000
                 )
+            QTimer.singleShot(0, self._start_next_tts_task)
 
         def cancelled() -> None:
             self.clipboard_generation_worker = None
             cleanup_closed_dialog()
+            QTimer.singleShot(0, self._start_next_tts_task)
 
         worker.signals.chunk_ready.connect(chunk_ready)
         worker.signals.progress.connect(progress)
@@ -2278,10 +2424,14 @@ class JoeWindow(QMainWindow):
 
         if self.tts_auto_filename.isChecked():
             try:
-                destination = build_audio_output_path(output_directory)
+                destination = build_audio_output_path(
+                    output_directory,
+                    prefix=f"joe_audio_{time.time_ns()}",
+                )
             except OSError as exc:
                 QMessageBox.critical(
-                    self, "Erro na pasta de saída", f"Não foi possível preparar a pasta:\n{exc}"
+                    self, "Erro na pasta de saída",
+                    f"Não foi possível preparar a pasta:\\n{exc}",
                 )
                 return
         else:
@@ -2302,9 +2452,24 @@ class JoeWindow(QMainWindow):
                 destination.parent.mkdir(parents=True, exist_ok=True)
             except OSError as exc:
                 QMessageBox.critical(
-                    self, "Erro na pasta de saída", f"Não foi possível criar a pasta:\n{exc}"
+                    self, "Erro na pasta de saída",
+                    f"Não foi possível criar a pasta:\\n{exc}",
                 )
                 return
+
+        queued_paths = {
+            entry.output_path.resolve(strict=False)
+            for entry in self.tts_queue.entries
+            if entry.status in {"Na fila", "Gerando", "Cancelamento solicitado"}
+        }
+        if destination.exists() or destination.resolve(strict=False) in queued_paths:
+            QMessageBox.information(
+                self,
+                "Arquivo já existe",
+                "Esse caminho já existe ou está reservado por outra tarefa. "
+                "Escolha outro nome para não sobrescrever um áudio existente.",
+            )
+            return
 
         language = str(self.tts_language.currentData())
         try:
@@ -2312,7 +2477,9 @@ class JoeWindow(QMainWindow):
         except Exception as exc:  # noqa: BLE001
             QMessageBox.critical(self, "Erro na normalização", str(exc))
             return
+
         voice = self.voice_path.text().strip() or None
+        remote = None
         if self.processing_mode.currentData() == "colab":
             try:
                 remote = self._colab_client()
@@ -2320,23 +2487,22 @@ class JoeWindow(QMainWindow):
                 QMessageBox.information(self, "Configure a API do Colab", str(exc))
                 return
 
-            def generate_audio() -> Path:
-                audio_data = remote.generate_audio(speech_text, language, voice)
-                destination.write_bytes(audio_data)
-                return destination
-
-            status = "Gerando áudio pela API remota…"
-            is_remote = True
-        else:
-            def generate_audio() -> Path:
-                return self.tts.generate(speech_text, language, str(destination), voice)
-
-            status = "Gerando áudio com Pocket TTS local…"
-            is_remote = False
+        is_remote = remote is not None
 
         def generate_with_metrics() -> dict:
             started_at = time.perf_counter()
-            output_path = Path(generate_audio())
+            if remote is not None:
+                audio_data = remote.generate_audio(speech_text, language, voice)
+                destination.write_bytes(audio_data)
+                output_path = destination
+            else:
+                output_path = Path(
+                    self.tts.generate(speech_text, language, str(destination), voice)
+                )
+
+            if not output_path.is_file() or output_path.stat().st_size == 0:
+                raise RuntimeError("O serviço TTS não produziu um WAV válido.")
+
             performance = AudioPerformance(
                 elapsed_seconds=max(time.perf_counter() - started_at, 0.000001),
                 audio_duration_seconds=wav_duration_seconds(output_path),
@@ -2345,13 +2511,121 @@ class JoeWindow(QMainWindow):
             )
             return {"path": str(output_path), "performance": performance}
 
+        label = " ".join(text.split())
+        if len(label) > 76:
+            label = label[:73].rstrip() + "..."
+        if voice:
+            label = f"{label}  [voz: {Path(voice).name}]"
+
+        self.tts_queue.enqueue(label, destination, generate_with_metrics)
+        self._refresh_tts_queue_controls()
+        self.statusBar().showMessage(
+            f"Tarefa adicionada à fila ({self.tts_queue.active_count} tarefa(s)).",
+            5000,
+        )
+        self._start_next_tts_task()
+
+    def _start_next_tts_task(self) -> None:
+        if self.active_worker is not None or self.clipboard_generation_worker is not None:
+            return
+
+        entry = self.tts_queue.start_next()
+        if entry is None:
+            self._refresh_tts_queue_controls()
+            return
+
+        worker = TTSQueueWorker(entry)
+        self.active_worker = worker
         self.tts_generation_started_at = time.monotonic()
         self.tts_speed_info.setText(
-            "Medição do Joe neste computador — "
-            f"{format_elapsed_status(0)}"
+            "Medição do Joe neste computador — " + format_elapsed_status(0)
         )
         self.tts_elapsed_timer.start()
-        self._run_task(status, generate_with_metrics, self._audio_generated)
+        self._set_busy(True, f"Gerando áudio — {entry.label[:48]}")
+
+        worker.signals.finished.connect(self._tts_queue_task_finished)
+        worker.signals.failed.connect(self._tts_queue_task_failed)
+        worker.signals.cancelled.connect(self._tts_queue_task_cancelled)
+        self._refresh_tts_queue_controls()
+        self.thread_pool.start(worker)
+
+    def _tts_queue_task_finished(self, task_id: str, result: object) -> None:
+        if not self.tts_queue.finish_current(task_id, "Concluído"):
+            return
+        self.active_worker = None
+        self.tts_elapsed_timer.stop()
+        self.tts_generation_started_at = None
+        self._set_busy(False, "Concluído")
+        self._audio_generated(result)
+        self._refresh_tts_queue_controls()
+        QTimer.singleShot(0, self._start_next_tts_task)
+
+    def _tts_queue_task_failed(self, task_id: str, message: str) -> None:
+        if not self.tts_queue.finish_current(task_id, "Falhou"):
+            return
+        self.active_worker = None
+        self.tts_elapsed_timer.stop()
+        self.tts_generation_started_at = None
+        detail = message.split("\\n\\n", 1)[0].strip() or "Erro desconhecido"
+        self.tts_speed_info.setText("A geração falhou. Consulte os detalhes do erro.")
+        self._set_busy(False, "Falha na geração")
+        self._refresh_tts_queue_controls()
+        QMessageBox.critical(self, "Falha ao gerar áudio", detail)
+        QTimer.singleShot(0, self._start_next_tts_task)
+
+    def _tts_queue_task_cancelled(self, task_id: str) -> None:
+        if not self.tts_queue.finish_current(task_id, "Cancelado"):
+            return
+        self.active_worker = None
+        self.tts_elapsed_timer.stop()
+        self.tts_generation_started_at = None
+        self.tts_speed_info.setText(
+            "Geração cancelada. O arquivo produzido por essa tarefa foi descartado."
+        )
+        self._set_busy(False, "Geração cancelada")
+        self._refresh_tts_queue_controls()
+        QTimer.singleShot(0, self._start_next_tts_task)
+
+    def _cancel_current_tts_task(self) -> None:
+        if self.tts_queue.request_cancel_current():
+            self.statusBar().showMessage(
+                "O Joe aguarda a chamada atual terminar antes de descartar o resultado.",
+                7000,
+            )
+            self._refresh_tts_queue_controls()
+
+    def _remove_tts_queue_entry(self, task_id: str) -> None:
+        if self.tts_queue.remove(task_id):
+            self._refresh_tts_queue_controls()
+            self.statusBar().showMessage("Item removido da fila.", 3000)
+
+    def _show_tts_queue(self) -> None:
+        dialog = TTSQueueDialog(
+            self.tts_queue,
+            self._cancel_current_tts_task,
+            self._remove_tts_queue_entry,
+            self,
+        )
+        dialog.exec()
+
+    def _refresh_tts_queue_controls(self) -> None:
+        pending = self.tts_queue.active_count
+        self.tts_queue_button.setText(f"Fila ({pending})")
+        self.tts_queue_button.setEnabled(True)
+
+        active = self.tts_queue.current
+        self.tts_cancel_button.setEnabled(
+            active is not None and active.status == "Gerando"
+        )
+        self.tts_cancel_button.setText(
+            "Cancelar atual"
+            if active is None or active.status == "Gerando"
+            else "Cancelamento solicitado"
+        )
+        self.tts_generate_button.setText(
+            "Adicionar à fila" if pending else "Gerar áudio WAV"
+        )
+        self.tts_generate_button.setEnabled(True)
 
     def _update_tts_elapsed(self) -> None:
         if self.tts_generation_started_at is None:
@@ -2397,8 +2671,7 @@ class JoeWindow(QMainWindow):
 
         want_timestamps = self.timestamps_check.isChecked()
         if self.processing_mode.currentData() == "colab":
-            try:
-                remote = self._colab_client()
+            try:                remote = self._colab_client()
             except ValueError as exc:
                 QMessageBox.information(self, "Configure a API do Colab", str(exc))
                 return
@@ -2523,6 +2796,7 @@ class JoeWindow(QMainWindow):
             self.active_worker = None
             self._set_busy(False, "Concluído")
             on_success(result)
+            QTimer.singleShot(0, self._start_next_tts_task)
 
         def failed(message: str) -> None:
             self.active_worker = None
@@ -2534,6 +2808,7 @@ class JoeWindow(QMainWindow):
                 )
             self._set_busy(False, "Falha")
             QMessageBox.critical(self, "Falha no processamento", message)
+            QTimer.singleShot(0, self._start_next_tts_task)
 
         worker.signals.finished.connect(finished)
         worker.signals.failed.connect(failed)
@@ -2541,7 +2816,6 @@ class JoeWindow(QMainWindow):
 
     def _set_busy(self, busy: bool, message: str) -> None:
         for widget in (
-            self.tts_generate_button,
             self.tts_play_button,
             self.tts_favorites_button,
             self.tts_settings_button,
@@ -2573,6 +2847,7 @@ class JoeWindow(QMainWindow):
             self.tts_play_button.setEnabled(False)
         elif self.generated_audio and self.generated_audio.is_file():
             self.tts_play_button.setEnabled(True)
+        self._refresh_tts_queue_controls()
         self._update_mode_widgets()
         self.status_label.setText(message)
         self.statusBar().showMessage(message)
@@ -2589,6 +2864,23 @@ class JoeWindow(QMainWindow):
         )
 
     def closeEvent(self, event) -> None:
+        if self.tts_queue.active_count:
+            answer = QMessageBox.question(
+                self,
+                "Tarefas de áudio em andamento",
+                f"Existem {self.tts_queue.active_count} tarefa(s) na fila. "
+                "Ao fechar, as tarefas que ainda aguardam serão descartadas. "
+                "A tarefa atual receberá um pedido de cancelamento e só poderá "
+                "parar depois que a chamada atual retornar. Deseja fechar mesmo assim?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if answer != QMessageBox.StandardButton.Yes:
+                event.ignore()
+                return
+            self.tts_queue.request_cancel_current()
+            self.tts_queue.clear_pending()
+
         self.colab_monitor_timer.stop()
         self._stop_global_hotkey()
         if self.local_command_server is not None:
