@@ -46,6 +46,7 @@ _JOB_EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="joe-infere
 _JOB_LOCK = threading.Lock()
 _JOBS: dict[str, dict[str, Any]] = {}
 _MAX_ACTIVE_JOBS = 2
+_MAX_STORED_JOBS = 8
 _JOB_TTL_SECONDS = 1800
 
 
@@ -216,6 +217,16 @@ def _submit_job(kind: str, function: Any, *args: Any) -> str:
         ]
         for job_id in expired:
             _JOBS.pop(job_id, None)
+        while len(_JOBS) >= _MAX_STORED_JOBS:
+            completed = [
+                (job["created_at"], job_id)
+                for job_id, job in _JOBS.items()
+                if job["status"] in {"completed", "failed"}
+            ]
+            if not completed:
+                raise HTTPException(status_code=429, detail="Armazenamento de tarefas cheio.")
+            _, oldest_job_id = min(completed)
+            _JOBS.pop(oldest_job_id, None)
         active = sum(job["status"] in {"queued", "running"} for job in _JOBS.values())
         if active >= _MAX_ACTIVE_JOBS:
             raise HTTPException(status_code=429, detail="Fila de inferência cheia. Tente novamente mais tarde.")
