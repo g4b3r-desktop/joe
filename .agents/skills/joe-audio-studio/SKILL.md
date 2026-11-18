@@ -21,7 +21,7 @@ Do not assume a historical commit, UI detail, dependency version, or test result
 
 ## Project rules
 
-- The active development branch is `feature/colab-model-api`. Confirm that it still exists and is the intended branch before writing.
+- The active development branch is `feature/joe-studio-improvements`. Confirm that it still exists and is the intended branch before writing.
 - Never commit feature work to `main`. Do not force-push, reset, or rewrite branch history.
 - Preserve existing features, user settings, saved voice files, generated audio, model caches, and checkpoints. Do not delete or replace user data to simplify an implementation.
 - Prefer small, focused changes. Do not combine unrelated refactors with a feature request.
@@ -33,10 +33,11 @@ Do not assume a historical commit, UI detail, dependency version, or test result
 
 ## Understand the product first
 
-Joe has three main desktop areas:
+Joe has four main desktop areas:
 - **Texto → Áudio:** type/paste text, choose a voice and language, generate WAV, and play the latest output.
 - **Áudio → Texto:** select an audio file, transcribe it, review/edit the transcript, and save/copy the result; SRT is available when timestamped segments exist.
 - **Google Colab / API:** choose local or remote inference, configure the temporary HTTPS tunnel and token, test the connection, and open the Colab notebook.
+- **Histórico:** search generated WAV metadata and manage the original files without moving them; storing associated text is optional and disabled by default.
 
 Less frequently changed TTS options live in a separate **⚙ Configurações** dialog. The main TTS screen also exposes **★ Favoritos**. Voice selection is handled by a recursive library with format filtering and immediate preview during mouse or keyboard navigation.
 
@@ -52,6 +53,8 @@ Key modules:
 - `colab/api_server.py`: FastAPI service run inside the Colab runtime.
 - `colab/Joe_Colab_API.ipynb`: notebook that prepares models/runtime and starts the API plus Cloudflare Quick Tunnel.
 - `src/joe/audio_chunks.py`: sentence-aware text splitting and WAV chunk merging.
+- `src/joe/audio_history.py`: SQLite index for generated WAV metadata; original text is optional.
+- `src/joe/ui/audio_history.py`: history tab, filters, playback and file management actions.
 - `src/joe/audio_performance.py`: desktop-side timing, WAV duration and speed report.
 - `src/joe/local_ipc.py`: private Unix-domain socket used to forward shortcut launches to the running Joe instance.
 - `src/joe/voice_favorites.py`: normalization and JSON persistence helpers for favorite voice paths and aliases.
@@ -69,7 +72,7 @@ Key modules:
    - `ruff check .`
    - `python -m compileall -q src colab`
 6. Inspect the final diff. Ensure no model weights, recordings, secrets, cache folders, generated WAVs, or local environment files were added.
-7. Commit to `feature/colab-model-api` only. Re-fetch the branch head before updating it; use a normal fast-forward update, not force.
+7. Commit to `feature/joe-studio-improvements` only. Re-fetch the branch head before updating it; use a normal fast-forward update, not force.
 8. Report the commit, files changed, tests actually run and any failures. Give the user commands to update their Linux checkout.
 
 See [references/development-workflow.md](references/development-workflow.md) for commands and Git safety details.
@@ -97,8 +100,8 @@ Use clear Brazilian Portuguese. Prefer direct, actionable instructions. When a c
 - Exact update commands, normally:
 
 ```bash
-git checkout feature/colab-model-api
-git pull origin feature/colab-model-api
+git checkout feature/joe-studio-improvements
+git pull origin feature/joe-studio-improvements
 .venv/bin/pip install -e .
 bash run.sh
 ```

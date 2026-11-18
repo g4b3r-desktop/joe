@@ -53,7 +53,9 @@ from PySide6.QtWidgets import (
 )
 
 from joe.audio_chunks import merge_wav_files, split_text_into_chunks
+from joe.audio_history import AudioHistoryStore
 from joe.generation_queue import GenerationQueue, GenerationTask
+from joe.ui.audio_history import AudioHistoryPanel
 from joe.audio_performance import (
     AudioPerformance,
     format_duration,
@@ -817,6 +819,7 @@ class ClipboardAudioDialog(QDialog):
     """Compact playback window for chunked clipboard audio."""
 
     closed = Signal()
+    saved = Signal(str, object)
 
     def __init__(
         self,
@@ -829,6 +832,7 @@ class ClipboardAudioDialog(QDialog):
         self.output_directory = output_directory
         self.temp_dir: Path | None = None
         self.audio_path: Path | None = None
+        self.performance: AudioPerformance | None = None
         self.chunk_paths: list[Path] = []
         self.next_chunk_index = 0
         self.current_chunk_path: Path | None = None
@@ -939,6 +943,7 @@ class ClipboardAudioDialog(QDialog):
         self.audio_path = Path(result["path"])
         self.generation_finished = True
         performance = result.get("performance")
+        self.performance = performance if isinstance(performance, AudioPerformance) else None
         if isinstance(performance, AudioPerformance):
             self.performance_label.setText(format_performance_report(performance))
         else:
@@ -1074,6 +1079,7 @@ class ClipboardAudioDialog(QDialog):
             QMessageBox.critical(self, "Erro ao salvar áudio", str(exc))
             return
         self.status_label.setText(f"Cópia salva em:\n{destination}")
+        self.saved.emit(str(destination), self.performance)
 
     def closeEvent(self, event) -> None:
         self.is_closing = True
@@ -1139,6 +1145,14 @@ class JoeWindow(QMainWindow):
         self.favorite_voices = load_voice_favorites(
             self.app_settings.value("favorite_voices", "{}")
         )
+        history_directory = QStandardPaths.writableLocation(
+            QStandardPaths.StandardLocation.AppDataLocation
+        )
+        if not history_directory:
+            history_directory = str(Path.home() / ".local" / "share" / "joe-audio-studio")
+        self.audio_history = AudioHistoryStore(
+            Path(history_directory) / "audio-history.sqlite3"
+        )
 
         self.player = QMediaPlayer(self)
         self.audio_output = QAudioOutput(self)
@@ -1161,10 +1175,10 @@ class JoeWindow(QMainWindow):
         tabs.addTab(self._build_tts_tab(), "Texto → Áudio")
         tabs.addTab(self._build_asr_tab(), "Áudio → Texto")
         tabs.addTab(self._build_colab_tab(), "Google Colab / API")
+        # Add after Colab so the persisted tab index 2 keeps its previous meaning.
+        tabs.addTab(self._build_history_tab(), "Histórico")
         tabs.setCurrentIndex(self.app_settings.value("last_tab", 0, type=int))
-        tabs.currentChanged.connect(
-            lambda index: self.app_settings.setValue("last_tab", index)
-        )
+        tabs.currentChanged.connect(self._on_main_tab_changed)
         self.setCentralWidget(tabs)
 
         bar = QStatusBar()
@@ -1382,7 +1396,7 @@ class JoeWindow(QMainWindow):
     def _open_colab_notebook(self) -> None:
         url = (
             "https://colab.research.google.com/github/g4b3r-desktop/joe/"
-            "blob/feature/colab-model-api/colab/Joe_Colab_API.ipynb"
+            "blob/feature/joe-studio-improvements/colab/Joe_Colab_API.ipynb"
         )
         QDesktopServices.openUrl(QUrl(url))
 
@@ -1660,10 +1674,25 @@ class JoeWindow(QMainWindow):
             )
         )
 
-        output_group = QGroupBox("Arquivos e atalho de texto copiado")
+        self.history_save_text_check = QCheckBox(
+            "Salvar também o texto original associado ao áudio no histórico"
+        )
+        self.history_save_text_check.setToolTip(
+            "Desativado por padrão. Quando ativado, o texto será guardado no banco local "
+            "do histórico para pesquisa e recuperação."
+        )
+        self.history_save_text_check.setChecked(
+            self.app_settings.value("history_save_text", False, type=bool)
+        )
+        self.history_save_text_check.toggled.connect(
+            lambda checked: self.app_settings.setValue("history_save_text", bool(checked))
+        )
+
+        output_group = QGroupBox("Arquivos, histórico e atalho de texto copiado")
         output_form = QFormLayout(output_group)
         output_form.addRow("Pasta para salvar", output_folder_row)
         output_form.addRow("", self.tts_auto_filename)
+        output_form.addRow("Privacidade do histórico", self.history_save_text_check)
         output_form.addRow("Tamanho dos blocos do atalho", self.clipboard_chunk_size)
         dialog_layout.addWidget(output_group)
 
@@ -1764,6 +1793,105 @@ class JoeWindow(QMainWindow):
             self.tts_settings_dialog.show()
         self.tts_settings_dialog.raise_()
         self.tts_settings_dialog.activateWindow()
+
+    def _build_history_tab(self) -> QWidget:
+        self.history_panel = AudioHistoryPanel(self.audio_history, self.player, self)
+        self.history_panel.status_message.connect(
+            lambda message: self.statusBar().showMessage(message, 5000)
+        )
+        return self.history_panel
+
+    def _on_main_tab_changed(self, index: int) -> None:
+        self.app_settings.setValue("last_tab", index)
+        if index == 3:
+            self._refresh_audio_history()
+
+    def _refresh_audio_history(self) -> None:
+        if hasattr(self, "history_panel"):
+            self.history_panel.refresh()
+
+    def _record_audio_history(
+        self,
+        audio_path: str | Path,
+        performance: AudioPerformance | None,
+        *,
+        voice_path: str | None,
+        voice_alias: str,
+        language: str,
+        backend: str,
+        original_text: str,
+    ) -> None:
+        try:
+            duration = (
+                performance.audio_duration_seconds
+                if isinstance(performance, AudioPerformance)
+                else wav_duration_seconds(audio_path)
+            )
+            elapsed = (
+                performance.elapsed_seconds
+                if isinstance(performance, AudioPerformance)
+                else 0.0
+            )
+            stored_text = (
+                original_text
+                if hasattr(self, "history_save_text_check")
+                and self.history_save_text_check.isChecked()
+                else None
+            )
+            self.audio_history.add_generated_audio(
+                audio_path,
+                duration_seconds=duration,
+                generation_seconds=elapsed,
+                voice_path=voice_path,
+                voice_alias=voice_alias,
+                language=language,
+                backend=backend,
+                text_content=stored_text,
+            )
+        except Exception as exc:  # noqa: BLE001
+            self.statusBar().showMessage(
+                f"Áudio gerado, mas não foi possível registrá-lo no histórico: {exc}",
+                9000,
+            )
+            return
+        self._refresh_audio_history()
+
+    def _record_task_history(self, task: GenerationTask, result: object) -> None:
+        metrics = result if isinstance(result, dict) else {}
+        performance = metrics.get("performance")
+        self._record_audio_history(
+            metrics.get("path", task.output_path),
+            performance if isinstance(performance, AudioPerformance) else None,
+            voice_path=task.voice_path,
+            voice_alias=task.voice_alias,
+            language=task.language,
+            backend="Google Colab" if task.remote else "Local",
+            original_text=task.text,
+        )
+
+    def _record_clipboard_history(
+        self,
+        audio_path: str,
+        performance: object,
+        copied_text: str,
+        language: str,
+        voice_path: str | None,
+        remote: bool,
+    ) -> None:
+        voice_key = canonical_voice_path(voice_path) if voice_path else ""
+        voice_alias = self.favorite_voices.get(
+            voice_key,
+            Path(voice_path).stem if voice_path else "Voz padrão",
+        )
+        self._record_audio_history(
+            audio_path,
+            performance if isinstance(performance, AudioPerformance) else None,
+            voice_path=voice_path,
+            voice_alias=voice_alias,
+            language=language,
+            backend="Google Colab" if remote else "Local",
+            original_text=copied_text,
+        )
 
     def _build_asr_tab(self) -> QWidget:
         page = QWidget()
@@ -2493,6 +2621,16 @@ class JoeWindow(QMainWindow):
         dialog.set_text_preview(copied_text)
         dialog.start_measurement(remote=remote is not None)
         dialog.closed.connect(lambda: self._clipboard_dialog_closed(dialog))
+        dialog.saved.connect(
+            lambda output_path, performance: self._record_clipboard_history(
+                output_path,
+                performance,
+                copied_text,
+                language,
+                voice,
+                remote is not None,
+            )
+        )
         self.clipboard_audio_window = dialog
         self.clipboard_temp_dir = temp_dir
         dialog.show()
@@ -2643,12 +2781,19 @@ class JoeWindow(QMainWindow):
                 return
 
         try:
+            selected_voice = self.voice_path.text().strip() or None
+            selected_voice_key = canonical_voice_path(selected_voice) if selected_voice else ""
+            selected_voice_alias = self.favorite_voices.get(
+                selected_voice_key,
+                Path(selected_voice).stem if selected_voice else "Voz padrão",
+            )
             task = self.generation_queue.enqueue(
                 text=text,
                 speech_text=speech_text,
                 language=language,
                 output_path=str(destination),
-                voice_path=self.voice_path.text().strip() or None,
+                voice_path=selected_voice,
+                voice_alias=selected_voice_alias,
                 remote=remote,
                 remote_url=remote_url,
                 remote_token=remote_token,
@@ -2718,7 +2863,10 @@ class JoeWindow(QMainWindow):
         self._refresh_generation_queue()
 
     def _generation_completed(self, task_id: str, result: object) -> None:
+        task = self.generation_queue.get(task_id)
         self.generation_queue.complete(task_id)
+        if task is not None:
+            self._record_task_history(task, result)
         self.active_generation_worker = None
         self.tts_elapsed_timer.stop()
         self.tts_generation_started_at = None

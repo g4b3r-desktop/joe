@@ -1,6 +1,6 @@
 # Joe Audio Studio — mapa do projeto
 
-Snapshot de referência: branch `feature/colab-model-api`, commit `e6ecda33e7c3104328c374899c32c33cbfcf4ee1`. Confirme os caminhos e a estrutura no checkout atual antes de usar.
+Snapshot de referência: branch `feature/joe-studio-improvements`, commit `e6ecda33e7c3104328c374899c32c33cbfcf4ee1`. Confirme os caminhos e a estrutura no checkout atual antes de usar.
 
 ## Estrutura
 
@@ -20,7 +20,11 @@ Snapshot de referência: branch `feature/colab-model-api`, commit `e6ecda33e7c31
 │   ├── app.py
 │   ├── __main__.py
 │   ├── audio_chunks.py
+│   ├── audio_history.py              # índice SQLite dos WAVs gerados
 │   ├── audio_performance.py
+│   ├── ui/
+│   │   ├── __init__.py
+│   │   └── audio_history.py          # painel e ações do histórico
 │   ├── local_ipc.py
 │   ├── text_normalization.py
 │   ├── utils.py
@@ -32,6 +36,7 @@ Snapshot de referência: branch `feature/colab-model-api`, commit `e6ecda33e7c31
 │       └── colab_api.py
 ├── tests/
 │   ├── test_audio_chunks.py
+│   ├── test_audio_history.py
 │   ├── test_audio_performance.py
 │   ├── test_colab_api.py
 │   ├── test_colab_notebook.py
@@ -55,6 +60,8 @@ Snapshot de referência: branch `feature/colab-model-api`, commit `e6ecda33e7c31
 | `colab/api_server.py` | API FastAPI, autenticação Bearer, fila de inferência, limites e resultados dos jobs |
 | `colab/Joe_Colab_API.ipynb` | Preparação do runtime, acesso opcional ao Drive, monitoramento e túnel temporário |
 | `src/joe/audio_chunks.py` | Divisão por sentenças e união de trechos WAV com taxa de amostragem/canais normalizados |
+| `src/joe/audio_history.py` | Persistência SQLite dos metadados dos áudios; texto original é opcional e vem desativado |
+| `src/joe/ui/audio_history.py` | Aba de histórico, filtros, reprodução, abrir pasta, renomear, exportar e excluir |
 | `src/joe/audio_performance.py` | Métricas compartilhadas nas telas: duração, tempo total, razão tempo real e caracteres por segundo |
 | `src/joe/local_ipc.py` | Servidor/cliente AF_UNIX para comandos locais da instância ativa |
 | `src/joe/voice_favorites.py` | Canonicalização de caminhos, leitura e serialização dos apelidos favoritos |

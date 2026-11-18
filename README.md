@@ -22,7 +22,7 @@ No modo Local, o processamento ocorre no próprio computador. No modo Colab, tex
 
 O Joe pode usar uma sessão do Google Colab como servidor de inferência, sem instalar os pesos dos modelos no computador desktop.
 
-1. Abra a aba **Google Colab / API** no Joe e clique em **Abrir notebook no Google Colab** (ou abra [o notebook diretamente](https://colab.research.google.com/github/g4b3r-desktop/joe/blob/feature/colab-model-api/colab/Joe_Colab_API.ipynb)).
+1. Abra a aba **Google Colab / API** no Joe e clique em **Abrir notebook no Google Colab** (ou abra [o notebook diretamente](https://colab.research.google.com/github/g4b3r-desktop/joe/blob/feature/joe-studio-improvements/colab/Joe_Colab_API.ipynb)).
 2. No Colab, selecione um runtime com GPU quando disponível e execute as células em sequência.
 3. A última célula inicia a API FastAPI e um Cloudflare Quick Tunnel temporário. Ela mostra uma URL HTTPS `trycloudflare.com` e um token Bearer aleatório.
 4. Cole a URL e o token na aba **Google Colab / API**, teste a conexão e selecione **Google Colab (API remota)** em Modo de execução.
@@ -165,6 +165,12 @@ O Joe grava automaticamente, enquanto você digita ou altera os campos, os texto
 O botão **Fila de geração** abre um painel para adicionar o texto atual, acompanhar o progresso por tarefa, cancelar itens, marcar tarefas urgentes, repetir falhas e limpar tarefas concluídas. As gerações TTS são executadas em sequência; uma falha é registrada na fila e não impede o processamento das próximas tarefas. Cada tarefa captura o texto preparado, idioma, voz, destino e backend escolhidos no momento do envio.
 
 A fila existe somente na memória da sessão atual. Os textos não são gravados pela fila nem exibidos na lista; os arquivos WAV concluídos ficam no destino escolhido. O cancelamento local é cooperativo entre blocos de até 280 caracteres: uma inferência que já começou precisa terminar antes de o worker parar. No Colab, tarefas ainda aguardando podem ser canceladas; se a inferência remota já começou, o servidor sinaliza o cancelamento e descarta o resultado quando a chamada terminar.
+
+### Histórico de áudios
+
+A aba **Histórico** registra os WAV gerados pelo TTS da tela principal e os áudios do atalho de clipboard somente quando você os salva em uma pasta permanente. Ela mostra nome, data, duração, tamanho, voz/apelido, tempo de geração, velocidade efetiva e origem (Local ou Google Colab). Use pesquisa e filtros por voz, data e duração para localizar arquivos; os comandos permitem reproduzir, abrir a pasta, renomear, exportar uma cópia ou excluir o WAV e seu registro.
+
+O índice é um banco SQLite local na pasta de dados do Joe. Os WAVs permanecem nas pastas escolhidas pelo usuário; não são movidos para uma biblioteca interna. Arquivos antigos já existentes não são indexados automaticamente. A opção **Configurações → Arquivos, histórico e atalho → Privacidade do histórico** controla se o texto original também será guardado: vem desativada por padrão. Com a opção desligada, ficam salvos apenas os metadados do áudio; com ela ligada, o texto pode ser pesquisado no histórico. Desativar a opção impede guardar texto em novos registros, mas não apaga textos que já tenham sido armazenados. A opção não altera os rascunhos já existentes nas configurações do Joe.
 
 ### Áudio → Texto
 1. Selecione um arquivo de áudio.

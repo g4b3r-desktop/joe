@@ -15,6 +15,7 @@ class GenerationTask:
     language: str
     output_path: str
     voice_path: str | None = None
+    voice_alias: str = ""
     remote: bool = False
     remote_url: str = ""
     remote_token: str = field(default="", repr=False)
@@ -50,6 +51,7 @@ class GenerationQueue:
         language: str,
         output_path: str,
         voice_path: str | None = None,
+        voice_alias: str = "",
         remote: bool = False,
         remote_url: str = "",
         remote_token: str = "",
@@ -65,6 +67,7 @@ class GenerationQueue:
             language=language,
             output_path=output_path,
             voice_path=voice_path,
+            voice_alias=voice_alias,
             remote=remote,
             remote_url=remote_url,
             remote_token=remote_token,

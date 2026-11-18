@@ -7,8 +7,8 @@ A partir da pasta do repositório:
 ```bash
 git status --short --branch
 git fetch origin
-git checkout feature/colab-model-api
-git pull --ff-only origin feature/colab-model-api
+git checkout feature/joe-studio-improvements
+git pull --ff-only origin feature/joe-studio-improvements
 ```
 
 Não use `git reset --hard`, `git clean -fdx`, force-push ou comandos que descartem alterações do usuário. Se houver arquivos modificados, inspecione-os e preserve-os.
@@ -66,7 +66,7 @@ Para uma mudança específica, executar primeiro o teste relevante (por exemplo 
 ## Commit e atualização do GitHub
 
 Antes de escrever no GitHub:
-1. Obter o SHA atual de `feature/colab-model-api`.
+1. Obter o SHA atual de `feature/joe-studio-improvements`.
 2. Conferir o conteúdo atual dos arquivos que serão alterados.
 3. Criar as alterações com base na árvore/commit atual.
 4. Criar commit cujo pai é o head confirmado.
@@ -78,8 +78,8 @@ Mensagem de commit concisa, por exemplo `Add voice library extension filter`.
 Na resposta, listar commits reais e verificáveis, testes realmente executados e falhas que persistem. O comando para o usuário sincronizar deve ser explícito:
 
 ```bash
-git checkout feature/colab-model-api
-git pull --ff-only origin feature/colab-model-api
+git checkout feature/joe-studio-improvements
+git pull --ff-only origin feature/joe-studio-improvements
 .venv/bin/pip install -e .
 bash run.sh
 ```

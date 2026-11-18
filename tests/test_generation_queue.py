@@ -96,3 +96,35 @@ def test_remove_finished_preserves_waiting_tasks():
     assert queue.remove_finished() == 1
     assert queue.get(completed.task_id) is None
     assert queue.get(waiting.task_id) is waiting
+
+
+
+def test_queue_preserves_voice_alias_in_the_task_snapshot():
+    queue = GenerationQueue()
+    task = queue.enqueue(
+        text="Olá",
+        speech_text="Olá",
+        language="portuguese",
+        output_path="/tmp/hello.wav",
+        voice_path="/voices/voice.wav",
+        voice_alias="Narradora",
+    )
+
+    assert task.voice_path == "/voices/voice.wav"
+    assert task.voice_alias == "Narradora"
+
+
+
+def test_queue_preserves_voice_alias_in_the_task_snapshot():
+    queue = GenerationQueue()
+    task = queue.enqueue(
+        text="Olá",
+        speech_text="Olá",
+        language="portuguese",
+        output_path="/tmp/hello.wav",
+        voice_path="/voices/voice.wav",
+        voice_alias="Narradora",
+    )
+
+    assert task.voice_path == "/voices/voice.wav"
+    assert task.voice_alias == "Narradora"
