@@ -196,6 +196,8 @@ def health(_: None = Depends(require_token)) -> dict[str, Any]:
         "asr_loaded": _asr_model is not None,
         "asr_backend": _asr_backend,
         "tts_loaded_languages": sorted(_tts_models.keys()),
+        "tts_local_drive_config": bool(os.environ.get("JOE_TTS_CONFIG_PATH")),
+        "hf_cache_configured": bool(os.environ.get("HF_HOME")),
         "cuda_available": torch.cuda.is_available(),
         "gpu_name": gpu_name,
     }
