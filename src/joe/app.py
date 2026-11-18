@@ -43,6 +43,7 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPushButton,
     QStatusBar,
+    QSlider,
     QTabWidget,
     QTableWidget,
     QTableWidgetItem,
@@ -84,7 +85,7 @@ from joe.voice_favorites import (
     load_voice_favorites,
     serialize_voice_favorites,
 )
-from joe.utils import build_srt, build_audio_output_path
+from joe.utils import build_srt, build_vtt, build_audio_output_path
 from joe.workers import ClipboardChunkWorker, FunctionWorker, TTSQueueWorker
 from joe.audio_history import (
     add_audio_history_entry,
@@ -95,6 +96,7 @@ from joe.audio_history import (
 from joe.ui.audio_history_dialog import AudioHistoryDialog
 from joe.ui.tts_queue_dialog import TTSQueueDialog
 from joe.ui.voice_profiles_dialog import VoiceProfilesDialog
+from joe.ui.audio_player_dialog import AudioPlayerDialog
 
 
 class VoiceLibraryDialog(QDialog):
@@ -785,6 +787,7 @@ class JoeWindow(QMainWindow):
         self.player = QMediaPlayer(self)
         self.audio_output = QAudioOutput(self)
         self.player.setAudioOutput(self.audio_output)
+        self.audio_player_dialog: AudioPlayerDialog | None = None
 
         self._build_ui()
         self.tts_favorites_button.setText(
@@ -1071,6 +1074,10 @@ class JoeWindow(QMainWindow):
         self.tts_play_button.setEnabled(False)
         self.tts_play_button.clicked.connect(self._play_generated_audio)
 
+        self.tts_advanced_player_button = QPushButton("Player")
+        self.tts_advanced_player_button.setToolTip("Abrir controles avançados do áudio")
+        self.tts_advanced_player_button.clicked.connect(self._open_audio_player)
+
         self.tts_favorites_button = QPushButton("★ Favoritos")
         self.tts_favorites_button.setToolTip(
             "Escolher rapidamente uma voz salva nos favoritos"
@@ -1100,6 +1107,7 @@ class JoeWindow(QMainWindow):
         action_row = QHBoxLayout()
         action_row.addWidget(self.tts_generate_button)
         action_row.addWidget(self.tts_play_button)
+        action_row.addWidget(self.tts_advanced_player_button)
         action_row.addWidget(self.tts_favorites_button)
         action_row.addWidget(self.tts_profiles_button)
         action_row.addWidget(self.tts_history_button)
@@ -1631,12 +1639,17 @@ class JoeWindow(QMainWindow):
         self.save_srt_button.clicked.connect(self._save_srt)
         self.save_srt_button.setEnabled(False)
 
+        self.save_vtt_button = QPushButton("Exportar VTT…")
+        self.save_vtt_button.clicked.connect(self._save_vtt)
+        self.save_vtt_button.setEnabled(False)
+
         buttons = QHBoxLayout()
         buttons.addWidget(self.asr_button)
         buttons.addStretch(1)
         buttons.addWidget(self.copy_button)
         buttons.addWidget(self.save_txt_button)
         buttons.addWidget(self.save_srt_button)
+        buttons.addWidget(self.save_vtt_button)
 
         self.asr_info = QLabel(
             "O áudio é processado neste computador. A primeira transcrição baixa os pesos "
@@ -2077,6 +2090,7 @@ class JoeWindow(QMainWindow):
             self.transcript.clear()
             self.transcript_segments = []
             self.save_srt_button.setEnabled(False)
+            self.save_vtt_button.setEnabled(False)
 
     @staticmethod
     def _xfce_hotkey_property() -> str:
@@ -2748,6 +2762,15 @@ class JoeWindow(QMainWindow):
         )
         self.pending_audio_history = {}
 
+    def _open_audio_player(self) -> None:
+        if self.audio_player_dialog is None:
+            self.audio_player_dialog = AudioPlayerDialog(
+                self.player, self.audio_output, self
+            )
+        self.audio_player_dialog.show()
+        self.audio_player_dialog.raise_()
+        self.audio_player_dialog.activateWindow()
+
     def _play_generated_audio(self) -> None:
         if not self.generated_audio or not self.generated_audio.is_file():
             return
@@ -2804,6 +2827,7 @@ class JoeWindow(QMainWindow):
         if self.timestamps_check.isChecked() and not self.transcript_segments:
             note += " Os tempos de segmento não foram retornados por este backend."
         self.save_srt_button.setEnabled(bool(self.transcript_segments))
+        self.save_vtt_button.setEnabled(bool(self.transcript_segments))
         self.asr_info.setText(f"{self.transcription_backend} — {note}".strip(" —"))
 
     def _copy_transcript(self) -> None:
@@ -2874,6 +2898,47 @@ class JoeWindow(QMainWindow):
             Path(path).write_text(build_srt(edited_segments), encoding="utf-8")
         except (OSError, TypeError, ValueError) as exc:
             QMessageBox.critical(self, "Erro ao exportar SRT", str(exc))
+            return
+        self.statusBar().showMessage(f"Legendas salvas: {path}", 5000)
+
+    def _save_vtt(self) -> None:
+        if not self.transcript_segments:
+            QMessageBox.information(
+                self,
+                "Tempos indisponíveis",
+                "Este backend não retornou segmentos com marcações de tempo.",
+            )
+            return
+        path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Exportar legendas WebVTT",
+            str(Path.home() / "transcricao.vtt"),
+            "Legendas WebVTT (*.vtt)",
+        )
+        if not path:
+            return
+        if not path.lower().endswith(".vtt"):
+            path += ".vtt"
+        edited_lines = [
+            line.strip()
+            for line in self.transcript.toPlainText().splitlines()
+            if line.strip()
+        ]
+        if len(edited_lines) != len(self.transcript_segments):
+            QMessageBox.information(
+                self,
+                "Revise os segmentos",
+                "Para exportar o texto editado, mantenha uma linha para cada segmento com tempo.",
+            )
+            return
+        edited_segments = [
+            {**segment, "text": edited_lines[index]}
+            for index, segment in enumerate(self.transcript_segments)
+        ]
+        try:
+            Path(path).write_text(build_vtt(edited_segments), encoding="utf-8")
+        except (OSError, TypeError, ValueError) as exc:
+            QMessageBox.critical(self, "Erro ao exportar VTT", str(exc))
             return
         self.statusBar().showMessage(f"Legendas salvas: {path}", 5000)
 
@@ -2971,6 +3036,7 @@ class JoeWindow(QMainWindow):
         for widget in (
             self.tts_generate_button,
             self.tts_play_button,
+            self.tts_advanced_player_button,
             self.tts_favorites_button,
             self.tts_profiles_button,
             self.tts_history_button,

@@ -105,3 +105,10 @@ O módulo `text_normalization.py` mantém uma cópia preparada do texto e conté
 - Persistência em QSettings por voice_profiles; o perfil ativo é lembrado separadamente.
 - Aplicar um perfil atualiza os controles existentes e usa o mecanismo já existente para persistir o dicionário.
 - Excluir um perfil não remove áudio, estado .safetensors ou favorito.
+
+
+## Player e legendas
+
+- O player avançado controla o mesmo QMediaPlayer compartilhado pelo app, biblioteca e histórico; não cria uma segunda reprodução concorrente.
+- Busca, saltos, volume e velocidade alteram somente a reprodução. Não reprocessam nem modificam o arquivo WAV.
+- A exportação WebVTT usa os segmentos temporizados já retornados pelo backend. Não sintetize tempos quando o backend não fornece timestamps.

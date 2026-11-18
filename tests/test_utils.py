@@ -52,3 +52,23 @@ def test_build_audio_output_path_sanitizes_prefix(tmp_path):
     )
 
     assert result.name == "Meu_áudio_teste_20261118_123045.wav"
+
+
+from joe.utils import build_vtt, format_vtt_time
+
+
+def test_format_vtt_time_uses_webvtt_period_separator():
+    assert format_vtt_time(65.234) == "00:01:05.234"
+
+
+def test_build_vtt_exports_timestamped_segments():
+    result = build_vtt([
+        {"start": 0.0, "end": 1.25, "text": "Olá."},
+        {"start": 1.25, "end": 3.5, "text": "Tudo bem?"},
+        {"start": 3.5, "end": 4.0, "text": "   "},
+    ])
+
+    assert result.startswith("WEBVTT\n\n")
+    assert "00:00:00.000 --> 00:00:01.250\nOlá." in result
+    assert "00:00:01.250 --> 00:00:03.500\nTudo bem?" in result
+    assert "3.500 --> 4.000" not in result

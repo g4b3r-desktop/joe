@@ -214,3 +214,10 @@ Os áudios produzidos pelo atalho do clipboard entram no Histórico somente depo
 ## Perfis de voz
 
 O botão **Perfis** na tela Texto → Áudio abre o gerenciador de perfis. Um perfil guarda o arquivo/estado de voz, idioma, opção de normalização e dicionário pessoal de pronúncia. É possível salvar a configuração atual com um nome, aplicar, atualizar ou excluir um perfil. Os perfis ficam em QSettings; excluir um perfil não apaga arquivos de voz nem favoritos.
+
+
+## Player avançado e legendas WebVTT
+
+O botão **Player** abre controles para o áudio que estiver ativo no Joe: busca pela linha do tempo, reprodução/pausa/parada, saltos de cinco segundos, velocidade entre 0,75× e 2× e volume. O ajuste de velocidade afeta apenas a reprodução, não altera o WAV.
+
+Na aba Áudio → Texto, quando o backend retorna segmentos com tempos, o Joe permite exportar tanto SRT quanto WebVTT. O texto editado é exportado mantendo os tempos originais; por isso, é necessário manter uma linha por segmento.

@@ -60,6 +60,7 @@ Snapshot de referência: branch `feature/colab-model-api`, commit `e6ecda33e7c31
 | `src/joe/voice_favorites.py` | Canonicalização de caminhos, leitura e serialização dos apelidos favoritos |
 | `src/joe/voice_profiles.py` | Validação, leitura e gravação de perfis nomeados de voz e pronúncia |
 | `src/joe/ui/voice_profiles_dialog.py` | Diálogo para aplicar, salvar, atualizar e remover perfis de voz |
+| `src/joe/ui/audio_player_dialog.py` | Controles de busca, volume, velocidade e transporte do player compartilhado |
 | `src/joe/text_normalization.py` | Conversão de números, datas, horas, moeda, porcentagem, abreviações e siglas para fala |
 | `scripts/install-linux.sh` | Ambiente virtual, PyTorch CPU/CUDA e instalação editável |
 | `scripts/install-desktop.sh` | `joe.desktop`, ícone, atalho Xfce e desinstalação segura dos itens gerenciados pelo Joe |

@@ -51,3 +51,25 @@ def build_audio_output_path(
         candidate = output_dir / f"{safe_prefix}_{date_part}_{suffix:03d}.wav"
         suffix += 1
     return candidate
+
+
+def format_vtt_time(seconds: float) -> str:
+    """Convert seconds to the WebVTT timestamp format HH:MM:SS.mmm."""
+    total_ms = max(0, round(float(seconds) * 1000))
+    hours, remainder = divmod(total_ms, 3_600_000)
+    minutes, remainder = divmod(remainder, 60_000)
+    secs, milliseconds = divmod(remainder, 1000)
+    return f"{hours:02d}:{minutes:02d}:{secs:02d}.{milliseconds:03d}"
+
+
+def build_vtt(segments: list[dict[str, Any]]) -> str:
+    """Build a WebVTT document from timestamped transcript segments."""
+    blocks: list[str] = []
+    for segment in segments:
+        text = str(segment.get("text", "")).strip()
+        if not text:
+            continue
+        start = format_vtt_time(float(segment.get("start", 0.0)))
+        end = format_vtt_time(float(segment.get("end", 0.0)))
+        blocks.append(f"{start} --> {end}\\n{text}")
+    return "WEBVTT\\n\\n" + "\\n\\n".join(blocks) + ("\\n" if blocks else "")
