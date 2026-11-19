@@ -56,6 +56,7 @@ from joe.audio_chunks import merge_wav_files, split_text_into_chunks
 from joe.audio_history import AudioHistoryStore
 from joe.generation_queue import GenerationQueue, GenerationTask
 from joe.ui.audio_history import AudioHistoryPanel
+from joe.ui.advanced_player import AdvancedAudioPlayer
 from joe.audio_performance import (
     AudioPerformance,
     format_duration,
@@ -1177,6 +1178,8 @@ class JoeWindow(QMainWindow):
         tabs.addTab(self._build_colab_tab(), "Google Colab / API")
         # Add after Colab so the persisted tab index 2 keeps its previous meaning.
         tabs.addTab(self._build_history_tab(), "Histórico")
+        # The new player is appended so saved indices of existing tabs stay stable.
+        tabs.addTab(self._build_player_tab(), "Player avançado")
         tabs.setCurrentIndex(self.app_settings.value("last_tab", 0, type=int))
         tabs.currentChanged.connect(self._on_main_tab_changed)
         self.setCentralWidget(tabs)
@@ -1800,6 +1803,15 @@ class JoeWindow(QMainWindow):
             lambda message: self.statusBar().showMessage(message, 5000)
         )
         return self.history_panel
+
+    def _build_player_tab(self) -> QWidget:
+        self.advanced_player = AdvancedAudioPlayer(
+            self.player, self.audio_output, self
+        )
+        self.advanced_player.status_message.connect(
+            lambda message: self.statusBar().showMessage(message, 8000)
+        )
+        return self.advanced_player
 
     def _on_main_tab_changed(self, index: int) -> None:
         self.app_settings.setValue("last_tab", index)

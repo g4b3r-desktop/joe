@@ -180,6 +180,14 @@ O índice é um banco SQLite local na pasta de dados do Joe. Os WAVs permanecem 
 
 Formatos aceitos dependem do decodificador disponível no ambiente; WAV é o formato mais previsível. Parakeet Redux faz detecção automática do idioma.
 
+### Player avançado
+
+A aba **Player avançado** controla o mesmo reprodutor usado na geração, na prévia da biblioteca de vozes e no histórico. Inclui waveform com navegação por clique, barra de progresso, velocidade de 0,75× a 2×, volume, saltos de 5 e 10 segundos e repetição de trechos delimitados pelos marcadores A e B.
+
+Para cortar o início ou o fim, marque A e/ou B e use **Exportar corte**. Sem marcadores, os limites padrão são o início e o fim do arquivo. A detecção e a redução de silêncio permitem ajustar o nível em dB, a duração mínima da pausa e quanto silêncio manter. As operações exportam um novo WAV e não sobrescrevem o arquivo original.
+
+A leitura da waveform e o processamento são executados em segundo plano. A waveform depende dos formatos decodificáveis pela biblioteca de áudio instalada; a reprodução continua usando o decodificador Qt disponível no sistema.
+
 ## Cache e privacidade
 
 Os modelos são baixados uma vez e armazenados nos caches padrão do Hugging Face/PyTorch. O áudio selecionado e os resultados permanecem na máquina. A seleção de um arquivo de voz para TTS só é usada localmente como condicionamento; não é enviado para uma API remota.
