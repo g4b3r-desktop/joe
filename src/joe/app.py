@@ -2134,6 +2134,7 @@ class JoeWindow(QMainWindow):
                 "transcript_text", self.transcript.toPlainText()
             )
         )
+        self.transcript.textChanged.connect(self._refresh_transcript_sync_labels)
 
         self.copy_button = QPushButton("Copiar texto")
         self.copy_button.clicked.connect(self._copy_transcript)
@@ -3492,6 +3493,30 @@ class JoeWindow(QMainWindow):
         minutes, remainder = divmod(total, 60_000)
         whole_seconds, milliseconds = divmod(remainder, 1000)
         return f"{minutes:02d}:{whole_seconds:02d}.{milliseconds:03d}"
+
+    def _refresh_transcript_sync_labels(self) -> None:
+        if not self.transcript_segments or not hasattr(self, "transcript_sync_list"):
+            return
+        edited_lines = [
+            line.strip() for line in self.transcript.toPlainText().splitlines()
+            if line.strip()
+        ]
+        if len(edited_lines) != len(self.transcript_segments):
+            self.transcript_sync_info.setText(
+                "Para manter a sincronização, mantenha uma linha para cada trecho com tempo."
+            )
+            return
+        for index, (segment, text) in enumerate(
+            zip(self.transcript_segments, edited_lines)
+        ):
+            start = self._format_transcript_time(float(segment["start"]))
+            end = self._format_transcript_time(float(segment["end"]))
+            item = self.transcript_sync_list.item(index)
+            if item is not None:
+                item.setText(f"{index + 1:03d}  [{start} – {end}]  {text}")
+        self.transcript_sync_info.setText(
+            f"{len(self.transcript_segments)} trecho(s) sincronizado(s)"
+        )
 
     def _on_transcript_audio_path_changed(self, value: str) -> None:
         selected = str(Path(value).expanduser().resolve()) if value.strip() else ""
