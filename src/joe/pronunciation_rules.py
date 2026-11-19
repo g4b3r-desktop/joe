@@ -96,7 +96,7 @@ def protect_pronunciation_rules(
             pattern = re.compile(rf"(?<!\w){phrase_pattern}(?!\w)", flags)
         else:
             pattern = re.compile(escaped, flags)
-        placeholder = f"\\uE000ADVPRON{index}TOKEN\\uE001"
+        placeholder = f"\uE000ADVPRON{index}TOKEN\uE001"
         if pattern.search(normalized):
             normalized = pattern.sub(lambda _match, key=placeholder: key, normalized)
             protected[placeholder] = rule["pronunciation"]
