@@ -4,6 +4,8 @@ import re
 from datetime import date
 from typing import Mapping
 
+from joe.pronunciation_rules import apply_pronunciation_rules
+
 LANGUAGE_LOCALES = {
     "portuguese": "pt_BR",
     "english": "en",
@@ -312,6 +314,7 @@ def normalize_text_for_tts(
     language: str = "portuguese",
     pronunciation_dictionary: Mapping[str, str] | None = None,
     apply_automatic: bool = True,
+    pronunciation_rules: list[dict] | None = None,
 ) -> str:
     """Prepare a TTS-only copy of text without modifying the source shown in the UI.
 
@@ -321,7 +324,7 @@ def normalize_text_for_tts(
     if not text:
         return text
 
-    normalized = text
+    normalized = apply_pronunciation_rules(text, pronunciation_rules, language)
     protected: dict[str, str] = {}
     entries = pronunciation_dictionary or {}
     for index, (term, pronunciation) in enumerate(
