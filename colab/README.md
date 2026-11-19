@@ -36,11 +36,21 @@ Authorization: Bearer <JOE_API_TOKEN>
 
 Todas as rotas são autenticadas. A inferência roda em um worker sequencial e suporta até duas tarefas ativas (uma em execução e uma aguardando). O cliente usa polling para evitar manter chamadas abertas durante o tempo de inferência e contornar o limite de leitura de resposta do túnel Cloudflare. O cancelamento interrompe imediatamente tarefas ainda na fila; uma inferência em execução não pode ser interrompida com segurança no meio do kernel/modelo, então o servidor marca a tarefa para cancelamento e descarta o resultado assim que a chamada termina. Os resultados expiram em 30 minutos se não forem retirados. Swagger, ReDoc e OpenAPI foram desativados.
 
-## Segurança operacional
+## Segurança e configuração persistente
 
 O pacote `pocket-tts[quantize]` instala o backend de quantização utilizado por `TTSModel.load_model(quantize=True)`. O notebook instala esse extra a partir de `requirements.txt` antes de iniciar a API.
 
-O notebook cria um token aleatório novo a cada sessão. Não grave o token em células, arquivos do repositório, variáveis persistentes do Drive ou screenshots compartilhados. A URL do Quick Tunnel também é temporária. O serviço aceita uploads até 80 MB e texto até 20 mil caracteres. O túnel público é para desenvolvimento/uso pessoal; não é uma implantação de produção.
+Para não redigitar URL e token a cada sessão, configure uma vez estes Secrets no painel de chave do Google Colab e habilite **Notebook access**:
+
+- `JOE_API_URL`: URL HTTPS fixa do hostname publicado no Cloudflare Named Tunnel (por exemplo, `https://api.seudominio.com`).
+- `JOE_API_TOKEN`: token Bearer forte e persistente, usado pelo desktop Joe.
+- `CLOUDFLARE_TUNNEL_TOKEN`: token do Named Tunnel, diferente do token Bearer.
+
+O notebook carrega os Secrets usando `google.colab.userdata.get()` e os disponibiliza como variáveis de ambiente somente durante o runtime. O Joe desktop também salva a URL e o token Bearer na configuração do usuário após a primeira inserção. Assim, com domínio fixo, a configuração é reaproveitada nas próximas sessões sem precisar copiar valores novamente.
+
+**Não use uma URL Quick Tunnel em `JOE_API_URL` esperando que ela permaneça igual.** O Quick Tunnel cria um subdomínio aleatório e temporário; nesse modo, atualize a URL no Joe depois de reiniciar o runtime. Para manter a URL, publique um hostname fixo no Named Tunnel e direcione-o para `http://localhost:8000`.
+
+Não grave os segredos diretamente em células, arquivos do repositório, variáveis persistentes do Drive ou screenshots compartilhados. O serviço aceita uploads até 80 MB e texto até 20 mil caracteres. O túnel público é para desenvolvimento/uso pessoal; não é uma implantação de produção.
 
 ## Modelos no Google Drive
 
