@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from math import isfinite
 from typing import Any
 
 
@@ -15,7 +16,9 @@ def normalize_timed_segments(segments: list[dict[str, Any]]) -> list[dict[str, A
             end = float(segment.get("end"))
         except (TypeError, ValueError):
             continue
-        if not text or start < 0 or end <= start:
+        if not text or not isfinite(start) or not isfinite(end):
+            continue
+        if start < 0 or end <= start:
             continue
         normalized.append({**segment, "text": text, "start": start, "end": end})
     return sorted(normalized, key=lambda item: (item["start"], item["end"]))
