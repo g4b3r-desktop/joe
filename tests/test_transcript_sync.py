@@ -30,3 +30,12 @@ def test_active_segment_index_tracks_position_and_gaps():
 
 def test_active_segment_index_handles_empty_segments():
     assert active_segment_index([], 1000) is None
+
+
+def test_normalize_timed_segments_discards_non_finite_timestamps():
+    result = normalize_timed_segments([
+        {"start": float("nan"), "end": 1, "text": "nan"},
+        {"start": 0, "end": float("inf"), "text": "infinito"},
+        {"start": 0, "end": 1, "text": "válido"},
+    ])
+    assert [item["text"] for item in result] == ["válido"]
