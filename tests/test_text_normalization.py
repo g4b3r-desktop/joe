@@ -149,3 +149,24 @@ def test_advanced_pronunciation_rules_are_applied_before_tts_normalization():
     )
 
     assert result == "Uso Jô e GPU."
+
+
+
+def test_advanced_pronunciation_is_not_modified_by_automatic_rules():
+    result = normalize_text_for_tts(
+        "Qwen3.5 usa GPU.",
+        pronunciation_rules=[
+            {
+                "id": "qwen",
+                "term": "Qwen3.5",
+                "pronunciation": "Qwen três ponto cinco",
+                "language": "all",
+                "match_mode": "word",
+                "case_sensitive": False,
+                "enabled": True,
+                "priority": 10,
+            }
+        ],
+    )
+
+    assert result == "Qwen três ponto cinco usa gê pê u."
