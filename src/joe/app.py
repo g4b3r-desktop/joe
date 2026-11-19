@@ -74,6 +74,10 @@ from joe.services.colab_api import ColabAPIClient, ColabAPIError
 from joe.services.parakeet import ParakeetReduxService
 from joe.services.pocket_tts import PocketTTSService
 from joe.text_normalization import normalize_text_for_tts
+from joe.pronunciation_rules import (
+    load_pronunciation_rules,
+    serialize_pronunciation_rules,
+)
 from joe.voice_favorites import (
     canonical_voice_path,
     load_voice_favorites,
@@ -1148,6 +1152,9 @@ class JoeWindow(QMainWindow):
         self.transcript_segments: list[dict] = []
         self.transcription_backend = ""
         self.pronunciation_dictionary = self._load_pronunciation_dictionary()
+        self.pronunciation_rules = load_pronunciation_rules(
+            self.app_settings.value("pronunciation_rules_v1", "[]")
+        )
         self.favorite_voices = load_voice_favorites(
             self.app_settings.value("favorite_voices", "{}")
         )
@@ -1536,6 +1543,11 @@ class JoeWindow(QMainWindow):
         pronunciation_layout.addWidget(self.tts_normalization_enabled)
         pronunciation_actions = QHBoxLayout()
         pronunciation_actions.addWidget(self.tts_dictionary_button)
+        self.tts_advanced_rules_button = QPushButton("Regras avançadas…")
+        self.tts_advanced_rules_button.clicked.connect(
+            self._manage_advanced_pronunciation_rules
+        )
+        pronunciation_actions.addWidget(self.tts_advanced_rules_button)
         pronunciation_actions.addWidget(self.tts_preview_button)
         pronunciation_actions.addStretch(1)
         pronunciation_layout.addLayout(pronunciation_actions)
@@ -2298,6 +2310,7 @@ class JoeWindow(QMainWindow):
             language=language,
             pronunciation_dictionary=self.pronunciation_dictionary,
             apply_automatic=self.tts_normalization_enabled.isChecked(),
+            pronunciation_rules=self.pronunciation_rules,
         )
 
     def _preview_tts_text(self) -> None:
@@ -2445,6 +2458,217 @@ class JoeWindow(QMainWindow):
                     if term and pronunciation:
                         updated[term] = pronunciation
             self._save_pronunciation_dictionary(updated)
+
+
+    def _save_advanced_pronunciation_rules(self) -> None:
+        self.app_settings.setValue(
+            "pronunciation_rules_v1",
+            serialize_pronunciation_rules(self.pronunciation_rules),
+        )
+        self.app_settings.sync()
+        self.statusBar().showMessage(
+            f"Regras avançadas salvas: {len(self.pronunciation_rules)} regra(s).",
+            5000,
+        )
+
+    def _edit_advanced_pronunciation_rule(
+        self, current: dict | None = None
+    ) -> dict | None:
+        current = current or {}
+        dialog = QDialog(self)
+        dialog.setWindowTitle(
+            "Editar regra avançada" if current else "Nova regra avançada"
+        )
+        dialog.resize(520, 360)
+        layout = QVBoxLayout(dialog)
+        form = QFormLayout()
+        term = QLineEdit(str(current.get("term", "")))
+        pronunciation = QLineEdit(str(current.get("pronunciation", "")))
+        language = QComboBox()
+        language.addItem("Todos os idiomas", "all")
+        for label, code in (
+            ("Português", "portuguese"), ("Inglês", "english"),
+            ("Espanhol", "spanish"), ("Francês", "french"),
+            ("Italiano", "italian"), ("Alemão", "german"),
+            ("Neerlandês", "dutch"),
+        ):
+            language.addItem(label, code)
+        language.setCurrentIndex(max(0, language.findData(current.get("language", "all"))))
+        match_mode = QComboBox()
+        match_mode.addItem("Palavra inteira", "word")
+        match_mode.addItem("Expressão (espaços flexíveis)", "phrase")
+        match_mode.addItem("Trecho dentro de palavra", "contains")
+        match_mode.setCurrentIndex(
+            max(0, match_mode.findData(current.get("match_mode", "word")))
+        )
+        priority = QLineEdit(str(current.get("priority", 0)))
+        priority.setPlaceholderText("0 (maior valor tem prioridade)")
+        case_sensitive = QCheckBox("Diferenciar maiúsculas de minúsculas")
+        case_sensitive.setChecked(bool(current.get("case_sensitive", False)))
+        enabled = QCheckBox("Regra ativa")
+        enabled.setChecked(bool(current.get("enabled", True)))
+        form.addRow("Texto encontrado", term)
+        form.addRow("Substituir pela pronúncia", pronunciation)
+        form.addRow("Idioma", language)
+        form.addRow("Tipo de correspondência", match_mode)
+        form.addRow("Prioridade (-1000 a 1000)", priority)
+        form.addRow("", case_sensitive)
+        form.addRow("", enabled)
+        layout.addLayout(form)
+        help_label = QLabel(
+            "Regras de maior prioridade são aplicadas primeiro. "
+            "A pronúncia substituta não passa novamente pela normalização automática."
+        )
+        help_label.setWordWrap(True)
+        layout.addWidget(help_label)
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Save
+            | QDialogButtonBox.StandardButton.Cancel
+        )
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+        layout.addWidget(buttons)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return None
+        if not term.text().strip() or not pronunciation.text().strip():
+            QMessageBox.information(
+                self, "Regra incompleta",
+                "Informe o texto encontrado e a pronúncia substituta.",
+            )
+            return None
+        try:
+            priority_value = int(priority.text().strip() or "0")
+        except ValueError:
+            QMessageBox.information(
+                self, "Prioridade inválida", "A prioridade deve ser um número inteiro."
+            )
+            return None
+        if not -1000 <= priority_value <= 1000:
+            QMessageBox.information(
+                self, "Prioridade inválida", "Use um valor entre -1000 e 1000."
+            )
+            return None
+        return {
+            "id": str(current.get("id") or uuid.uuid4().hex),
+            "term": term.text().strip(),
+            "pronunciation": pronunciation.text().strip(),
+            "language": str(language.currentData()),
+            "match_mode": str(match_mode.currentData()),
+            "case_sensitive": case_sensitive.isChecked(),
+            "enabled": enabled.isChecked(),
+            "priority": priority_value,
+        }
+
+    def _manage_advanced_pronunciation_rules(self) -> None:
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Regras avançadas de pronúncia")
+        dialog.resize(900, 480)
+        layout = QVBoxLayout(dialog)
+        intro = QLabel(
+            "Crie regras por idioma, tipo de correspondência, diferenciação de caixa "
+            "e prioridade. Elas ficam separadas do dicionário simples já existente."
+        )
+        intro.setWordWrap(True)
+        layout.addWidget(intro)
+        table = QTableWidget(0, 6)
+        table.setHorizontalHeaderLabels(
+            ["Texto", "Pronúncia", "Idioma", "Correspondência", "Prioridade", "Ativa"]
+        )
+        table.horizontalHeader().setSectionResizeMode(
+            QHeaderView.ResizeMode.Stretch
+        )
+        table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        rules = [dict(rule) for rule in self.pronunciation_rules]
+        language_labels = {
+            "all": "Todos", "portuguese": "Português", "english": "Inglês",
+            "spanish": "Espanhol", "french": "Francês", "italian": "Italiano",
+            "german": "Alemão", "dutch": "Neerlandês",
+        }
+        mode_labels = {
+            "word": "Palavra inteira", "phrase": "Expressão",
+            "contains": "Trecho",
+        }
+
+        def refresh(selected: int = 0) -> None:
+            table.setRowCount(0)
+            ordered = sorted(
+                enumerate(rules),
+                key=lambda item: (
+                    -int(item[1].get("priority", 0)),
+                    -len(str(item[1].get("term", ""))),
+                ),
+            )
+            for index, rule in ordered:
+                row = table.rowCount()
+                table.insertRow(row)
+                values = (
+                    rule["term"], rule["pronunciation"],
+                    language_labels.get(rule["language"], rule["language"]),
+                    mode_labels.get(rule["match_mode"], rule["match_mode"]),
+                    str(rule["priority"]),
+                    "Sim" if rule["enabled"] else "Não",
+                )
+                for column, value in enumerate(values):
+                    cell = QTableWidgetItem(str(value))
+                    cell.setData(Qt.ItemDataRole.UserRole, index)
+                    table.setItem(row, column, cell)
+            if table.rowCount():
+                table.selectRow(min(max(selected, 0), table.rowCount() - 1))
+
+        layout.addWidget(table, 1)
+        actions = QHBoxLayout()
+        add_button = QPushButton("Adicionar")
+        edit_button = QPushButton("Editar")
+        remove_button = QPushButton("Remover")
+        actions.addWidget(add_button)
+        actions.addWidget(edit_button)
+        actions.addWidget(remove_button)
+        actions.addStretch(1)
+        layout.addLayout(actions)
+
+        def selected_index() -> int:
+            row = table.currentRow()
+            if row < 0 or table.item(row, 0) is None:
+                return -1
+            return int(table.item(row, 0).data(Qt.ItemDataRole.UserRole))
+
+        def add_rule() -> None:
+            rule = self._edit_advanced_pronunciation_rule()
+            if rule is not None:
+                rules.append(rule)
+                refresh(len(rules) - 1)
+
+        def edit_rule() -> None:
+            index = selected_index()
+            if index < 0:
+                return
+            rule = self._edit_advanced_pronunciation_rule(rules[index])
+            if rule is not None:
+                rules[index] = rule
+                refresh(index)
+
+        def remove_rule() -> None:
+            index = selected_index()
+            if index >= 0:
+                rules.pop(index)
+                refresh(min(index, len(rules) - 1))
+
+        add_button.clicked.connect(add_rule)
+        edit_button.clicked.connect(edit_rule)
+        remove_button.clicked.connect(remove_rule)
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Save
+            | QDialogButtonBox.StandardButton.Cancel
+        )
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+        layout.addWidget(buttons)
+        refresh()
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            self.pronunciation_rules = rules
+            self._save_advanced_pronunciation_rules()
 
     def _save_tts_output_settings(self, *_args) -> None:
         if not hasattr(self, "tts_output_directory"):
