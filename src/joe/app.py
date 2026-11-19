@@ -3507,6 +3507,14 @@ class JoeWindow(QMainWindow):
         if not isinstance(index, int) or not 0 <= index < len(self.transcript_segments):
             return
         segment = self.transcript_segments[index]
+        source = self.audio_path.text().strip()
+        if not source or not Path(source).is_file():
+            return
+        target = Path(source).resolve()
+        current = self.player.source().toLocalFile()
+        if not current or Path(current).resolve() != target:
+            self.player.stop()
+            self.player.setSource(QUrl.fromLocalFile(str(target)))
         self.player.setPosition(int(round(segment["start"] * 1000)))
         self.statusBar().showMessage(
             f"Posicionado no trecho {index + 1} da transcrição.", 3000
@@ -3543,6 +3551,8 @@ class JoeWindow(QMainWindow):
             return
         index = active_segment_index(self.transcript_segments, position_ms)
         if index is None:
+            if self.transcript_sync_list.currentRow() >= 0:
+                self.transcript_sync_list.setCurrentRow(-1)
             return
         if self.transcript_sync_list.currentRow() != index:
             self.transcript_sync_list.setCurrentRow(index)
