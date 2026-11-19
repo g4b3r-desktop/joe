@@ -46,7 +46,7 @@ Para não redigitar URL e token a cada sessão, configure uma vez estes Secrets 
 - `JOE_API_TOKEN`: token Bearer forte e persistente, usado pelo desktop Joe.
 - `CLOUDFLARE_TUNNEL_TOKEN`: token do Named Tunnel, diferente do token Bearer.
 
-O notebook carrega os Secrets usando `google.colab.userdata.get()` e os disponibiliza como variáveis de ambiente somente durante o runtime. O Joe desktop também salva a URL e o token Bearer na configuração do usuário após a primeira inserção. Assim, com domínio fixo, a configuração é reaproveitada nas próximas sessões sem precisar copiar valores novamente.
+O notebook carrega os Secrets usando `google.colab.userdata.get()` e os disponibiliza como variáveis de ambiente somente durante o runtime. Para gerar um token Bearer forte uma única vez, execute `python -c 'import secrets; print(secrets.token_urlsafe(36))'` e salve o resultado como valor de `JOE_API_TOKEN` no painel Secrets. O Joe desktop também salva a URL e o token Bearer na configuração do usuário após a primeira inserção. Assim, com domínio fixo, a configuração é reaproveitada nas próximas sessões sem precisar copiar valores novamente.
 
 **Não use uma URL Quick Tunnel em `JOE_API_URL` esperando que ela permaneça igual.** O Quick Tunnel cria um subdomínio aleatório e temporário; nesse modo, atualize a URL no Joe depois de reiniciar o runtime. Para manter a URL, publique um hostname fixo no Named Tunnel e direcione-o para `http://localhost:8000`.
 
