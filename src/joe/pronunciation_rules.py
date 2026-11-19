@@ -66,12 +66,12 @@ def serialize_pronunciation_rules(rules: list[dict[str, Any]]) -> str:
     return json.dumps(normalized, ensure_ascii=False, sort_keys=True)
 
 
-def apply_pronunciation_rules(
+def protect_pronunciation_rules(
     text: str,
     rules: list[dict[str, Any]] | None,
     language: str,
-) -> str:
-    """Apply enabled custom rules, with higher-priority and longer terms first."""
+) -> tuple[str, dict[str, str]]:
+    """Replace matching source terms with placeholders for safe later restoration."""
     import re
 
     normalized = text
@@ -90,16 +90,26 @@ def apply_pronunciation_rules(
         flags = 0 if rule["case_sensitive"] else re.IGNORECASE
         escaped = re.escape(term)
         if rule["match_mode"] == "word":
-            pattern = re.compile(rf"(?<!\w){escaped}(?!\w)", flags)
+            pattern = re.compile(rf"(?<!\\w){escaped}(?!\\w)", flags)
         elif rule["match_mode"] == "phrase":
-            phrase_pattern = r"\s+".join(re.escape(part) for part in term.split())
-            pattern = re.compile(rf"(?<!\w){phrase_pattern}(?!\w)", flags)
+            phrase_pattern = r"\\s+".join(re.escape(part) for part in term.split())
+            pattern = re.compile(rf"(?<!\\w){phrase_pattern}(?!\\w)", flags)
         else:
             pattern = re.compile(escaped, flags)
         placeholder = f"\\uE000ADVPRON{index}TOKEN\\uE001"
         if pattern.search(normalized):
             normalized = pattern.sub(lambda _match, key=placeholder: key, normalized)
             protected[placeholder] = rule["pronunciation"]
+    return normalized, protected
+
+
+def apply_pronunciation_rules(
+    text: str,
+    rules: list[dict[str, Any]] | None,
+    language: str,
+) -> str:
+    """Apply enabled custom rules, with higher-priority and longer terms first."""
+    normalized, protected = protect_pronunciation_rules(text, rules, language)
     for placeholder, pronunciation in protected.items():
         normalized = normalized.replace(placeholder, pronunciation)
     return normalized
