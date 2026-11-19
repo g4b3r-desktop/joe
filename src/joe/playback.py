@@ -22,3 +22,15 @@ def decide_playback_action(
     if current == target and is_paused:
         return "resume"
     return "play"
+
+def decide_clipboard_shortcut_action(
+    *,
+    dialog_open: bool,
+    generation_active: bool,
+) -> str:
+    """Decide whether a clipboard shortcut should focus, wait, or start a dialog."""
+    if dialog_open:
+        return "focus"
+    if generation_active:
+        return "busy"
+    return "start"

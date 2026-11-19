@@ -65,7 +65,10 @@ from joe.audio_performance import (
     wav_duration_seconds,
 )
 from joe.local_ipc import LocalCommandServer, send_local_command
-from joe.playback import decide_playback_action
+from joe.playback import (
+    decide_clipboard_shortcut_action,
+    decide_playback_action,
+)
 from joe.services.colab_api import ColabAPIClient, ColabAPIError
 from joe.services.parakeet import ParakeetReduxService
 from joe.services.pocket_tts import PocketTTSService
@@ -2552,10 +2555,29 @@ class JoeWindow(QMainWindow):
             QTimer.singleShot(0, QApplication.quit)
 
     def _generate_audio_from_clipboard(self) -> None:
-        if self.clipboard_generation_worker is not None:
-            if self.clipboard_audio_window is not None:
-                self.clipboard_audio_window.raise_()
-                self.clipboard_audio_window.activateWindow()
+        shortcut_action = decide_clipboard_shortcut_action(
+            dialog_open=self.clipboard_audio_window is not None,
+            generation_active=self.clipboard_generation_worker is not None,
+        )
+        if shortcut_action == "focus":
+            dialog = self.clipboard_audio_window
+            if dialog is not None:
+                if dialog.isMinimized():
+                    dialog.showNormal()
+                elif not dialog.isVisible():
+                    dialog.show()
+                dialog.raise_()
+                dialog.activateWindow()
+            message = (
+                "A geração do texto copiado já está em andamento."
+                if self.clipboard_generation_worker is not None
+                else "A janela de áudio rápido já está aberta. "
+                "Use-a para reproduzir ou salvar o áudio gerado."
+            )
+            self.statusBar().showMessage(message, 5000)
+            return
+
+        if shortcut_action == "busy":
             self.statusBar().showMessage(
                 "A geração do texto copiado já está em andamento.", 4000
             )
@@ -2578,9 +2600,6 @@ class JoeWindow(QMainWindow):
             if self.clipboard_only_mode:
                 QTimer.singleShot(0, QApplication.quit)
             return
-
-        if self.clipboard_audio_window is not None:
-            self.clipboard_audio_window.close()
 
         language = str(self.tts_language.currentData())
         try:
