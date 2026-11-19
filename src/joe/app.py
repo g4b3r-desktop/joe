@@ -2148,7 +2148,9 @@ class JoeWindow(QMainWindow):
         self.transcript_sync_button = QPushButton("Reproduzir com sincronização")
         self.transcript_sync_button.setEnabled(False)
         self.transcript_sync_button.clicked.connect(self._play_transcript_with_sync)
-        self.transcript_sync_info = QLabel("Os trechos com tempo aparecerão aqui após a transcrição.")
+        self.transcript_sync_info = QLabel(
+            "Os trechos com tempo aparecerão aqui após a transcrição."
+        )
         self.transcript_sync_info.setObjectName("muted")
         sync_row.addWidget(self.transcript_sync_button)
         sync_row.addWidget(self.transcript_sync_info, 1)
