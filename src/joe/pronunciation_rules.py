@@ -90,10 +90,10 @@ def apply_pronunciation_rules(
         flags = 0 if rule["case_sensitive"] else re.IGNORECASE
         escaped = re.escape(term)
         if rule["match_mode"] == "word":
-            pattern = re.compile(rf"(?<!\\w){escaped}(?!\\w)", flags)
+            pattern = re.compile(rf"(?<!\w){escaped}(?!\w)", flags)
         elif rule["match_mode"] == "phrase":
-            phrase_pattern = r"\\s+".join(re.escape(part) for part in term.split())
-            pattern = re.compile(rf"(?<!\\w){phrase_pattern}(?!\\w)", flags)
+            phrase_pattern = r"\s+".join(re.escape(part) for part in term.split())
+            pattern = re.compile(rf"(?<!\w){phrase_pattern}(?!\w)", flags)
         else:
             pattern = re.compile(escaped, flags)
         placeholder = f"\\uE000ADVPRON{index}TOKEN\\uE001"
