@@ -126,3 +126,26 @@ def test_dotted_version_numbers_are_not_partially_normalized():
     result = normalize_text_for_tts("A versão é 1.2.3.")
 
     assert result == "A versão é 1.2.3."
+
+
+
+def test_advanced_pronunciation_rules_are_applied_before_tts_normalization():
+    result = normalize_text_for_tts(
+        "Uso Joe e GPU.",
+        language="portuguese",
+        pronunciation_rules=[
+            {
+                "id": "joe-pt",
+                "term": "Joe",
+                "pronunciation": "Jô",
+                "language": "portuguese",
+                "match_mode": "word",
+                "case_sensitive": False,
+                "enabled": True,
+                "priority": 5,
+            }
+        ],
+        apply_automatic=False,
+    )
+
+    assert result == "Uso Jô e GPU."
