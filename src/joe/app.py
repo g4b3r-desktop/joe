@@ -2157,6 +2157,7 @@ class JoeWindow(QMainWindow):
         self.transcript_sync_list.setToolTip(
             "Clique em um trecho para posicionar o áudio no início daquele segmento."
         )
+        self.transcript_sync_list.setEnabled(False)
         self.transcript_sync_list.itemClicked.connect(self._seek_transcript_segment)
 
         buttons = QHBoxLayout()
@@ -3423,6 +3424,7 @@ class JoeWindow(QMainWindow):
         self.transcript_segments = []
         self.transcript_sync_list.clear()
         self.transcript_sync_button.setEnabled(False)
+        self.transcript_sync_list.setEnabled(False)
         self.transcript_sync_info.setText("Aguardando os tempos da nova transcrição…")
         want_timestamps = self.timestamps_check.isChecked()
         if self.processing_mode.currentData() == "colab":
@@ -3461,6 +3463,7 @@ class JoeWindow(QMainWindow):
             item.setData(Qt.ItemDataRole.UserRole, index - 1)
             self.transcript_sync_list.addItem(item)
         self.transcript_sync_button.setEnabled(bool(self.transcript_segments))
+        self.transcript_sync_list.setEnabled(bool(self.transcript_segments))
         self.transcript_sync_info.setText(
             f"{len(self.transcript_segments)} trecho(s) sincronizado(s)"
             if self.transcript_segments else
@@ -3494,6 +3497,7 @@ class JoeWindow(QMainWindow):
         selected = str(Path(value).expanduser().resolve()) if value.strip() else ""
         if selected and self.transcript_audio_path and selected != self.transcript_audio_path:
             self.transcript_sync_button.setEnabled(False)
+            self.transcript_sync_list.setEnabled(False)
             self.transcript_sync_info.setText(
                 "O arquivo selecionado mudou. Faça uma nova transcrição para sincronizar."
             )
