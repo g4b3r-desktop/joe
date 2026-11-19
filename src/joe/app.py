@@ -1530,7 +1530,7 @@ class JoeWindow(QMainWindow):
         settings_layout.setContentsMargins(14, 12, 14, 12)
         settings_layout.setSpacing(14)
         scroll_area.setWidget(settings_content)
-        settings_layout.addWidget(scroll_area)
+        dialog_layout.addWidget(scroll_area)
 
         intro = QLabel(
             "Ajuste aqui as opções que normalmente precisam ser configuradas apenas uma vez. "
