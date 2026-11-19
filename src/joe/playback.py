@@ -23,7 +23,6 @@ def decide_playback_action(
         return "resume"
     return "play"
 
-
 def decide_clipboard_shortcut_action(
     *,
     dialog_open: bool,

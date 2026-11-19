@@ -10,6 +10,7 @@ import tempfile
 import threading
 import time
 import traceback
+import uuid
 from collections.abc import Callable
 from pathlib import Path
 
@@ -78,6 +79,7 @@ from joe.voice_favorites import (
     load_voice_favorites,
     serialize_voice_favorites,
 )
+from joe.voice_profiles import load_voice_profiles, serialize_voice_profiles
 from joe.utils import build_srt, build_audio_output_path, write_bytes_atomically
 
 
@@ -1149,6 +1151,9 @@ class JoeWindow(QMainWindow):
         self.favorite_voices = load_voice_favorites(
             self.app_settings.value("favorite_voices", "{}")
         )
+        self.voice_profiles = load_voice_profiles(
+            self.app_settings.value("tts_voice_profiles", "[]")
+        )
         history_directory = QStandardPaths.writableLocation(
             QStandardPaths.StandardLocation.AppDataLocation
         )
@@ -1495,7 +1500,7 @@ class JoeWindow(QMainWindow):
         """Create less frequently changed TTS options in a separate dialog."""
         dialog = QDialog(self)
         dialog.setWindowTitle("Configurações — Texto para áudio")
-        dialog.resize(760, 760)
+        dialog.resize(760, 840)
         self.tts_settings_dialog = dialog
 
         dialog_layout = QVBoxLayout(dialog)
@@ -1606,6 +1611,34 @@ class JoeWindow(QMainWindow):
         voice_form.addRow("Voz padrão / referência", voice_row)
         dialog_layout.addWidget(voice_group)
 
+        # Named voice profiles are independent from favorites and pronunciation rules.
+        profile_group = QGroupBox("Perfis de voz")
+        profile_layout = QFormLayout(profile_group)
+        self.voice_profile_combo = QComboBox()
+        self.voice_profile_combo.currentIndexChanged.connect(
+            self._on_voice_profile_selected
+        )
+        self.voice_profile_name = QLineEdit()
+        self.voice_profile_name.setPlaceholderText("Ex.: Narradora em português")
+        profile_actions = QHBoxLayout()
+        self.voice_profile_apply_button = QPushButton("Aplicar perfil")
+        self.voice_profile_apply_button.clicked.connect(self._apply_voice_profile)
+        self.voice_profile_save_button = QPushButton("Salvar perfil")
+        self.voice_profile_save_button.clicked.connect(self._save_voice_profile)
+        self.voice_profile_delete_button = QPushButton("Excluir perfil")
+        self.voice_profile_delete_button.clicked.connect(self._delete_voice_profile)
+        profile_actions.addWidget(self.voice_profile_apply_button)
+        profile_actions.addWidget(self.voice_profile_save_button)
+        profile_actions.addWidget(self.voice_profile_delete_button)
+        profile_actions.addStretch(1)
+        profile_layout.addRow("Perfis salvos", self.voice_profile_combo)
+        profile_layout.addRow("Nome do perfil", self.voice_profile_name)
+        profile_layout.addRow("", profile_actions)
+        dialog_layout.addWidget(profile_group)
+        self._refresh_voice_profile_combo(
+            str(self.app_settings.value("active_tts_voice_profile", ""))
+        )
+
         favorite_group = QGroupBox("Favoritos")
         favorite_layout = QFormLayout(favorite_group)
         self.favorite_voice_alias = QLineEdit()
@@ -1708,6 +1741,119 @@ class JoeWindow(QMainWindow):
         close_button.clicked.connect(dialog.accept)
         footer.addWidget(close_button)
         dialog_layout.addLayout(footer)
+
+    def _refresh_voice_profile_combo(self, selected_id: str = "") -> None:
+        if not hasattr(self, "voice_profile_combo"):
+            return
+        combo = self.voice_profile_combo
+        combo.blockSignals(True)
+        combo.clear()
+        combo.addItem("Selecione um perfil…", "")
+        for profile_id, profile in sorted(
+            self.voice_profiles.items(),
+            key=lambda item: item[1]["name"].casefold(),
+        ):
+            combo.addItem(profile["name"], profile_id)
+        index = combo.findData(selected_id)
+        combo.setCurrentIndex(index if index >= 0 else 0)
+        combo.blockSignals(False)
+        self._on_voice_profile_selected()
+
+    def _on_voice_profile_selected(self, *_args) -> None:
+        if not hasattr(self, "voice_profile_combo"):
+            return
+        profile_id = str(self.voice_profile_combo.currentData() or "")
+        profile = self.voice_profiles.get(profile_id)
+        self.voice_profile_name.setText(profile["name"] if profile else "")
+        self.voice_profile_delete_button.setEnabled(profile is not None)
+        self.voice_profile_apply_button.setEnabled(profile is not None)
+        self.voice_profile_save_button.setText(
+            "Atualizar perfil" if profile else "Salvar perfil"
+        )
+
+    def _save_voice_profiles(self) -> None:
+        self.app_settings.setValue(
+            "tts_voice_profiles", serialize_voice_profiles(self.voice_profiles)
+        )
+        self.app_settings.sync()
+
+    def _save_voice_profile(self) -> None:
+        name = self.voice_profile_name.text().strip()
+        if not name:
+            QMessageBox.information(
+                self, "Nome do perfil", "Informe um nome para salvar o perfil de voz."
+            )
+            self.voice_profile_name.setFocus()
+            return
+
+        selected_id = str(self.voice_profile_combo.currentData() or "")
+        existing_id = next(
+            (
+                profile_id
+                for profile_id, profile in self.voice_profiles.items()
+                if profile["name"].casefold() == name.casefold()
+            ),
+            "",
+        )
+        profile_id = selected_id if selected_id in self.voice_profiles else (
+            existing_id or uuid.uuid4().hex
+        )
+        self.voice_profiles[profile_id] = {
+            "id": profile_id,
+            "name": name,
+            "voice_path": self.voice_path.text().strip(),
+            "language": str(self.tts_language.currentData() or "portuguese"),
+            "normalization_enabled": self.tts_normalization_enabled.isChecked(),
+        }
+        self._save_voice_profiles()
+        self._refresh_voice_profile_combo(profile_id)
+        self.app_settings.setValue("active_tts_voice_profile", profile_id)
+        self.statusBar().showMessage(f"Perfil de voz “{name}” salvo.", 5000)
+
+    def _apply_voice_profile(self) -> None:
+        profile_id = str(self.voice_profile_combo.currentData() or "")
+        profile = self.voice_profiles.get(profile_id)
+        if profile is None:
+            return
+
+        self.voice_path.setText(profile["voice_path"])
+        language_index = self.tts_language.findData(profile["language"])
+        if language_index >= 0:
+            self.tts_language.setCurrentIndex(language_index)
+        self.tts_normalization_enabled.setChecked(
+            profile["normalization_enabled"]
+        )
+        self.app_settings.setValue("active_tts_voice_profile", profile_id)
+        self.app_settings.sync()
+        self._sync_favorite_editor()
+        self.statusBar().showMessage(
+            f"Perfil “{profile['name']}” aplicado: voz, idioma e normalização atualizados.",
+            6000,
+        )
+
+    def _delete_voice_profile(self) -> None:
+        profile_id = str(self.voice_profile_combo.currentData() or "")
+        profile = self.voice_profiles.get(profile_id)
+        if profile is None:
+            return
+        answer = QMessageBox.question(
+            self,
+            "Excluir perfil de voz",
+            f"Excluir o perfil “{profile['name']}”? O arquivo de voz não será apagado.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        self.voice_profiles.pop(profile_id, None)
+        self._save_voice_profiles()
+        if str(self.app_settings.value("active_tts_voice_profile", "")) == profile_id:
+            self.app_settings.remove("active_tts_voice_profile")
+        self._refresh_voice_profile_combo()
+        self.statusBar().showMessage(
+            f"Perfil “{profile['name']}” excluído. O arquivo de voz foi preservado.",
+            5000,
+        )
 
     def _load_favorite_voices(self) -> dict[str, str]:
         """Reload the saved voice favorites from QSettings."""
