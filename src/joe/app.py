@@ -85,6 +85,7 @@ from joe.voice_favorites import (
 )
 from joe.voice_profiles import load_voice_profiles, serialize_voice_profiles
 from joe.utils import build_srt, build_audio_output_path, write_bytes_atomically
+from joe.transcript_sync import active_segment_index, normalize_timed_segments
 
 
 class WorkerSignals(QObject):
@@ -1173,6 +1174,7 @@ class JoeWindow(QMainWindow):
         self.player = QMediaPlayer(self)
         self.audio_output = QAudioOutput(self)
         self.player.setAudioOutput(self.audio_output)
+        self.player.positionChanged.connect(self._update_transcript_sync_position)
 
         self._build_ui()
         self.tts_favorites_button.setText(
@@ -2139,6 +2141,22 @@ class JoeWindow(QMainWindow):
         self.save_srt_button.clicked.connect(self._save_srt)
         self.save_srt_button.setEnabled(False)
 
+        sync_row = QHBoxLayout()
+        self.transcript_sync_button = QPushButton("Reproduzir com sincronização")
+        self.transcript_sync_button.setEnabled(False)
+        self.transcript_sync_button.clicked.connect(self._play_transcript_with_sync)
+        self.transcript_sync_info = QLabel("Os trechos com tempo aparecerão aqui após a transcrição.")
+        self.transcript_sync_info.setObjectName("muted")
+        sync_row.addWidget(self.transcript_sync_button)
+        sync_row.addWidget(self.transcript_sync_info, 1)
+
+        self.transcript_sync_list = QListWidget()
+        self.transcript_sync_list.setMaximumHeight(150)
+        self.transcript_sync_list.setToolTip(
+            "Clique em um trecho para posicionar o áudio no início daquele segmento."
+        )
+        self.transcript_sync_list.itemClicked.connect(self._seek_transcript_segment)
+
         buttons = QHBoxLayout()
         buttons.addWidget(self.asr_button)
         buttons.addStretch(1)
@@ -2158,6 +2176,8 @@ class JoeWindow(QMainWindow):
         layout.addLayout(file_row)
         layout.addLayout(asr_options)
         layout.addLayout(buttons)
+        layout.addLayout(sync_row)
+        layout.addWidget(self.transcript_sync_list)
         layout.addWidget(self.transcript, 1)
         layout.addWidget(self.asr_info)
         return page
@@ -3419,10 +3439,26 @@ class JoeWindow(QMainWindow):
 
     def _transcription_finished(self, result: object) -> None:
         data = result if isinstance(result, dict) else {}
-        self.transcript_segments = [
-            segment for segment in list(data.get("segments", []))
-            if str(segment.get("text", "")).strip()
-        ]
+        self.transcript_segments = normalize_timed_segments(
+            list(data.get("segments", []))
+        )
+        self.transcript_sync_list.clear()
+        for index, segment in enumerate(self.transcript_segments, start=1):
+            start = float(segment["start"])
+            end = float(segment["end"])
+            start_label = self._format_transcript_time(start)
+            end_label = self._format_transcript_time(end)
+            item = QListWidgetItem(
+                f"{index:03d}  [{start_label} – {end_label}]  {segment['text']}"
+            )
+            item.setData(Qt.ItemDataRole.UserRole, index - 1)
+            self.transcript_sync_list.addItem(item)
+        self.transcript_sync_button.setEnabled(bool(self.transcript_segments))
+        self.transcript_sync_info.setText(
+            f"{len(self.transcript_segments)} trecho(s) sincronizado(s)"
+            if self.transcript_segments else
+            "Este backend não retornou tempos de segmento; a sincronização não está disponível."
+        )
         if self.transcript_segments:
             visible_text = "\n".join(
                 str(segment.get("text", "")).strip()
@@ -3439,6 +3475,54 @@ class JoeWindow(QMainWindow):
             note += " Os tempos de segmento não foram retornados por este backend."
         self.save_srt_button.setEnabled(bool(self.transcript_segments))
         self.asr_info.setText(f"{self.transcription_backend} — {note}".strip(" —"))
+
+    @staticmethod
+    def _format_transcript_time(seconds: float) -> str:
+        total = max(0, int(round(seconds * 1000)))
+        minutes, remainder = divmod(total, 60_000)
+        whole_seconds, milliseconds = divmod(remainder, 1000)
+        return f"{minutes:02d}:{whole_seconds:02d}.{milliseconds:03d}"
+
+    def _seek_transcript_segment(self, item: QListWidgetItem) -> None:
+        index = item.data(Qt.ItemDataRole.UserRole)
+        if not isinstance(index, int) or not 0 <= index < len(self.transcript_segments):
+            return
+        segment = self.transcript_segments[index]
+        self.player.setPosition(int(round(segment["start"] * 1000)))
+        self.statusBar().showMessage(
+            f"Posicionado no trecho {index + 1} da transcrição.", 3000
+        )
+
+    def _play_transcript_with_sync(self) -> None:
+        source = self.audio_path.text().strip()
+        if not source or not Path(source).is_file():
+            QMessageBox.information(
+                self, "Áudio indisponível",
+                "Selecione novamente o arquivo de áudio usado nesta transcrição."
+            )
+            return
+        if not self.transcript_segments:
+            return
+        target = Path(source).resolve()
+        current = self.player.source().toLocalFile()
+        if not current or Path(current).resolve() != target:
+            self.player.stop()
+            self.player.setSource(QUrl.fromLocalFile(str(target)))
+        self.player.setPosition(int(round(self.transcript_segments[0]["start"] * 1000)))
+        self.player.play()
+        self.statusBar().showMessage("Reprodução sincronizada com a transcrição.")
+
+    def _update_transcript_sync_position(self, position_ms: int) -> None:
+        if not self.transcript_segments or not hasattr(self, "transcript_sync_list"):
+            return
+        index = active_segment_index(self.transcript_segments, position_ms)
+        if index is None:
+            return
+        if self.transcript_sync_list.currentRow() != index:
+            self.transcript_sync_list.setCurrentRow(index)
+            self.transcript_sync_list.scrollToItem(
+                self.transcript_sync_list.item(index)
+            )
 
     def _copy_transcript(self) -> None:
         text = self.transcript.toPlainText()
