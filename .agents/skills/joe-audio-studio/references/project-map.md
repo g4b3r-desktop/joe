@@ -61,7 +61,7 @@ Snapshot de referência: branch `feature/joe-studio-improvements`, commit `e6ecd
 | `colab/Joe_Colab_API.ipynb` | Preparação do runtime, acesso opcional ao Drive, monitoramento e túnel temporário |
 | `src/joe/audio_chunks.py` | Divisão por sentenças e união de trechos WAV com taxa de amostragem/canais normalizados |
 | `src/joe/audio_history.py` | Persistência SQLite dos metadados dos áudios; texto original é opcional e vem desativado |
-| `src/joe/ui/audio_history.py` | Aba de histórico, filtros, reprodução, abrir pasta, renomear, exportar e excluir |
+| `src/joe/ui/audio_history.py` | Aba de histórico, filtros, reprodução, renomear, exportar, excluir e gerenciar textos opcionais |
 | `src/joe/audio_performance.py` | Métricas compartilhadas nas telas: duração, tempo total, razão tempo real e caracteres por segundo |
 | `src/joe/local_ipc.py` | Servidor/cliente AF_UNIX para comandos locais da instância ativa |
 | `src/joe/voice_favorites.py` | Canonicalização de caminhos, leitura e serialização dos apelidos favoritos |

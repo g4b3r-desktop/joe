@@ -178,3 +178,33 @@ def test_voice_without_favorite_alias_uses_stable_filename_label(tmp_path):
     assert entry.voice_label == "character"
     assert store.available_voices() == ["character"]
     assert store.list_entries(voice="character") == [entry]
+
+
+
+def test_clear_text_content_preserves_audio_and_metadata(tmp_path):
+    audio = make_audio(tmp_path / "keep.wav")
+    store = AudioHistoryStore(tmp_path / "history.sqlite3")
+    entry = store.add_generated_audio(
+        audio,
+        duration_seconds=18,
+        generation_seconds=6,
+        text_content="Texto privado para apagar",
+    )
+
+    assert store.count_text_entries() == 1
+    assert store.clear_text_content() == 1
+
+    updated = store.get(entry.id)
+    assert updated is not None
+    assert updated.text_content is None
+    assert updated.duration_seconds == 18
+    assert updated.generation_seconds == 6
+    assert audio.is_file()
+    assert store.count_text_entries() == 0
+
+
+def test_clear_text_content_is_idempotent(tmp_path):
+    store = AudioHistoryStore(tmp_path / "history.sqlite3")
+
+    assert store.count_text_entries() == 0
+    assert store.clear_text_content() == 0

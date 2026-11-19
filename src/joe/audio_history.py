@@ -291,6 +291,22 @@ class AudioHistoryStore:
             )
         return cursor.rowcount > 0
 
+    def count_text_entries(self) -> int:
+        """Count rows that currently retain the optional original source text."""
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT COUNT(*) AS total FROM audio_history WHERE text_content IS NOT NULL"
+            ).fetchone()
+        return int(row["total"])
+
+    def clear_text_content(self) -> int:
+        """Erase stored source text while preserving audio and all metadata."""
+        with self._connect() as connection:
+            cursor = connection.execute(
+                "UPDATE audio_history SET text_content = NULL WHERE text_content IS NOT NULL"
+            )
+        return int(cursor.rowcount)
+
     def export_copy(self, entry_id: int, destination: str | Path) -> Path:
         entry = self.get(entry_id)
         if entry is None:

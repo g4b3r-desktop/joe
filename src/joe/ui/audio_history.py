@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sqlite3
 from datetime import datetime
 from pathlib import Path
 
@@ -7,10 +8,13 @@ from PySide6.QtCore import QDate, QUrl, Qt, Signal
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtMultimedia import QMediaPlayer
 from PySide6.QtWidgets import (
+    QApplication,
     QAbstractItemView,
     QCheckBox,
     QComboBox,
     QDateEdit,
+    QDialog,
+    QDialogButtonBox,
     QDoubleSpinBox,
     QFileDialog,
     QHeaderView,
@@ -22,6 +26,7 @@ from PySide6.QtWidgets import (
     QPushButton,
     QTableWidget,
     QTableWidgetItem,
+    QTextEdit,
     QVBoxLayout,
     QWidget,
 )
@@ -144,12 +149,16 @@ class AudioHistoryPanel(QWidget):
         self.rename_button = QPushButton("Renomear")
         self.export_button = QPushButton("Exportar cópia…")
         self.delete_button = QPushButton("Excluir")
+        self.show_text_button = QPushButton("Ver texto salvo")
+        self.clear_text_button = QPushButton("Apagar textos salvos")
         self.refresh_button = QPushButton("Atualizar")
         self.play_button.clicked.connect(self.play_selected)
         self.open_button.clicked.connect(self.open_folder)
         self.rename_button.clicked.connect(self.rename_selected)
         self.export_button.clicked.connect(self.export_selected)
         self.delete_button.clicked.connect(self.delete_selected)
+        self.show_text_button.clicked.connect(self.show_selected_text)
+        self.clear_text_button.clicked.connect(self.clear_stored_texts)
         self.refresh_button.clicked.connect(self.refresh)
         for button in (
             self.play_button,
@@ -157,11 +166,17 @@ class AudioHistoryPanel(QWidget):
             self.rename_button,
             self.export_button,
             self.delete_button,
+            self.show_text_button,
         ):
             actions.addWidget(button)
         actions.addStretch(1)
         actions.addWidget(self.refresh_button)
         layout.addLayout(actions)
+
+        privacy_actions = QHBoxLayout()
+        privacy_actions.addStretch(1)
+        privacy_actions.addWidget(self.clear_text_button)
+        layout.addLayout(privacy_actions)
 
         self.summary = QLabel("Nenhum áudio registrado ainda.")
         self.summary.setObjectName("muted")
@@ -202,6 +217,8 @@ class AudioHistoryPanel(QWidget):
         self.rename_button.setEnabled(exists)
         self.export_button.setEnabled(exists)
         self.delete_button.setEnabled(bool(entry))
+        self.show_text_button.setEnabled(bool(entry and entry.text_content))
+        self.clear_text_button.setEnabled(self.store.count_text_entries() > 0)
 
     def refresh(self, *_args) -> None:
         selected = self._selected_entry()
@@ -340,6 +357,56 @@ class AudioHistoryPanel(QWidget):
             return
         self.status_message.emit(f"Cópia exportada: {output}")
 
+    def show_selected_text(self) -> None:
+        entry = self._selected_entry()
+        if entry is None or not entry.text_content:
+            QMessageBox.information(
+                self,
+                "Texto indisponível",
+                "O texto original não foi armazenado para este áudio.",
+            )
+            return
+
+        dialog = QDialog(self)
+        dialog.setWindowTitle(f"Texto original — {entry.file_name}")
+        dialog.resize(720, 520)
+        layout = QVBoxLayout(dialog)
+
+        editor = QTextEdit()
+        editor.setReadOnly(True)
+        editor.setPlainText(entry.text_content)
+        layout.addWidget(editor, 1)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
+        copy_button = QPushButton("Copiar texto")
+        copy_button.clicked.connect(
+            lambda: QApplication.clipboard().setText(entry.text_content or "")
+        )
+        buttons.addButton(copy_button, QDialogButtonBox.ButtonRole.ActionRole)
+        buttons.rejected.connect(dialog.reject)
+        buttons.accepted.connect(dialog.accept)
+        layout.addWidget(buttons)
+        dialog.exec()
+
+    def clear_stored_texts(self) -> None:
+        count = self.store.count_text_entries()
+        if count <= 0:
+            self.status_message.emit("Não há textos salvos no histórico.")
+            return
+        answer = QMessageBox.question(
+            self,
+            "Apagar textos salvos",
+            f"Apagar o texto original de {count} áudio(s)? "
+            "Os arquivos WAV e os metadados serão mantidos.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        removed = self.store.clear_text_content()
+        self.refresh()
+        self.status_message.emit(f"Textos apagados: {removed}. Os áudios foram preservados.")
+
     def delete_selected(self) -> None:
         entry = self._selected_entry()
         if entry is None:
@@ -360,7 +427,7 @@ class AudioHistoryPanel(QWidget):
                 self.player.stop()
                 self.player.setSource(QUrl())
             self.store.delete(entry.id, delete_file=True)
-        except OSError as exc:
+        except (OSError, sqlite3.Error) as exc:
             QMessageBox.critical(self, "Falha ao excluir áudio", str(exc))
             return
         self.refresh()
