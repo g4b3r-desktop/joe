@@ -44,6 +44,7 @@ from PySide6.QtWidgets import (
     QMainWindow,
     QMessageBox,
     QPushButton,
+    QScrollArea,
     QStatusBar,
     QTabWidget,
     QTableWidget,
@@ -1510,12 +1511,26 @@ class JoeWindow(QMainWindow):
         """Create less frequently changed TTS options in a separate dialog."""
         dialog = QDialog(self)
         dialog.setWindowTitle("Configurações — Texto para áudio")
-        dialog.resize(760, 840)
+        available_height = self.screen().availableGeometry().height()
+        dialog.resize(760, min(840, max(420, available_height - 80)))
         self.tts_settings_dialog = dialog
 
         dialog_layout = QVBoxLayout(dialog)
-        dialog_layout.setContentsMargins(22, 20, 22, 18)
-        dialog_layout.setSpacing(14)
+        dialog_layout.setContentsMargins(8, 8, 8, 8)
+        scroll_area = QScrollArea(dialog)
+        scroll_area.setWidgetResizable(True)
+        scroll_area.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAsNeeded
+        )
+        scroll_area.setVerticalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAsNeeded
+        )
+        settings_content = QWidget()
+        settings_layout = QVBoxLayout(settings_content)
+        settings_layout.setContentsMargins(14, 12, 14, 12)
+        settings_layout.setSpacing(14)
+        scroll_area.setWidget(settings_content)
+        settings_layout.addWidget(scroll_area)
 
         intro = QLabel(
             "Ajuste aqui as opções que normalmente precisam ser configuradas apenas uma vez. "
@@ -1523,7 +1538,7 @@ class JoeWindow(QMainWindow):
         )
         intro.setObjectName("muted")
         intro.setWordWrap(True)
-        dialog_layout.addWidget(intro)
+        settings_layout.addWidget(intro)
 
         # Text preparation and pronunciation.
         self.tts_normalization_enabled = QCheckBox(
@@ -1554,7 +1569,7 @@ class JoeWindow(QMainWindow):
         pronunciation_actions.addWidget(self.tts_preview_button)
         pronunciation_actions.addStretch(1)
         pronunciation_layout.addLayout(pronunciation_actions)
-        dialog_layout.addWidget(pronunciation_group)
+        settings_layout.addWidget(pronunciation_group)
 
         # Language and voice selection.
         self.tts_language = QComboBox()
@@ -1624,7 +1639,7 @@ class JoeWindow(QMainWindow):
         voice_form.addRow("Idioma da fala", self.tts_language)
         voice_form.addRow("Pasta da biblioteca", library_row)
         voice_form.addRow("Voz padrão / referência", voice_row)
-        dialog_layout.addWidget(voice_group)
+        settings_layout.addWidget(voice_group)
 
         # Named voice profiles are independent from favorites and pronunciation rules.
         profile_group = QGroupBox("Perfis de voz")
@@ -1649,7 +1664,7 @@ class JoeWindow(QMainWindow):
         profile_layout.addRow("Perfis salvos", self.voice_profile_combo)
         profile_layout.addRow("Nome do perfil", self.voice_profile_name)
         profile_layout.addRow("", profile_actions)
-        dialog_layout.addWidget(profile_group)
+        settings_layout.addWidget(profile_group)
         self._refresh_voice_profile_combo(
             str(self.app_settings.value("active_tts_voice_profile", ""))
         )
@@ -1678,7 +1693,7 @@ class JoeWindow(QMainWindow):
         favorite_actions.addWidget(self.favorite_voice_remove_button)
         favorite_actions.addStretch(1)
         favorite_layout.addRow("", favorite_actions)
-        dialog_layout.addWidget(favorite_group)
+        settings_layout.addWidget(favorite_group)
         self._sync_favorite_editor()
 
         # Output folder and clipboard shortcut settings.
@@ -1748,14 +1763,14 @@ class JoeWindow(QMainWindow):
         output_form.addRow("", self.tts_auto_filename)
         output_form.addRow("Privacidade do histórico", self.history_save_text_check)
         output_form.addRow("Tamanho dos blocos do atalho", self.clipboard_chunk_size)
-        dialog_layout.addWidget(output_group)
+        settings_layout.addWidget(output_group)
 
         footer = QHBoxLayout()
         footer.addStretch(1)
         close_button = QPushButton("Fechar")
         close_button.clicked.connect(dialog.accept)
         footer.addWidget(close_button)
-        dialog_layout.addLayout(footer)
+        settings_layout.addLayout(footer)
 
     def _refresh_voice_profile_combo(self, selected_id: str = "") -> None:
         if not hasattr(self, "voice_profile_combo"):
