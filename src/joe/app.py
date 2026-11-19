@@ -1151,6 +1151,7 @@ class JoeWindow(QMainWindow):
         self.generated_audio: Path | None = None
         self.tts_generation_started_at: float | None = None
         self.transcript_segments: list[dict] = []
+        self.transcript_audio_path = ""
         self.transcription_backend = ""
         self.pronunciation_dictionary = self._load_pronunciation_dictionary()
         self.pronunciation_rules = load_pronunciation_rules(
@@ -2089,6 +2090,7 @@ class JoeWindow(QMainWindow):
         self.audio_path.textChanged.connect(
             lambda value: self._save_text_setting("audio_path", value)
         )
+        self.audio_path.textChanged.connect(self._on_transcript_audio_path_changed)
         self.audio_choose_button = QPushButton("Selecionar áudio…")
         self.audio_choose_button.clicked.connect(self._choose_audio)
 
@@ -3417,6 +3419,11 @@ class JoeWindow(QMainWindow):
             QMessageBox.information(self, "Áudio não selecionado", "Selecione um arquivo de áudio.")
             return
 
+        self.transcript_audio_path = str(Path(source).expanduser().resolve())
+        self.transcript_segments = []
+        self.transcript_sync_list.clear()
+        self.transcript_sync_button.setEnabled(False)
+        self.transcript_sync_info.setText("Aguardando os tempos da nova transcrição…")
         want_timestamps = self.timestamps_check.isChecked()
         if self.processing_mode.currentData() == "colab":
             try:
@@ -3483,6 +3490,14 @@ class JoeWindow(QMainWindow):
         whole_seconds, milliseconds = divmod(remainder, 1000)
         return f"{minutes:02d}:{whole_seconds:02d}.{milliseconds:03d}"
 
+    def _on_transcript_audio_path_changed(self, value: str) -> None:
+        selected = str(Path(value).expanduser().resolve()) if value.strip() else ""
+        if selected and self.transcript_audio_path and selected != self.transcript_audio_path:
+            self.transcript_sync_button.setEnabled(False)
+            self.transcript_sync_info.setText(
+                "O arquivo selecionado mudou. Faça uma nova transcrição para sincronizar."
+            )
+
     def _seek_transcript_segment(self, item: QListWidgetItem) -> None:
         index = item.data(Qt.ItemDataRole.UserRole)
         if not isinstance(index, int) or not 0 <= index < len(self.transcript_segments):
@@ -3504,6 +3519,13 @@ class JoeWindow(QMainWindow):
         if not self.transcript_segments:
             return
         target = Path(source).resolve()
+        if self.transcript_audio_path and target != Path(self.transcript_audio_path):
+            QMessageBox.information(
+                self, "Transcrição de outro arquivo",
+                "O áudio selecionado não corresponde à transcrição atual. "
+                "Faça uma nova transcrição antes de usar a sincronização."
+            )
+            return
         current = self.player.source().toLocalFile()
         if not current or Path(current).resolve() != target:
             self.player.stop()
