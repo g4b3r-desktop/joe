@@ -180,6 +180,9 @@ O índice é um banco SQLite local na pasta de dados do Joe. Os WAVs permanecem 
 
 Formatos aceitos dependem do decodificador disponível no ambiente; WAV é o formato mais previsível. Parakeet Redux faz detecção automática do idioma.
 
+
+Quando o backend retorna segmentos com tempos, o Joe mostra a lista de trechos sincronizados abaixo dos controles. Clique em um trecho para posicionar o player no seu início ou use **Reproduzir com sincronização** para iniciar o áudio junto com a transcrição. Durante a reprodução, o trecho correspondente é realçado automaticamente. A sincronização depende de timestamps fornecidos pelo backend; se eles não estiverem disponíveis, a transcrição normal e a edição do texto continuam funcionando.
+
 ### Player avançado
 
 A aba **Player avançado** controla o mesmo reprodutor usado na geração, na prévia da biblioteca de vozes e no histórico. Inclui waveform com navegação por clique, barra de progresso, velocidade de 0,75× a 2×, volume, saltos de 5 e 10 segundos e repetição de trechos delimitados pelos marcadores A e B.
