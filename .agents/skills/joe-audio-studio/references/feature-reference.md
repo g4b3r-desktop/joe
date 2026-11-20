@@ -89,3 +89,13 @@ O módulo `text_normalization.py` mantém uma cópia preparada do texto e conté
 - cubra sinais, separadores decimais/milhar e datas inválidas;
 - adicione testes de regressão para entradas reais;
 - não “corrija” uma falha antiga sem verificar todos os idiomas afetados.
+
+
+## Importação em lote do dicionário de pronúncia
+
+- O diálogo do dicionário simples oferece **Importar JSON…** e permite selecionar vários arquivos em uma operação.
+- Formato principal: objeto JSON com pares `termo: pronúncia`, por exemplo `{"cpu":"cê pê u","gpu":"gê pê u"}`.
+- Também são aceitos um objeto dentro de `entries` ou `pronunciation_dictionary`, e uma lista de objetos com `term` e `pronunciation`.
+- Arquivos usam UTF-8 (com ou sem BOM). Itens vazios ou que não sejam strings são ignorados e contabilizados; JSON malformado é reportado por arquivo sem descartar os demais arquivos válidos.
+- A importação mescla os dados com as entradas existentes. Termos são comparados sem diferenciar maiúsculas/minúsculas; duplicatas atualizam a pronúncia e preservam a grafia já cadastrada. Em múltiplos arquivos, a última pronúncia importada para o termo prevalece.
+- A tabela pode ser filtrada por termo ou pronúncia. As alterações importadas ficam pendentes até o usuário clicar em **Salvar**; **Cancelar** descarta a importação e mantém o dicionário salvo anteriormente.

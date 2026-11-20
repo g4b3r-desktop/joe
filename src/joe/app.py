@@ -71,6 +71,10 @@ from joe.playback import (
     decide_clipboard_shortcut_action,
     decide_playback_action,
 )
+from joe.pronunciation_dictionary import (
+    load_pronunciation_dictionary_json,
+    merge_pronunciation_entries,
+)
 from joe.services.colab_api import ColabAPIClient, ColabAPIError
 from joe.services.parakeet import ParakeetReduxService
 from joe.services.pocket_tts import PocketTTSService
@@ -2400,11 +2404,21 @@ class JoeWindow(QMainWindow):
         layout = QVBoxLayout(dialog)
 
         help_text = QLabel(
-            "Cadastre uma palavra ou expressão e a forma como o TTS deve pronunciá-la. "
-            "A correspondência não diferencia maiúsculas de minúsculas."
+            "Cadastre palavras e expressões ou importe vários termos de arquivos JSON. "
+            "A correspondência não diferencia maiúsculas de minúsculas. "
+            "A importação combina os arquivos com as entradas atuais; "
+            "clique em Salvar para gravar as alterações."
         )
         help_text.setWordWrap(True)
         layout.addWidget(help_text)
+
+        search = QLineEdit()
+        search.setPlaceholderText("Filtrar por palavra ou pronúncia…")
+        layout.addWidget(search)
+
+        count_label = QLabel()
+        count_label.setObjectName("muted")
+        layout.addWidget(count_label)
 
         table = QTableWidget(0, 2)
         table.setHorizontalHeaderLabels(["Palavra ou expressão", "Pronúncia desejada"])
@@ -2412,22 +2426,111 @@ class JoeWindow(QMainWindow):
         table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
-        for term, pronunciation in sorted(self.pronunciation_dictionary.items()):
-            row = table.rowCount()
-            table.insertRow(row)
-            table.setItem(row, 0, QTableWidgetItem(term))
-            table.setItem(row, 1, QTableWidgetItem(pronunciation))
+        def filter_table(query: str = "") -> None:
+            query = query.casefold().strip()
+            visible = 0
+            for row in range(table.rowCount()):
+                term_item = table.item(row, 0)
+                pronunciation_item = table.item(row, 1)
+                content = " ".join((
+                    term_item.text() if term_item else "",
+                    pronunciation_item.text() if pronunciation_item else "",
+                )).casefold()
+                hidden = bool(query and query not in content)
+                table.setRowHidden(row, hidden)
+                if not hidden:
+                    visible += 1
+            count_label.setText(
+                f"{visible} de {table.rowCount()} entrada(s) exibida(s)."
+            )
+
+        def refresh_table(entries: dict[str, str]) -> None:
+            ordered = sorted(entries.items(), key=lambda item: item[0].casefold())
+            table.setUpdatesEnabled(False)
+            table.setRowCount(len(ordered))
+            for row, (term, pronunciation) in enumerate(ordered):
+                table.setItem(row, 0, QTableWidgetItem(term))
+                table.setItem(row, 1, QTableWidgetItem(pronunciation))
+            table.setUpdatesEnabled(True)
+            filter_table(search.text())
+
+        refresh_table(self.pronunciation_dictionary)
+        search.textChanged.connect(filter_table)
         layout.addWidget(table, 1)
 
         actions = QHBoxLayout()
+        import_button = QPushButton("Importar JSON…")
         add_button = QPushButton("Adicionar")
         edit_button = QPushButton("Editar")
         remove_button = QPushButton("Remover")
+        actions.addWidget(import_button)
         actions.addWidget(add_button)
         actions.addWidget(edit_button)
         actions.addWidget(remove_button)
         actions.addStretch(1)
         layout.addLayout(actions)
+
+        def current_entries() -> dict[str, str]:
+            entries = {}
+            for row in range(table.rowCount()):
+                term_item = table.item(row, 0)
+                pronunciation_item = table.item(row, 1)
+                if term_item and pronunciation_item:
+                    term = term_item.text().strip()
+                    pronunciation = pronunciation_item.text().strip()
+                    if term and pronunciation:
+                        entries[term] = pronunciation
+            return entries
+
+        def import_json_files() -> None:
+            filenames, _ = QFileDialog.getOpenFileNames(
+                dialog,
+                "Importar dicionário de pronúncia",
+                str(Path.home()),
+                "Arquivos JSON (*.json);;Todos os arquivos (*)",
+            )
+            if not filenames:
+                return
+
+            merged = current_entries()
+            added_total = 0
+            replaced_total = 0
+            skipped_total = 0
+            imported_files = 0
+            errors = []
+
+            for filename in filenames:
+                try:
+                    imported, skipped = load_pronunciation_dictionary_json(filename)
+                    merged, added, replaced = merge_pronunciation_entries(
+                        merged, imported
+                    )
+                except (OSError, UnicodeError, ValueError) as exc:
+                    errors.append(f"{Path(filename).name}: {exc}")
+                    continue
+                imported_files += 1
+                added_total += added
+                replaced_total += replaced
+                skipped_total += skipped
+
+            if imported_files:
+                refresh_table(merged)
+
+            summary = (
+                f"Arquivos importados: {imported_files} de {len(filenames)}.\n"
+                f"Novas entradas: {added_total}.\n"
+                f"Entradas atualizadas: {replaced_total}.\n"
+                f"Itens inválidos ignorados: {skipped_total}.\n\n"
+                "Clique em Salvar para gravar as alterações."
+            )
+            if errors:
+                summary += "\n\nArquivos não importados:\n" + "\n".join(errors)
+            QMessageBox.information(dialog, "Importação do dicionário", summary)
+            self.statusBar().showMessage(
+                f"Dicionário: {added_total} nova(s) e "
+                f"{replaced_total} atualizada(s) via JSON.",
+                6000,
+            )
 
         def set_row(row: int, term: str, pronunciation: str) -> None:
             table.setItem(row, 0, QTableWidgetItem(term.strip()))
@@ -2477,6 +2580,7 @@ class JoeWindow(QMainWindow):
             if row >= 0:
                 table.removeRow(row)
 
+        import_button.clicked.connect(import_json_files)
         add_button.clicked.connect(add_entry)
         edit_button.clicked.connect(edit_entry)
         remove_button.clicked.connect(remove_entry)
@@ -2489,16 +2593,7 @@ class JoeWindow(QMainWindow):
         layout.addWidget(buttons)
 
         if dialog.exec() == QDialog.DialogCode.Accepted:
-            updated: dict[str, str] = {}
-            for row in range(table.rowCount()):
-                term_item = table.item(row, 0)
-                pronunciation_item = table.item(row, 1)
-                if term_item and pronunciation_item:
-                    term = term_item.text().strip()
-                    pronunciation = pronunciation_item.text().strip()
-                    if term and pronunciation:
-                        updated[term] = pronunciation
-            self._save_pronunciation_dictionary(updated)
+            self._save_pronunciation_dictionary(current_entries())
 
 
     def _save_advanced_pronunciation_rules(self) -> None:
