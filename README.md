@@ -1,5 +1,7 @@
 # Joe — Audio Studio
 
+**Versão estável: 1.0.0** — marco inicial da linha estável do projeto.
+
 Aplicativo desktop para **texto → áudio** e **áudio → texto**, com interface em português e dois modos de execução: **Local** ou **Google Colab (API remota)**.
 
 ## Atalho global de texto para áudio

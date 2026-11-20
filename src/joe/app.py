@@ -54,6 +54,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from joe import __version__
 from joe.audio_chunks import merge_wav_files, split_text_into_chunks
 from joe.audio_history import AudioHistoryStore
 from joe.generation_queue import GenerationQueue, GenerationTask
@@ -3840,7 +3841,7 @@ class JoeWindow(QMainWindow):
         QMessageBox.about(
             self,
             "Sobre o Joe",
-            "<b>Joe — Audio Studio 0.1.0</b><br><br>"
+            f"<b>Joe — Audio Studio {__version__}</b><br><br>"
             "Aplicativo local para texto em áudio e áudio em texto.<br>"
             "TTS: Kyutai Pocket TTS<br>"
             "STT: Moondream Parakeet Redux<br><br>"

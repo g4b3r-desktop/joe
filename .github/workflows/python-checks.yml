@@ -6,6 +6,8 @@ on:
       - feature/desktop-audio-studio
       - feature/colab-model-api
       - feature/joe-studio-improvements
+      - release/v1.0.0
+      - feature/tts-quality-improvements
   pull_request:
     branches:
       - main
