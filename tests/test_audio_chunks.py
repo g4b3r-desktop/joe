@@ -70,3 +70,22 @@ def test_merge_resamples_and_normalizes_mono_stereo(tmp_path):
     assert info.samplerate == 8000
     assert info.channels == 1
     assert info.frames == 800 + 800
+
+
+def test_split_text_uses_sentence_boundaries_before_word_fallback():
+    text = "A primeira frase termina aqui. A segunda também termina aqui."
+    chunks = split_text_into_chunks(text, max_chars=40)
+
+    assert chunks == [
+        "A primeira frase termina aqui.",
+        "A segunda também termina aqui.",
+    ]
+    assert " ".join(chunks) == text
+
+
+def test_split_text_uses_newlines_as_boundaries():
+    text = "Primeiro parágrafo completo.\nSegundo parágrafo completo."
+    chunks = split_text_into_chunks(text, max_chars=45)
+
+    assert len(chunks) == 2
+    assert " ".join(chunks) == text.replace("\n", " ")

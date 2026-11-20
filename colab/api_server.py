@@ -3,6 +3,7 @@ from __future__ import annotations
 import hmac
 import hashlib
 import os
+import sys
 import tempfile
 import threading
 import time
@@ -10,6 +11,12 @@ import uuid
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
+
+_REPO_SRC = Path(__file__).resolve().parents[1] / "src"
+if _REPO_SRC.is_dir() and str(_REPO_SRC) not in sys.path:
+    sys.path.insert(0, str(_REPO_SRC))
+
+from joe.tts_quality import generate_audio_with_quality
 
 import moondream as md
 import soundfile as sf
@@ -123,7 +130,7 @@ def _generate_tts(text: str, language: str, voice_file: str | None) -> bytes:
         if voice_state is None:
             voice_state = model.get_state_for_audio_prompt(voice_source)
             _tts_voice_states[key] = voice_state
-        audio = model.generate_audio(voice_state, text)
+        audio = generate_audio_with_quality(model, voice_state, text)
         samples = audio.detach().cpu().numpy()
 
     with tempfile.NamedTemporaryFile(suffix=".wav") as output:

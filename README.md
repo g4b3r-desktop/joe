@@ -1,6 +1,6 @@
 # Joe — Audio Studio
 
-**Versão estável: 1.0.0** — marco inicial da linha estável do projeto.
+**Versão estável: 1.0.0** — marco inicial da linha estável do projeto. **Versão em desenvolvimento neste branch: 1.0.1.dev0**.
 
 Aplicativo desktop para **texto → áudio** e **áudio → texto**, com interface em português e dois modos de execução: **Local** ou **Google Colab (API remota)**.
 
@@ -15,6 +15,7 @@ O instalador não substitui um comando existente em `Ctrl+Shift+Espaço`. Para r
 ## Modelos
 
 - **TTS — [Kyutai Pocket TTS](https://github.com/kyutai-labs/pocket-tts):** gera WAV localmente, roda na CPU e inclui suporte a português, espanhol, francês, italiano, alemão e neerlandês, além de inglês. Instala o extra `quantize` recomendado pelo projeto e permite usar uma gravação própria como referência de voz.
+- **Qualidade da geração:** para textos longos, o Joe solicita segmentos de até 25 tokens e continuidade pelo áudio do trecho anterior quando a versão da API Pocket TTS oferece esses parâmetros. Isso pode aumentar um pouco o tempo de geração.
 - **STT — [Moondream Parakeet Redux](https://huggingface.co/moondream/parakeet-redux):** transcrição local em 25 idiomas, com pesos compactados de aproximadamente 178 MB. Quando a implementação Photon compatível está disponível, ela é usada. Em CPUs sem AVX-512 VNNI, o app usa a implementação de referência Transformers; em FP32 ela pode expandir o uso de memória para cerca de 2,5 GB.
 
 No modo Local, o processamento ocorre no próprio computador. No modo Colab, texto e arquivos de áudio selecionados são enviados pela conexão HTTPS ao runtime temporário do Google Colab para inferência. Os pesos são baixados no ambiente em que o modelo estiver sendo executado e permanecem no cache daquele runtime enquanto ele existir.
@@ -24,7 +25,7 @@ No modo Local, o processamento ocorre no próprio computador. No modo Colab, tex
 
 O Joe pode usar uma sessão do Google Colab como servidor de inferência, sem instalar os pesos dos modelos no computador desktop.
 
-1. Abra a aba **Google Colab / API** no Joe e clique em **Abrir notebook no Google Colab** (ou abra [o notebook diretamente](https://colab.research.google.com/github/g4b3r-desktop/joe/blob/feature/joe-studio-improvements/colab/Joe_Colab_API.ipynb)).
+1. Abra a aba **Google Colab / API** no Joe e clique em **Abrir notebook no Google Colab** (ou abra [o notebook diretamente](https://colab.research.google.com/github/g4b3r-desktop/joe/blob/feature/tts-quality-improvements/colab/Joe_Colab_API.ipynb)).
 2. No Colab, selecione um runtime com GPU quando disponível e execute as células em sequência.
 3. A última célula inicia a API FastAPI e um Cloudflare Quick Tunnel temporário. Ela mostra uma URL HTTPS `trycloudflare.com` e um token Bearer aleatório.
 4. Cole a URL e o token na aba **Google Colab / API**, teste a conexão e selecione **Google Colab (API remota)** em Modo de execução.

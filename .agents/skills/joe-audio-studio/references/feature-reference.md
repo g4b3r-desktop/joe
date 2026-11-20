@@ -99,3 +99,11 @@ O módulo `text_normalization.py` mantém uma cópia preparada do texto e conté
 - Arquivos usam UTF-8 (com ou sem BOM). Itens vazios ou que não sejam strings são ignorados e contabilizados; JSON malformado é reportado por arquivo sem descartar os demais arquivos válidos.
 - A importação mescla os dados com as entradas existentes. Termos são comparados sem diferenciar maiúsculas/minúsculas; duplicatas atualizam a pronúncia e preservam a grafia já cadastrada. Em múltiplos arquivos, a última pronúncia importada para o termo prevalece.
 - A tabela pode ser filtrada por termo ou pronúncia. As alterações importadas ficam pendentes até o usuário clicar em **Salvar**; **Cancelar** descarta a importação e mantém o dicionário salvo anteriormente.
+
+
+## Qualidade e segmentação do TTS
+
+- A geração local e remota usa `src/joe/tts_quality.py` para solicitar ao Pocket TTS blocos internos de até 25 tokens e continuidade com o áudio do bloco anterior (`teacher_force_previous_chunk=True`), quando a API instalada oferece esses parâmetros.
+- A segmentação é feita com o tokenizer interno do próprio modelo; não substituir esse mecanismo por divisão apenas por caracteres.
+- O atalho usa `audio_chunks.py` para agrupar frases. A expressão regular deve reconhecer espaços após pontuação e quebras de linha, com testes de regressão para preservar as palavras.
+- A configuração pode aumentar um pouco o tempo de geração. Não afirmar que elimina todas as omissões sem validar com áudios reais.

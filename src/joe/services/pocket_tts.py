@@ -3,6 +3,8 @@ from __future__ import annotations
 import tempfile
 from pathlib import Path
 
+from joe.tts_quality import generate_audio_with_quality
+
 DEFAULT_VOICE = "hf://kyutai/tts-voices/alba-mackenna/casual.wav"
 
 
@@ -50,7 +52,7 @@ class PocketTTSService:
             voice_state = model.get_state_for_audio_prompt(voice_source)
             self._voice_states[state_key] = voice_state
 
-        audio = model.generate_audio(voice_state, text.strip())
+        audio = generate_audio_with_quality(model, voice_state, text.strip())
         samples = audio.detach().cpu().numpy()
 
         destination = Path(output_path).expanduser()
