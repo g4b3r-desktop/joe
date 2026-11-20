@@ -39,3 +39,20 @@ def test_normalize_timed_segments_discards_non_finite_timestamps():
         {"start": 0, "end": 1, "text": "válido"},
     ])
     assert [item["text"] for item in result] == ["válido"]
+
+
+def test_build_vtt_formats_cues_and_preserves_text():
+    from joe.transcript_sync import build_vtt
+
+    result = build_vtt([
+        {"start": 61.25, "end": 63.5, "text": "Olá, mundo!"},
+        {"start": 0, "end": 1.2, "text": "Primeiro trecho"},
+    ])
+    assert result.startswith("WEBVTT\n\n00:00:00.000 --> 00:00:01.200")
+    assert "00:01:01.250 --> 00:01:03.500\nOlá, mundo!" in result
+
+
+def test_build_vtt_ignores_invalid_segments():
+    from joe.transcript_sync import build_vtt
+
+    assert build_vtt([{"start": -1, "end": 1, "text": "inválido"}]) == "WEBVTT\n"

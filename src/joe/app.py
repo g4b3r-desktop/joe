@@ -3582,6 +3582,11 @@ class JoeWindow(QMainWindow):
             if self.transcript_segments else
             "Este backend não retornou tempos de segmento; a sincronização não está disponível."
         )
+        if hasattr(self, "advanced_player"):
+            self.advanced_player.set_transcript(
+                self.transcript_segments,
+                self.transcript_audio_path if self.transcript_segments else None,
+            )
         if self.transcript_segments:
             visible_text = "\n".join(
                 str(segment.get("text", "")).strip()
@@ -3638,6 +3643,8 @@ class JoeWindow(QMainWindow):
             self.transcript_sync_info.setText(
                 "O arquivo selecionado mudou. Faça uma nova transcrição para sincronizar."
             )
+            if hasattr(self, "advanced_player"):
+                self.advanced_player.set_transcript([], None)
 
     def _seek_transcript_segment(self, item: QListWidgetItem) -> None:
         index = item.data(Qt.ItemDataRole.UserRole)

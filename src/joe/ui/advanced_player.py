@@ -8,7 +8,7 @@ from PySide6.QtGui import QColor, QPainter, QPen
 from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
 from PySide6.QtWidgets import (
     QComboBox, QDoubleSpinBox, QFileDialog, QHBoxLayout, QLabel,
-    QPushButton, QSlider, QVBoxLayout, QWidget,
+    QListWidget, QListWidgetItem, QPushButton, QSlider, QVBoxLayout, QWidget,
 )
 
 from joe.audio_editing import (
@@ -118,6 +118,8 @@ class AdvancedAudioPlayer(QWidget):
         self._loading_generation = 0
         self._workers: set[_FunctionTask] = set()
         self._busy = False
+        self.transcript_segments: list[dict] = []
+        self.transcript_path: Path | None = None
         self._pool = QThreadPool(self)
         self._pool.setMaxThreadCount(1)
         self._build_ui()
@@ -164,6 +166,17 @@ class AdvancedAudioPlayer(QWidget):
         self.waveform = WaveformWidget()
         self.waveform.seek_requested.connect(self._seek)
         layout.addWidget(self.waveform)
+
+        transcript_title = QLabel("Transcrição sincronizada")
+        transcript_title.setObjectName("muted")
+        layout.addWidget(transcript_title)
+        self.transcript_list = QListWidget()
+        self.transcript_list.setMaximumHeight(150)
+        self.transcript_list.setToolTip(
+            "Os trechos acompanham a reprodução. Clique em um trecho para ir ao seu início."
+        )
+        self.transcript_list.itemClicked.connect(self._seek_transcript_item)
+        layout.addWidget(self.transcript_list)
 
         seek = QHBoxLayout()
         self.play_button = QPushButton("Reproduzir")
@@ -297,6 +310,8 @@ class AdvancedAudioPlayer(QWidget):
         self._loading_generation += 1
         generation = self._loading_generation
         self.current_path = Path(source.toLocalFile()) if source.isLocalFile() else None
+        if self.current_path is None or self.transcript_path != self.current_path.resolve():
+            self.set_transcript([], None)
         self.duration_ms = 0
         self.start_marker_ms = self.end_marker_ms = None
         self.repeat_button.setChecked(False)
@@ -355,9 +370,62 @@ class AdvancedAudioPlayer(QWidget):
             self.position_slider.setValue(min(1000, int(position * 1000 / self.duration_ms)))
             self.position_slider.blockSignals(False)
         self._update_time_label()
+        self._update_transcript_position(position)
         if (self.repeat_button.isChecked() and self.start_marker_ms is not None
                 and self.end_marker_ms is not None and position >= self.end_marker_ms):
             self.player.setPosition(self.start_marker_ms)
+
+
+    def set_transcript(self, segments: list[dict], audio_path: str | Path | None) -> None:
+        """Attach timed transcript segments to this shared player."""
+        from joe.transcript_sync import normalize_timed_segments
+
+        self.transcript_segments = normalize_timed_segments(segments or [])
+        self.transcript_path = (
+            Path(audio_path).expanduser().resolve() if audio_path else None
+        )
+        self.transcript_list.clear()
+        for index, segment in enumerate(self.transcript_segments):
+            start = self._format_time(int(round(segment["start"] * 1000)))
+            end = self._format_time(int(round(segment["end"] * 1000)))
+            item = QListWidgetItem(f"[{start} – {end}]  {segment['text']}")
+            item.setData(Qt.ItemDataRole.UserRole, index)
+            item.setToolTip("Trecho com timestamp fornecido pelo mecanismo de transcrição.")
+            self.transcript_list.addItem(item)
+        enabled = bool(self.transcript_segments)
+        self.transcript_list.setEnabled(enabled)
+        if enabled and self.player.source().isLocalFile():
+            current = Path(self.player.source().toLocalFile()).resolve()
+            if current == self.transcript_path:
+                self._update_transcript_position(self.player.position())
+        elif not enabled:
+            self.transcript_list.setToolTip(
+                "Faça uma transcrição com tempos disponíveis na aba Áudio → Texto."
+            )
+
+    def _seek_transcript_item(self, item: QListWidgetItem) -> None:
+        index = item.data(Qt.ItemDataRole.UserRole)
+        if not isinstance(index, int) or not 0 <= index < len(self.transcript_segments):
+            return
+        if self.transcript_path is None or not self.transcript_path.is_file():
+            return
+        current = self.player.source().toLocalFile()
+        if not current or Path(current).resolve() != self.transcript_path:
+            self.player.stop()
+            self.player.setSource(QUrl.fromLocalFile(str(self.transcript_path)))
+        self.player.setPosition(int(round(self.transcript_segments[index]["start"] * 1000)))
+
+    def _update_transcript_position(self, position_ms: int) -> None:
+        if not self.transcript_segments:
+            return
+        from joe.transcript_sync import active_segment_index
+
+        index = active_segment_index(self.transcript_segments, position_ms)
+        row = index if index is not None else -1
+        if self.transcript_list.currentRow() != row:
+            self.transcript_list.setCurrentRow(row)
+            if row >= 0:
+                self.transcript_list.scrollToItem(self.transcript_list.item(row))
 
     def _playback_state_changed(self, state: QMediaPlayer.PlaybackState) -> None:
         self.play_button.setText(

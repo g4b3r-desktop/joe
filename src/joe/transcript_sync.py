@@ -33,3 +33,22 @@ def active_segment_index(segments: list[dict[str, Any]], position_ms: int) -> in
         if segment["start"] > position:
             break
     return None
+
+
+def _format_vtt_time(seconds: float) -> str:
+    milliseconds = max(0, int(round(float(seconds) * 1000)))
+    hours, remainder = divmod(milliseconds, 3_600_000)
+    minutes, remainder = divmod(remainder, 60_000)
+    whole_seconds, millis = divmod(remainder, 1000)
+    return f"{hours:02d}:{minutes:02d}:{whole_seconds:02d}.{millis:03d}"
+
+
+def build_vtt(segments: list[dict[str, Any]]) -> str:
+    """Build a WebVTT subtitle document from timed transcript segments."""
+    normalized = normalize_timed_segments(segments)
+    cues = ["WEBVTT"]
+    for segment in normalized:
+        start = _format_vtt_time(segment["start"])
+        end = _format_vtt_time(segment["end"])
+        cues.extend(["", f"{start} --> {end}", segment["text"]])
+    return "\n".join(cues) + "\n"
