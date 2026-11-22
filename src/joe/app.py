@@ -190,7 +190,9 @@ class ClipboardChunkWorker(QRunnable):
                 {"path": str(merged), "performance": performance}
             )
         except Exception as exc:  # noqa: BLE001
-            self.signals.failed.emit(str(exc))
+            self.signals.failed.emit(
+                f"{exc}\n\nTraceback técnico:\n{traceback.format_exc()}"
+            )
 
     def _generate_chunk(
         self,
@@ -246,6 +248,9 @@ class TTSGenerationWorker(QRunnable):
 
     def run(self) -> None:
         started_at = time.perf_counter()
+        attempt_diagnostics: list[str] = []
+        current_stage = "Preparando o texto"
+        backend = "Google Colab" if self.task.remote else "Pocket TTS local"
         try:
             chunks = split_text_into_chunks(self.task.speech_text, max_chars=280)
             if not chunks:
@@ -265,6 +270,7 @@ class TTSGenerationWorker(QRunnable):
                         self.signals.cancelled.emit(self.task.task_id)
                         return
 
+                    current_stage = f"Trecho {index} de {len(chunks)}"
                     self.signals.progress.emit(
                         self.task.task_id,
                         f"Gerando trecho {index} de {len(chunks)}…",
@@ -307,11 +313,19 @@ class TTSGenerationWorker(QRunnable):
                                 self.signals.cancelled.emit(self.task.task_id)
                                 return
                             last_error = exc
+                            attempt_diagnostics.append(
+                                f"{current_stage}, tentativa {attempt + 1}: "
+                                f"{type(exc).__name__}: {exc}\n{traceback.format_exc()}"
+                            )
                         except Exception as exc:  # noqa: BLE001
                             if self.cancel_event.is_set():
                                 self.signals.cancelled.emit(self.task.task_id)
                                 return
                             last_error = exc
+                            attempt_diagnostics.append(
+                                f"{current_stage}, tentativa {attempt + 1}: "
+                                f"{type(exc).__name__}: {exc}\n{traceback.format_exc()}"
+                            )
 
                         if attempt == 0:
                             self.signals.progress.emit(
@@ -356,7 +370,26 @@ class TTSGenerationWorker(QRunnable):
             if self.cancel_event.is_set():
                 self.signals.cancelled.emit(self.task.task_id)
             else:
-                self.signals.failed.emit(self.task.task_id, str(exc))
+                technical_trace = traceback.format_exc()
+                voice_label = self.task.voice_alias or (
+                    "Voz personalizada" if self.task.voice_path else "Voz padrão"
+                )
+                report = (
+                    f"Falha ao gerar o arquivo {self.task.output_name}.\n"
+                    f"Serviço: {backend}\n"
+                    f"Idioma: {self.task.language}\n"
+                    f"Modelo: {self.task.model_variant or self.task.language}\n"
+                    f"Voz: {voice_label}\n"
+                    f"Etapa: {current_stage}\n"
+                    f"Erro: {type(exc).__name__}: {exc}\n\n"
+                    f"Traceback técnico:\n{technical_trace}"
+                )
+                if attempt_diagnostics:
+                    report += (
+                        "\n\nDetalhes das tentativas anteriores e atuais:\n\n"
+                        + "\n\n".join(attempt_diagnostics)
+                    )
+                self.signals.failed.emit(self.task.task_id, report)
 
 
 class GenerationQueueDialog(QDialog):
@@ -386,7 +419,18 @@ class GenerationQueueDialog(QDialog):
             "durante esta sessão e não é exibido nesta lista."
         ))
         self.task_list = QListWidget()
-        layout.addWidget(self.task_list, 1)
+        layout.addWidget(self.task_list, 3)
+
+        self.details_label = QLabel("Detalhes da tarefa selecionada")
+        layout.addWidget(self.details_label)
+        self.error_details = QTextEdit()
+        self.error_details.setReadOnly(True)
+        self.error_details.setPlaceholderText(
+            "Selecione uma tarefa para consultar o status ou os detalhes do erro."
+        )
+        self.error_details.setMaximumHeight(145)
+        layout.addWidget(self.error_details, 1)
+        self.task_list.currentItemChanged.connect(self._refresh_task_details)
 
         buttons = QHBoxLayout()
         self.add_button = QPushButton("Adicionar texto atual")
@@ -423,6 +467,28 @@ class GenerationQueueDialog(QDialog):
         item = self.task_list.currentItem()
         return str(item.data(Qt.ItemDataRole.UserRole)) if item else None
 
+    def _refresh_task_details(self, *_args) -> None:
+        task = self.queue.get(self._selected_task_id() or "")
+        if task is None:
+            self.details_label.setText("Detalhes da tarefa selecionada")
+            self.error_details.clear()
+            return
+        if task.error:
+            self.details_label.setText("Erro de geração — detalhes técnicos")
+            self.error_details.setPlainText(task.error)
+        else:
+            self.details_label.setText("Status da tarefa")
+            self.error_details.setPlainText(task.progress or "Sem detalhes disponíveis.")
+
+    def select_task(self, task_id: str) -> None:
+        for index in range(self.task_list.count()):
+            item = self.task_list.item(index)
+            if str(item.data(Qt.ItemDataRole.UserRole)) == task_id:
+                self.task_list.setCurrentItem(item)
+                self.task_list.scrollToItem(item)
+                self._refresh_task_details()
+                return
+
     def refresh(self) -> None:
         selected_id = self._selected_task_id()
         self.task_list.clear()
@@ -435,7 +501,9 @@ class GenerationQueueDialog(QDialog):
             "cancelled": "Cancelada",
         }
         selected_item = None
-        for task in self.queue.tasks():
+        items_by_id = {}
+        tasks = self.queue.tasks()
+        for task in tasks:
             prefix = "⚡ Urgente · " if task.urgent else ""
             label = labels.get(task.status, task.status)
             item = QListWidgetItem(
@@ -445,10 +513,19 @@ class GenerationQueueDialog(QDialog):
             if task.error:
                 item.setToolTip(task.error)
             self.task_list.addItem(item)
+            items_by_id[task.task_id] = item
             if task.task_id == selected_id:
                 selected_item = item
+        if selected_item is None and selected_id is None:
+            latest_failed = next(
+                (task for task in reversed(tasks) if task.status == "failed"),
+                None,
+            )
+            if latest_failed is not None:
+                selected_item = items_by_id.get(latest_failed.task_id)
         if selected_item is not None:
             self.task_list.setCurrentItem(selected_item)
+        self._refresh_task_details()
 
         task = self.queue.get(self._selected_task_id() or "")
         self.cancel_button.setEnabled(bool(task and task.status in {"queued", "running"}))
@@ -864,6 +941,7 @@ class ClipboardAudioDialog(QDialog):
         self.waiting_for_chunk = False
         self.playing_final_audio = False
         self.is_closing = False
+        self.failure_details = ""
         self.generation_started_at: float | None = None
         self.performance_timer = QTimer(self)
         self.performance_timer.setInterval(500)
@@ -908,12 +986,16 @@ class ClipboardAudioDialog(QDialog):
         self.save_button = QPushButton("Salvar áudio…")
         self.save_button.setEnabled(False)
         self.save_button.clicked.connect(self._save)
+        self.details_button = QPushButton("Detalhes técnicos")
+        self.details_button.setVisible(False)
+        self.details_button.clicked.connect(self._show_failure_details)
         self.close_button = QPushButton("Fechar")
         self.close_button.clicked.connect(self.close)
 
         buttons.addWidget(self.play_button)
         buttons.addWidget(self.pause_button)
         buttons.addWidget(self.save_button)
+        buttons.addWidget(self.details_button)
         buttons.addWidget(self.close_button)
         layout.addLayout(buttons)
 
@@ -982,7 +1064,9 @@ class ClipboardAudioDialog(QDialog):
         elif self.waiting_for_chunk:
             self._play_next_chunk()
 
-    def set_failed(self, message: str) -> None:
+    def set_failed(self, message: str, details: str = "") -> None:
+        self.failure_details = details.strip()
+        self.details_button.setVisible(bool(self.failure_details))
         self.performance_timer.stop()
         self.generation_started_at = None
         self.performance_label.setText(
@@ -995,6 +1079,16 @@ class ClipboardAudioDialog(QDialog):
         )
         self.play_button.setEnabled(bool(self.chunk_paths))
         self.save_button.setEnabled(False)
+
+    def _show_failure_details(self) -> None:
+        if not self.failure_details:
+            return
+        message = QMessageBox(self)
+        message.setIcon(QMessageBox.Icon.Warning)
+        message.setWindowTitle("Detalhes técnicos da falha")
+        message.setText("A geração de áudio foi interrompida. Consulte o diagnóstico abaixo.")
+        message.setDetailedText(self.failure_details)
+        message.exec()
 
     def _play(self) -> None:
         if not self.chunk_paths:
@@ -3309,11 +3403,13 @@ class JoeWindow(QMainWindow):
 
         def failed(message: str) -> None:
             self.clipboard_generation_worker = None
-            detail = message.split("\n\n", 1)[0].strip() or "Erro desconhecido"
+            parts = message.split("\n\n", 1)
+            detail = parts[0].strip() or "Erro desconhecido"
+            technical_details = parts[1] if len(parts) > 1 else ""
             if dialog.is_closing:
                 cleanup_closed_dialog()
             else:
-                dialog.set_failed(detail)
+                dialog.set_failed(detail, technical_details)
                 self.statusBar().showMessage(
                     f"Falha ao gerar áudio do clipboard: {detail}", 8000
                 )
@@ -3443,7 +3539,7 @@ class JoeWindow(QMainWindow):
         self._refresh_generation_queue()
         self._start_next_generation()
 
-    def _open_generation_queue(self) -> None:
+    def _open_generation_queue(self, selected_task_id: str | None = None) -> None:
         if self.generation_queue_dialog is None:
             self.generation_queue_dialog = GenerationQueueDialog(
                 self.generation_queue,
@@ -3454,6 +3550,8 @@ class JoeWindow(QMainWindow):
                 self,
             )
         self.generation_queue_dialog.refresh()
+        if selected_task_id:
+            self.generation_queue_dialog.select_task(selected_task_id)
         self.generation_queue_dialog.show()
         self.generation_queue_dialog.raise_()
         self.generation_queue_dialog.activateWindow()
@@ -3463,7 +3561,13 @@ class JoeWindow(QMainWindow):
             task.status in {"queued", "running", "cancelling"}
             for task in self.generation_queue.tasks()
         )
-        self.tts_queue_button.setText(f"Fila de geração ({active_count})")
+        failed_count = sum(
+            task.status == "failed" for task in self.generation_queue.tasks()
+        )
+        suffix = f" · {failed_count} falha(s)" if failed_count else ""
+        self.tts_queue_button.setText(
+            f"Fila de geração ({active_count}){suffix}"
+        )
         if self.generation_queue_dialog is not None:
             self.generation_queue_dialog.refresh()
 
@@ -3517,7 +3621,9 @@ class JoeWindow(QMainWindow):
         self.active_generation_worker = None
         self.tts_elapsed_timer.stop()
         self.tts_generation_started_at = None
-        self.tts_speed_info.setText("Geração falhou. Veja os detalhes na fila para repetir.")
+        self.tts_speed_info.setText(
+            "Geração falhou. A fila foi aberta com os detalhes técnicos do erro."
+        )
         self._set_busy(False, "Falha na tarefa; continuando a fila")
         failed_task = self.generation_queue.get(task_id)
         task_name = failed_task.output_name if failed_task is not None else task_id
@@ -3527,6 +3633,7 @@ class JoeWindow(QMainWindow):
             8000,
         )
         self._refresh_generation_queue()
+        self._open_generation_queue(task_id)
         self._start_next_generation()
 
     def _generation_cancelled(self, task_id: str) -> None:
