@@ -21,8 +21,8 @@ class PocketTTSService:
     """Lazy, reusable adapter around Kyutai Pocket TTS."""
 
     def __init__(self) -> None:
-        self._models: dict[tuple[str, str], object] = {}
-        self._voice_states: dict[tuple[str, str, str], object] = {}
+        self._models: dict[tuple[str, str, bool], object] = {}
+        self._voice_states: dict[tuple[str, str, bool, str], object] = {}
 
     @staticmethod
     def _configure_torch(torch, cpu_threads: int) -> None:
@@ -35,7 +35,14 @@ class PocketTTSService:
             # PyTorch can reject changes after parallel work has already started.
             pass
 
-    def _get_model(self, torch, tts_model_class, model_variant: str, device: str):
+    def _get_model(
+        self,
+        torch,
+        tts_model_class,
+        model_variant: str,
+        device: str,
+        quantize: bool,
+    ):
         if device not in {"cpu", "cuda"}:
             raise ValueError("Dispositivo TTS inválido. Escolha CPU ou NVIDIA GPU (CUDA).")
         if device == "cuda" and not torch.cuda.is_available():
@@ -45,7 +52,9 @@ class PocketTTSService:
                 "que o driver NVIDIA está funcionando."
             )
 
-        cache_key = (model_variant, device)
+        # Pocket TTS dynamic INT8 quantization is supported on CPU only.
+        effective_quantize = bool(quantize) and device == "cpu"
+        cache_key = (model_variant, device, effective_quantize)
         model = self._models.get(cache_key)
         if model is not None:
             return model
@@ -55,7 +64,7 @@ class PocketTTSService:
         self._models.clear()
         model = tts_model_class.load_model(
             **model_loading_options(model_variant),
-            quantize=(device == "cpu"),
+            quantize=effective_quantize,
         )
         if device == "cuda":
             try:
@@ -80,6 +89,7 @@ class PocketTTSService:
         *,
         device_preference: str = "cpu",
         cpu_threads: int = 2,
+        quantize: bool = True,
     ) -> Path:
         if not text.strip():
             raise ValueError("Digite algum texto antes de gerar o áudio.")
@@ -101,12 +111,17 @@ class PocketTTSService:
             )
 
         self._configure_torch(torch, cpu_threads)
-        model = self._get_model(torch, TTSModel, model_variant, device_preference)
+        effective_quantize = bool(quantize) and device_preference == "cpu"
+        model = self._get_model(
+            torch, TTSModel, model_variant, device_preference, effective_quantize
+        )
 
         voice_source = str(voice_path) if voice_path else (
             default_voice_for_language(language) or DEFAULT_VOICE
         )
-        state_key = (model_variant, device_preference, voice_source)
+        state_key = (
+            model_variant, device_preference, effective_quantize, voice_source
+        )
         voice_state = self._voice_states.get(state_key)
         if voice_state is None:
             voice_state = model.get_state_for_audio_prompt(voice_source)
@@ -126,6 +141,7 @@ class PocketTTSService:
         *,
         device_preference: str = "cpu",
         cpu_threads: int = 2,
+        quantize: bool = True,
     ) -> Path:
         """Encode a reference recording once and save its reusable KV state."""
         source = Path(voice_audio_path).expanduser()
@@ -150,10 +166,15 @@ class PocketTTSService:
                 f"A versão {model_variant!r} não está disponível para o idioma {language!r}."
             )
         self._configure_torch(torch, cpu_threads)
-        model = self._get_model(torch, TTSModel, model_variant, device_preference)
+        effective_quantize = bool(quantize) and device_preference == "cpu"
+        model = self._get_model(
+            torch, TTSModel, model_variant, device_preference, effective_quantize
+        )
 
         source_key = str(source.resolve())
-        state_key = (model_variant, device_preference, source_key)
+        state_key = (
+            model_variant, device_preference, effective_quantize, source_key
+        )
         voice_state = self._voice_states.get(state_key)
         if voice_state is None:
             voice_state = model.get_state_for_audio_prompt(source_key)
@@ -174,6 +195,7 @@ class PocketTTSService:
         *,
         cpu_threads: int = 2,
         repeats: int = 2,
+        quantize: bool = True,
     ) -> list[TTSBenchmarkResult]:
         """Compare CPU and CUDA using the same model, voice and text without saving audio."""
         if not text.strip():
@@ -223,7 +245,7 @@ class PocketTTSService:
                 model_started = time.perf_counter()
                 model = TTSModel.load_model(
                     **model_loading_options(model_variant),
-                    quantize=(device == "cpu"),
+                    quantize=(device == "cpu" and bool(quantize)),
                 )
                 if device == "cuda":
                     model.to("cuda")
@@ -265,7 +287,7 @@ class PocketTTSService:
                         audio_duration_seconds=audio_duration_seconds,
                         character_count=len(text.strip()),
                         peak_vram_mb=peak_vram_mb,
-                        quantized=(device == "cpu"),
+                        quantized=(device == "cpu" and bool(quantize)),
                         repeats=repeat_count,
                     )
                 )
@@ -275,7 +297,7 @@ class PocketTTSService:
                         device=device,
                         cpu_threads=cpu_threads,
                         error=f"{type(exc).__name__}: {exc}",
-                        quantized=(device == "cpu"),
+                        quantized=(device == "cpu" and bool(quantize)),
                     )
                 )
             finally:
