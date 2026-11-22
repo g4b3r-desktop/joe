@@ -140,9 +140,10 @@ def test_generate_uses_the_selected_model_variant(monkeypatch, tmp_path):
         "portuguese",
         destination,
         model_variant="portuguese_24l",
+        quantize=False,
     )
 
-    assert loaded == [("portuguese_24l", True)]
+    assert loaded == [("portuguese_24l", False)]
     assert destination.read_bytes() == b"fake wav"
 
 def test_generate_japanese_uses_compact_config_and_japanese_voice(monkeypatch, tmp_path):
