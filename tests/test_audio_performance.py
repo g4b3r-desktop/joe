@@ -4,9 +4,11 @@ import wave
 
 from joe.audio_performance import (
     AudioPerformance,
+    TTSBenchmarkResult,
     format_duration,
     format_elapsed_status,
     format_performance_report,
+    format_tts_benchmark_report,
     wav_duration_seconds,
 )
 
@@ -54,3 +56,47 @@ def test_performance_report_uses_desktop_measurement_for_remote_mode():
     assert "Velocidade efetiva: 3,00× tempo real" in report
     assert "Texto: 50,0 caracteres/s" in report
     assert "cronômetro inclui envio, fila e espera" in report
+
+
+
+def test_tts_benchmark_report_compares_cpu_and_cuda_results():
+    from joe.audio_performance import (
+        TTSBenchmarkResult,
+        format_tts_benchmark_report,
+    )
+
+    report = format_tts_benchmark_report(
+        [
+            TTSBenchmarkResult(
+                device="cpu",
+                cpu_threads=4,
+                model_load_seconds=3.0,
+                voice_prepare_seconds=1.0,
+                generation_seconds=2.0,
+                audio_duration_seconds=4.0,
+                peak_vram_mb=0.0,
+                quantized=True,
+                repeats=2,
+            ),
+            TTSBenchmarkResult(
+                device="cuda",
+                cpu_threads=4,
+                model_load_seconds=2.0,
+                voice_prepare_seconds=0.5,
+                generation_seconds=1.0,
+                audio_duration_seconds=4.0,
+                peak_vram_mb=1200.0,
+                quantized=False,
+                repeats=2,
+            ),
+        ],
+        cpu_threads=4,
+    )
+
+    assert "CPU — 4 thread(s), INT8" in report
+    assert "NVIDIA CUDA" in report
+    assert "Carregamento do modelo" in report
+    assert "Preparação da voz" in report
+    assert "Memória de VRAM de pico: 1200 MB" in report
+    assert "CUDA foi 2,00× mais rápida" in report
+    assert "não altera a configuração escolhida" in report
