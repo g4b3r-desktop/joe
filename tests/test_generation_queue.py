@@ -169,7 +169,9 @@ def test_queue_snapshots_tts_compute_device_and_cpu_threads():
         output_path="/tmp/hello.wav",
         tts_device="cuda",
         cpu_threads=4,
+        tts_quantization=False,
     )
 
     assert task.tts_device == "cuda"
     assert task.cpu_threads == 4
+    assert task.tts_quantization is False
