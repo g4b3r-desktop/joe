@@ -58,6 +58,8 @@ from PySide6.QtWidgets import (
 from joe.audio_chunks import merge_wav_files, split_text_into_chunks
 from joe.audio_history import AudioHistoryStore
 from joe.generation_queue import GenerationQueue, GenerationTask
+from joe.system_monitor import read_hardware_metrics
+from joe.tts_profiles import build_generation_settings, performance_profile_settings
 from joe.ui.audio_history import AudioHistoryPanel
 from joe.ui.advanced_player import AdvancedAudioPlayer
 from joe.audio_performance import (
@@ -1237,6 +1239,7 @@ class JoeWindow(QMainWindow):
 
         self.tts = PocketTTSService()
         self.asr = ParakeetReduxService()
+        self._applying_tts_profile = False
         self.app_settings = QSettings("g4b3r-desktop", "JoeAudioStudio")
         self.thread_pool = QThreadPool(self)
         self.thread_pool.setMaxThreadCount(1)
@@ -1265,6 +1268,13 @@ class JoeWindow(QMainWindow):
         self.colab_monitor_timer = QTimer(self)
         self.colab_monitor_timer.setInterval(60_000)
         self.colab_monitor_timer.timeout.connect(self._refresh_colab_status)
+
+        self.hardware_monitor_pool = QThreadPool(self)
+        self.hardware_monitor_pool.setMaxThreadCount(1)
+        self.hardware_monitor_worker: FunctionWorker | None = None
+        self.hardware_monitor_timer = QTimer(self)
+        self.hardware_monitor_timer.setInterval(2500)
+        self.hardware_monitor_timer.timeout.connect(self._refresh_hardware_metrics)
 
         self.generated_audio: Path | None = None
         self.tts_generation_started_at: float | None = None
@@ -1306,6 +1316,8 @@ class JoeWindow(QMainWindow):
         self.statusBar().showMessage("Pronto — os modelos serão carregados sob demanda.")
         self._start_global_hotkey()
         self._update_colab_monitoring()
+        self.hardware_monitor_timer.start()
+        self._refresh_hardware_metrics()
 
     def _build_ui(self) -> None:
         tabs = QTabWidget()
@@ -1786,6 +1798,24 @@ class JoeWindow(QMainWindow):
         # Local Pocket TTS compute settings and an on-device CPU/CUDA comparison.
         hardware_group = QGroupBox("Hardware e desempenho do Pocket TTS")
         hardware_form = QFormLayout(hardware_group)
+        self.tts_performance_profile = QComboBox()
+        for profile_key, profile_label in (
+            ("custom", "Personalizado"),
+            ("economy", "Econômico"),
+            ("balanced", "Equilibrado"),
+            ("performance", "Desempenho"),
+        ):
+            self.tts_performance_profile.addItem(profile_label, profile_key)
+        saved_profile = str(
+            self.app_settings.value("tts_performance_profile", "custom")
+        )
+        saved_profile_index = self.tts_performance_profile.findData(saved_profile)
+        self.tts_performance_profile.setCurrentIndex(max(0, saved_profile_index))
+        self.tts_performance_profile.setToolTip(
+            "Os perfis preenchem dispositivo, threads e quantização. "
+            "Você pode alterar cada opção depois; isso muda o perfil para Personalizado."
+        )
+
         self.tts_device = QComboBox()
         self.tts_device.addItem("CPU (processador)", "cpu")
         self.tts_device.addItem("NVIDIA GPU (CUDA — usa VRAM)", "cuda")
@@ -1824,6 +1854,9 @@ class JoeWindow(QMainWindow):
         self.tts_device.currentIndexChanged.connect(self._save_tts_hardware_settings)
         self.tts_cpu_threads.valueChanged.connect(self._save_tts_hardware_settings)
         self.tts_quantization.toggled.connect(self._save_tts_hardware_settings)
+        self.tts_performance_profile.currentIndexChanged.connect(
+            self._apply_tts_performance_profile
+        )
 
         self.tts_benchmark_button = QPushButton("Comparar CPU × CUDA")
         self.tts_benchmark_button.setToolTip(
@@ -1835,6 +1868,7 @@ class JoeWindow(QMainWindow):
         hardware_actions = QHBoxLayout()
         hardware_actions.addWidget(self.tts_benchmark_button)
         hardware_actions.addStretch(1)
+        hardware_form.addRow("Perfil de desempenho", self.tts_performance_profile)
         hardware_form.addRow("Dispositivo para geração local", self.tts_device)
         hardware_form.addRow("Threads da CPU", self.tts_cpu_threads)
         hardware_form.addRow("Quantização do modelo", self.tts_quantization)
@@ -1842,6 +1876,29 @@ class JoeWindow(QMainWindow):
         hardware_form.addRow("", hardware_actions)
         settings_layout.addWidget(hardware_group)
         self._refresh_tts_hardware_info()
+
+        monitor_group = QGroupBox("Monitoramento em tempo real")
+        monitor_form = QFormLayout(monitor_group)
+        self.tts_monitor_cpu_ram = QLabel("Coletando métricas…")
+        self.tts_monitor_gpu = QLabel("Consultando NVIDIA GPU…")
+        self.tts_monitor_vram = QLabel("VRAM: —")
+        for monitor_label in (
+            self.tts_monitor_cpu_ram,
+            self.tts_monitor_gpu,
+            self.tts_monitor_vram,
+        ):
+            monitor_label.setWordWrap(True)
+        monitor_form.addRow("CPU / RAM", self.tts_monitor_cpu_ram)
+        monitor_form.addRow("GPU", self.tts_monitor_gpu)
+        monitor_form.addRow("Memória da GPU", self.tts_monitor_vram)
+        monitor_note = QLabel(
+            "Atualização automática a cada 2,5 segundos. A leitura da NVIDIA usa nvidia-smi; "
+            "a telemetria não limita a memória nem altera a configuração dos modelos."
+        )
+        monitor_note.setObjectName("muted")
+        monitor_note.setWordWrap(True)
+        monitor_form.addRow("", monitor_note)
+        settings_layout.addWidget(monitor_group)
 
         # Named voice profiles are independent from favorites and pronunciation rules.
         profile_group = QGroupBox("Perfis de voz")
@@ -2218,6 +2275,7 @@ class JoeWindow(QMainWindow):
         backend: str,
         original_text: str,
         model_variant: str = "",
+        generation_settings: dict[str, object] | None = None,
     ) -> None:
         try:
             duration = (
@@ -2246,6 +2304,7 @@ class JoeWindow(QMainWindow):
                 model_variant=model_variant,
                 backend=backend,
                 text_content=stored_text,
+                generation_settings=generation_settings,
             )
         except Exception as exc:  # noqa: BLE001
             self.statusBar().showMessage(
@@ -2267,6 +2326,13 @@ class JoeWindow(QMainWindow):
             model_variant=task.model_variant,
             backend="Google Colab" if task.remote else "Local",
             original_text=task.text,
+            generation_settings=build_generation_settings(
+                device=task.tts_device,
+                cpu_threads=task.cpu_threads,
+                quantization=task.tts_quantization,
+                profile=task.tts_profile,
+                remote=task.remote,
+            ),
         )
 
     def _record_clipboard_history(
@@ -2278,6 +2344,7 @@ class JoeWindow(QMainWindow):
         voice_path: str | None,
         remote: bool,
         model_variant: str = "",
+        generation_settings: dict[str, object] | None = None,
     ) -> None:
         voice_key = canonical_voice_path(voice_path) if voice_path else ""
         voice_alias = self.favorite_voices.get(
@@ -2293,6 +2360,7 @@ class JoeWindow(QMainWindow):
             backend="Google Colab" if remote else "Local",
             original_text=copied_text,
             model_variant=model_variant,
+            generation_settings=generation_settings,
         )
 
     def _build_asr_tab(self) -> QWidget:
@@ -3063,12 +3131,52 @@ class JoeWindow(QMainWindow):
         self.app_settings.setValue("tts_language", language)
         self._refresh_tts_model_variants()
 
+    def _apply_tts_performance_profile(self, *_args) -> None:
+        profile = str(self.tts_performance_profile.currentData() or "custom")
+        self.app_settings.setValue("tts_performance_profile", profile)
+        if profile == "custom":
+            return
+        try:
+            settings = performance_profile_settings(
+                profile,
+                cpu_count=os.cpu_count() or 1,
+                cuda_available=bool(torch.cuda.is_available()),
+            )
+        except (RuntimeError, ValueError) as exc:
+            QMessageBox.warning(
+                self, "Perfil indisponível", f"Não foi possível aplicar o perfil: {exc}"
+            )
+            return
+
+        self._applying_tts_profile = True
+        try:
+            device_index = self.tts_device.findData(settings["device"])
+            if device_index >= 0:
+                self.tts_device.setCurrentIndex(device_index)
+            self.tts_cpu_threads.setValue(int(settings["cpu_threads"]))
+            self.tts_quantization.setChecked(bool(settings["quantization"]))
+        finally:
+            self._applying_tts_profile = False
+
+        self._save_tts_hardware_settings()
+        self.app_settings.setValue("tts_performance_profile", profile)
+        self.statusBar().showMessage(
+            f"Perfil {self.tts_performance_profile.currentText()} aplicado.", 4000
+        )
+
     def _save_tts_hardware_settings(self, *_args) -> None:
         if not all(
             hasattr(self, name)
             for name in ("tts_device", "tts_cpu_threads", "tts_quantization")
         ):
             return
+        if not self._applying_tts_profile and hasattr(self, "tts_performance_profile"):
+            self.tts_performance_profile.blockSignals(True)
+            custom_index = self.tts_performance_profile.findData("custom")
+            if custom_index >= 0:
+                self.tts_performance_profile.setCurrentIndex(custom_index)
+            self.tts_performance_profile.blockSignals(False)
+            self.app_settings.setValue("tts_performance_profile", "custom")
         self.app_settings.setValue("tts_device", str(self.tts_device.currentData() or "cpu"))
         self.app_settings.setValue("tts_cpu_threads", int(self.tts_cpu_threads.value()))
         self.app_settings.setValue(
@@ -3116,6 +3224,64 @@ class JoeWindow(QMainWindow):
             f"CPU: {logical_cpus} processador(es) lógico(s). {cuda_status} "
             f"{quantization_status}"
         )
+
+    def _refresh_hardware_metrics(self) -> None:
+        if self.hardware_monitor_worker is not None:
+            return
+        worker = FunctionWorker(read_hardware_metrics)
+        self.hardware_monitor_worker = worker
+
+        def completed(snapshot: object) -> None:
+            self.hardware_monitor_worker = None
+            if not hasattr(snapshot, "cpu_percent"):
+                return
+
+            def percent(value: float | None) -> str:
+                return "—" if value is None else f"{value:.0f}%".replace(".", ",")
+
+            def gib(value: float | None) -> str:
+                return "—" if value is None else f"{value / 1024:.1f} GB".replace(".", ",")
+
+            cpu_label = percent(snapshot.cpu_percent)
+            if snapshot.ram_used_mb is None or snapshot.ram_total_mb is None:
+                ram_label = "RAM: —"
+            else:
+                ram_label = f"RAM: {gib(snapshot.ram_used_mb)} / {gib(snapshot.ram_total_mb)}"
+            self.tts_monitor_cpu_ram.setText(f"CPU: {cpu_label}   •   {ram_label}")
+
+            if snapshot.gpu_name:
+                utilization = percent(snapshot.gpu_utilization_percent)
+                temperature = (
+                    "—"
+                    if snapshot.gpu_temperature_c is None
+                    else f"{snapshot.gpu_temperature_c:.0f} °C"
+                )
+                self.tts_monitor_gpu.setText(
+                    f"{snapshot.gpu_name}   •   Uso: {utilization}   •   "
+                    f"Temperatura: {temperature}"
+                )
+                if snapshot.vram_used_mb is None or snapshot.vram_total_mb is None:
+                    self.tts_monitor_vram.setText("VRAM: —")
+                else:
+                    self.tts_monitor_vram.setText(
+                        f"VRAM: {snapshot.vram_used_mb / 1024:.1f} GB / "
+                        f"{snapshot.vram_total_mb / 1024:.1f} GB"
+                    )
+            else:
+                self.tts_monitor_gpu.setText(
+                    snapshot.gpu_error or "GPU NVIDIA não detectada."
+                )
+                self.tts_monitor_vram.setText("VRAM: indisponível")
+
+        def failed(message: str) -> None:
+            self.hardware_monitor_worker = None
+            self.tts_monitor_gpu.setText("Falha ao ler métricas da GPU.")
+            self.tts_monitor_vram.setText("VRAM: indisponível")
+            self.tts_monitor_cpu_ram.setToolTip(message)
+
+        worker.signals.finished.connect(completed)
+        worker.signals.failed.connect(failed)
+        self.hardware_monitor_pool.start(worker)
 
     def _benchmark_tts_performance(self) -> None:
         if (
@@ -3519,6 +3685,13 @@ class JoeWindow(QMainWindow):
         tts_device = str(self.tts_device.currentData() or "cpu")
         cpu_threads = int(self.tts_cpu_threads.value())
         tts_quantization = bool(self.tts_quantization.isChecked())
+        generation_settings = build_generation_settings(
+            device=tts_device,
+            cpu_threads=cpu_threads,
+            quantization=tts_quantization,
+            profile=str(self.tts_performance_profile.currentData() or "custom"),
+            remote=remote is not None,
+        )
 
         if remote is not None:
             def generate_clipboard_chunk(chunk_text: str, output_path: Path) -> Path:
@@ -3558,6 +3731,7 @@ class JoeWindow(QMainWindow):
                 voice,
                 remote is not None,
                 model_variant,
+                generation_settings,
             )
         )
         self.clipboard_audio_window = dialog
@@ -3728,6 +3902,7 @@ class JoeWindow(QMainWindow):
                 tts_device=str(self.tts_device.currentData() or "cpu"),
                 cpu_threads=int(self.tts_cpu_threads.value()),
                 tts_quantization=bool(self.tts_quantization.isChecked()),
+                tts_profile=str(self.tts_performance_profile.currentData() or "custom"),
                 voice_path=selected_voice,
                 voice_alias=selected_voice_alias,
                 remote=remote,
@@ -4223,6 +4398,7 @@ class JoeWindow(QMainWindow):
             self.tts_settings_button,
             self.tts_device,
             self.tts_cpu_threads,
+            self.tts_performance_profile,
             self.tts_quantization,
             self.tts_benchmark_button,
             self.tts_language,
@@ -4292,6 +4468,7 @@ class JoeWindow(QMainWindow):
         if self.clipboard_generation_worker is not None:
             self.clipboard_generation_worker.cancel()
         self.colab_monitor_timer.stop()
+        self.hardware_monitor_timer.stop()
         self._stop_global_hotkey()
         if self.local_command_server is not None:
             self.local_command_server.stop()
@@ -4300,6 +4477,8 @@ class JoeWindow(QMainWindow):
             self.clipboard_audio_window.close()
         if self.colab_monitor_pool.activeThreadCount():
             self.colab_monitor_pool.waitForDone(5000)
+        if self.hardware_monitor_pool.activeThreadCount():
+            self.hardware_monitor_pool.waitForDone(3000)
         if self.thread_pool.activeThreadCount():
             self.statusBar().showMessage("Aguardando a tarefa atual terminar…")
             self.thread_pool.waitForDone(-1)
