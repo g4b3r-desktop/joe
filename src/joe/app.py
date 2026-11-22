@@ -203,6 +203,7 @@ class ClipboardChunkWorker(QRunnable):
     ) -> Path:
         """Tenta cada bloco duas vezes antes de interromper a tarefa."""
         last_error = None
+        attempt_diagnostics: list[str] = []
 
         for attempt in range(2):
             try:
@@ -214,6 +215,10 @@ class ClipboardChunkWorker(QRunnable):
                 return result
             except Exception as exc:  # noqa: BLE001
                 last_error = exc
+                attempt_diagnostics.append(
+                    f"Tentativa {attempt + 1}: {type(exc).__name__}: {exc}\n"
+                    f"{traceback.format_exc()}"
+                )
                 if attempt == 0:
                     self.signals.progress.emit(
                         f"Trecho {index}: falha temporária; tentando novamente…"
@@ -221,6 +226,8 @@ class ClipboardChunkWorker(QRunnable):
 
         raise RuntimeError(
             f"Falha no trecho {index} de {total} após duas tentativas: {last_error}"
+            "\n\nDiagnóstico das tentativas:\n\n"
+            + "\n\n".join(attempt_diagnostics)
         ) from last_error
 
 
