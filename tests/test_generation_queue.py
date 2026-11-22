@@ -170,8 +170,10 @@ def test_queue_snapshots_tts_compute_device_and_cpu_threads():
         tts_device="cuda",
         cpu_threads=4,
         tts_quantization=False,
+        tts_profile="performance",
     )
 
     assert task.tts_device == "cuda"
     assert task.cpu_threads == 4
     assert task.tts_quantization is False
+    assert task.tts_profile == "performance"
