@@ -100,3 +100,31 @@ def test_tts_benchmark_report_compares_cpu_and_cuda_results():
     assert "Memória de VRAM de pico: 1200 MB" in report
     assert "CUDA foi 2,00× mais rápida" in report
     assert "não altera a configuração escolhida" in report
+
+
+
+def test_tts_benchmark_report_shows_when_cpu_quantization_is_disabled():
+    report = format_tts_benchmark_report(
+        [
+            TTSBenchmarkResult(
+                device="cpu",
+                cpu_threads=4,
+                generation_seconds=2.0,
+                audio_duration_seconds=4.0,
+                quantized=False,
+                repeats=1,
+            ),
+            TTSBenchmarkResult(
+                device="cuda",
+                cpu_threads=4,
+                generation_seconds=1.0,
+                audio_duration_seconds=4.0,
+                quantized=False,
+                repeats=1,
+            ),
+        ],
+        cpu_threads=4,
+    )
+
+    assert "CPU — 4 thread(s), sem quantização" in report
+    assert "CPU com INT8 desativada" in report
