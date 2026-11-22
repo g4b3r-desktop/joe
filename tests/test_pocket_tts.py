@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import numpy as np
@@ -42,6 +43,21 @@ def test_failed_wav_write_preserves_previous_audio_and_cleans_temp_file(tmp_path
 
     assert destination.read_bytes() == b"old audio"
     assert sorted(path.name for path in tmp_path.iterdir()) == ["audio.wav"]
+
+
+def test_model_cache_is_inside_project_and_overrides_global_cache(monkeypatch, tmp_path):
+    from joe.model_cache import configure_model_cache
+
+    monkeypatch.setenv("HF_HOME", "/tmp/global-huggingface-cache")
+    monkeypatch.setenv("HF_HUB_CACHE", "/tmp/global-hub-cache")
+
+    cache_root = configure_model_cache(tmp_path)
+
+    assert cache_root == tmp_path / ".models" / "huggingface"
+    assert (cache_root / "hub").is_dir()
+    assert os.environ["HF_HOME"] == str(cache_root)
+    assert os.environ["HF_HUB_CACHE"] == str(cache_root / "hub")
+    assert os.environ["HUGGINGFACE_HUB_CACHE"] == str(cache_root / "hub")
 
 
 def test_model_catalog_exposes_variants_by_language():

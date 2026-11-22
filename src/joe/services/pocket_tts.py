@@ -3,6 +3,7 @@ from __future__ import annotations
 import tempfile
 from pathlib import Path
 
+from joe.model_cache import configure_model_cache
 from joe.pocket_tts_models import default_model_variant, is_model_variant_for_language
 
 DEFAULT_VOICE = "hf://kyutai/tts-voices/alba-mackenna/casual.wav"
@@ -26,6 +27,9 @@ class PocketTTSService:
         if not text.strip():
             raise ValueError("Digite algum texto antes de gerar o áudio.")
 
+        # Configure Hugging Face before importing Pocket TTS: both model weights
+        # and hf:// voice prompts are downloaded into the project-local cache.
+        configure_model_cache()
         try:
             import soundfile as sf
             import torch
@@ -83,6 +87,7 @@ class PocketTTSService:
         if destination.suffix.lower() != ".safetensors":
             raise ValueError("O estado de voz precisa ser salvo com a extensão .safetensors.")
 
+        configure_model_cache()
         try:
             from pocket_tts import export_model_state, TTSModel
         except ImportError as exc:
@@ -122,7 +127,6 @@ class PocketTTSService:
     def close(self) -> None:
         self._voice_states.clear()
         self._models.clear()
-
 
 
 def _write_wav_atomically(soundfile_module, samples, sample_rate: int, destination: Path) -> Path:

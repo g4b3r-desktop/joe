@@ -18,3 +18,4 @@ dist/
 *.m4a
 outputs/
 .cache/
+.models/

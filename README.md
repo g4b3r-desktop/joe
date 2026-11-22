@@ -193,7 +193,9 @@ A leitura da waveform e o processamento são executados em segundo plano. A wave
 
 ## Cache e privacidade
 
-Os modelos são baixados uma vez e armazenados nos caches padrão do Hugging Face/PyTorch. O áudio selecionado e os resultados permanecem na máquina. A seleção de um arquivo de voz para TTS só é usada localmente como condicionamento; não é enviado para uma API remota.
+No modo **Local**, os modelos e arquivos de voz do Pocket TTS são baixados automaticamente na primeira utilização e armazenados dentro da pasta do projeto: `.models/huggingface/` (com os pesos do Hub em `.models/huggingface/hub/`). Assim, os downloads acompanham a instalação do Joe e não se misturam ao cache global do Hugging Face do usuário. A pasta `.models/` é ignorada pelo Git e não será enviada ao GitHub. Para liberar espaço, feche o Joe e remova essa pasta; os modelos serão baixados novamente quando forem usados. No modo **Google Colab**, os downloads continuam no cache temporário do runtime do Colab.
+
+O áudio selecionado e os resultados permanecem na máquina. A seleção de um arquivo de voz para TTS só é usada localmente como condicionamento; não é enviado para uma API remota.
 
 ## Desenvolvimento e testes
 
