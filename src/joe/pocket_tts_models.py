@@ -2,6 +2,14 @@ from __future__ import annotations
 
 from typing import Final
 
+JAPANESE_MODEL_CONFIG: Final = "hf://takuma104/pocket-tts-ja-cc/japanese.yaml"
+JAPANESE_DEFAULT_VOICE: Final = "hf://takuma104/pocket-tts-ja-cc/voices/female_03.wav"
+
+# Japanese is a community model loaded through its YAML config, not a built-in language ID.
+MODEL_CONFIG_BY_VARIANT: Final[dict[str, str]] = {
+    "japanese": JAPANESE_MODEL_CONFIG,
+}
+
 # Tuples contain: Pocket TTS model identifier, UI label, and an explanatory tooltip.
 MODEL_VARIANTS_BY_LANGUAGE: Final[dict[str, tuple[tuple[str, str, str], ...]]] = {
     "portuguese": (
@@ -67,6 +75,16 @@ MODEL_VARIANTS_BY_LANGUAGE: Final[dict[str, tuple[tuple[str, str, str], ...]]] =
             "Variante ultracompacta de 1,9 M com ajuste adicional REFL.",
         ),
     ),
+    "japanese": (
+        (
+            "japanese",
+            "Japonês — experimental (compacto, 219 MB)",
+            "Modelo comunitário de 6 camadas, aproximadamente 110 milhões de parâmetros. "
+            "É carregado por configuração YAML e baixa os pesos no primeiro uso. "
+            "Ainda é experimental; a variante japonesa de 24 camadas não é oferecida aqui. "
+            "Créditos: takuma104 / Pocket TTS Japanese, licença CC BY 4.0.",
+        ),
+    ),
     "spanish": (
         ("spanish", "Padrão — Espanhol", "Versão padrão oficial do Pocket TTS para espanhol."),
         (
@@ -110,6 +128,21 @@ MODEL_VARIANTS_BY_LANGUAGE: Final[dict[str, tuple[tuple[str, str, str], ...]]] =
 }
 
 
+def model_loading_options(model_variant: str) -> dict[str, str]:
+    """Return the Pocket TTS loader arguments for a registered model variant."""
+    config = MODEL_CONFIG_BY_VARIANT.get(str(model_variant))
+    if config:
+        return {"config": config}
+    return {"language": str(model_variant)}
+
+
+def default_voice_for_language(language: str) -> str | None:
+    """Return a language-matched reference voice when the user has not chosen one."""
+    if str(language) == "japanese":
+        return JAPANESE_DEFAULT_VOICE
+    return None
+
+
 def default_model_variant(language: str) -> str:
     """Return the standard Pocket TTS model identifier for a supported language."""
     options = MODEL_VARIANTS_BY_LANGUAGE.get(str(language))
@@ -119,7 +152,7 @@ def default_model_variant(language: str) -> str:
 def model_variants_for_language(
     language: str,
 ) -> tuple[tuple[str, str, str], ...]:
-    """Return only the official model variants available for a language."""
+    """Return the model variants registered for a language."""
     return MODEL_VARIANTS_BY_LANGUAGE.get(str(language), ())
 
 

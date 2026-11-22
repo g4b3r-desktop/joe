@@ -170,3 +170,16 @@ def test_advanced_pronunciation_is_not_modified_by_automatic_rules():
     )
 
     assert result == "Qwen três ponto cinco usa gê pê u."
+
+
+
+def test_japanese_text_is_preserved_and_custom_dictionary_still_applies():
+    original = "今日は。2026年11月22日、価格は25%です。"
+    result = normalize_text_for_tts(
+        original,
+        language="japanese",
+        pronunciation_dictionary={"今日は": "こんにちは"},
+        apply_automatic=True,
+    )
+
+    assert result == "こんにちは。2026年11月22日、価格は25%です。"

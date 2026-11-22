@@ -17,6 +17,11 @@ import torch
 from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, UploadFile
 from fastapi.responses import Response
 from pocket_tts import TTSModel
+from pocket_tts_compat import (
+    SUPPORTED_TTS_MODEL_VARIANTS,
+    default_voice_for_language,
+    load_tts_model,
+)
 import os, torch
 torch.set_num_threads(os.cpu_count() or 2)
 
@@ -29,22 +34,6 @@ MAX_TEXT_CHARS = 20_000
 PARAKEET_MODEL_ID = "moondream/parakeet-redux"
 DEFAULT_VOICE = os.environ.get("JOE_TTS_DEFAULT_VOICE") or None
 USE_DRIVE_MODELS = os.environ.get("JOE_TTS_USE_DRIVE_MODELS") == "1"
-
-SUPPORTED_TTS_MODEL_VARIANTS = {
-    "portuguese": {"portuguese", "portuguese_24l"},
-    "english": {
-        "english", "english_2026-01", "english_2026-04", "english_2026-09",
-        "english_2026-09_2", "english_drifting_26-09",
-        "english_18m_2026-10", "english_18m_refl_2026-10",
-        "english_7m_2026-10", "english_7m_refl_2026-10",
-        "english_2m_2026-10", "english_2m_refl_2026-10",
-    },
-    "spanish": {"spanish", "spanish_24l"},
-    "french": {"french", "french_24l"},
-    "italian": {"italian", "italian_24l"},
-    "german": {"german", "german_24l"},
-    "dutch": {"dutch", "dutch_24l"},
-}
 
 app = FastAPI(
     title="Joe Colab Inference API",
@@ -100,15 +89,15 @@ def _get_tts_model(language: str, model_variant: str) -> Any:
         _tts_voice_states.clear()
         _tts_models.clear()
         local_config = os.environ.get("JOE_TTS_CONFIG_PATH")
-        if USE_DRIVE_MODELS and (
+        if language != "japanese" and USE_DRIVE_MODELS and (
             not local_config or not Path(local_config).expanduser().is_file()
         ):
             raise RuntimeError(
                 "O Pocket TTS está configurado para usar modelos do Google Drive, "
                 "mas a configuração local não foi aplicada."
             )
-        # The Drive YAML remains the Portuguese default. Other official variants
-        # are loaded directly by their documented Pocket TTS identifiers.
+        # The Drive YAML remains the Portuguese default. Japanese is a community
+        # model and is loaded from its published YAML; built-in variants use IDs.
         if local_config and language == "portuguese" and model_variant == "portuguese":
             config_path = Path(local_config).expanduser()
             if not config_path.is_file():
@@ -117,7 +106,9 @@ def _get_tts_model(language: str, model_variant: str) -> Any:
                 )
             model = TTSModel.load_model(config=str(config_path), quantize=False)
         else:
-            model = TTSModel.load_model(language=model_variant, quantize=False)
+            model = load_tts_model(
+                TTSModel, language, model_variant, quantize=False
+            )
         _tts_models[model_variant] = model
     return model
 
@@ -125,7 +116,7 @@ def _get_tts_model(language: str, model_variant: str) -> Any:
 def _generate_tts(
     text: str, language: str, model_variant: str, voice_file: str | None
 ) -> bytes:
-    voice_source = voice_file or DEFAULT_VOICE
+    voice_source = voice_file or default_voice_for_language(language, DEFAULT_VOICE)
     if not voice_source:
         raise RuntimeError(
             "Nenhuma voz de referência local foi configurada. "

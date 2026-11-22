@@ -4,7 +4,12 @@ import tempfile
 from pathlib import Path
 
 from joe.model_cache import configure_model_cache
-from joe.pocket_tts_models import default_model_variant, is_model_variant_for_language
+from joe.pocket_tts_models import (
+    default_model_variant,
+    default_voice_for_language,
+    is_model_variant_for_language,
+    model_loading_options,
+)
 
 DEFAULT_VOICE = "hf://kyutai/tts-voices/alba-mackenna/casual.wav"
 
@@ -56,10 +61,12 @@ class PocketTTSService:
             # Keep only the active variant loaded to bound RAM on desktop systems.
             self._voice_states.clear()
             self._models.clear()
-            model = TTSModel.load_model(language=model_variant, quantize=True)
+            model = TTSModel.load_model(**model_loading_options(model_variant), quantize=True)
             self._models[model_variant] = model
 
-        voice_source = str(voice_path) if voice_path else DEFAULT_VOICE
+        voice_source = str(voice_path) if voice_path else (
+            default_voice_for_language(language) or DEFAULT_VOICE
+        )
         state_key = (model_variant, voice_source)
         voice_state = self._voice_states.get(state_key)
         if voice_state is None:
@@ -108,7 +115,7 @@ class PocketTTSService:
             )
         model = self._models.get(model_variant)
         if model is None:
-            model = TTSModel.load_model(language=model_variant, quantize=True)
+            model = TTSModel.load_model(**model_loading_options(model_variant), quantize=True)
             self._models[model_variant] = model
 
         source_key = str(source.resolve())

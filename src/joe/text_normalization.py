@@ -324,6 +324,11 @@ def normalize_text_for_tts(
     if not text:
         return text
 
+    # The experimental Japanese model expects native kanji/kana input. Avoid
+    # European-language number/date/currency expansion, but keep custom rules.
+    if language == "japanese":
+        apply_automatic = False
+
     normalized, advanced_protected = protect_pronunciation_rules(
         text, pronunciation_rules, language
     )

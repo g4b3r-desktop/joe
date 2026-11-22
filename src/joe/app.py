@@ -1591,6 +1591,7 @@ class JoeWindow(QMainWindow):
         self.tts_language.addItem("Italiano", "italian")
         self.tts_language.addItem("Alemão", "german")
         self.tts_language.addItem("Neerlandês", "dutch")
+        self.tts_language.addItem("Japonês (experimental)", "japanese")
         saved_language = str(self.app_settings.value("tts_language", "portuguese"))
         language_index = self.tts_language.findData(saved_language)
         self.tts_language.setCurrentIndex(max(0, language_index))
@@ -1613,7 +1614,7 @@ class JoeWindow(QMainWindow):
 
         self.tts_model_variant = QComboBox()
         self.tts_model_variant.setToolTip(
-            "Escolha a variante oficial do Pocket TTS usada nas próximas gerações."
+            "Escolha a variante do Pocket TTS usada nas próximas gerações."
         )
         self.tts_model_variant.currentIndexChanged.connect(self._save_tts_model_variant)
         self.tts_model_variant_info = QLabel()
@@ -2666,7 +2667,7 @@ class JoeWindow(QMainWindow):
             ("Português", "portuguese"), ("Inglês", "english"),
             ("Espanhol", "spanish"), ("Francês", "french"),
             ("Italiano", "italian"), ("Alemão", "german"),
-            ("Neerlandês", "dutch"),
+            ("Neerlandês", "dutch"), ("Japonês", "japanese"),
         ):
             language.addItem(label, code)
         language.setCurrentIndex(max(0, language.findData(current.get("language", "all"))))
@@ -2761,6 +2762,7 @@ class JoeWindow(QMainWindow):
             "all": "Todos", "portuguese": "Português", "english": "Inglês",
             "spanish": "Espanhol", "french": "Francês", "italian": "Italiano",
             "german": "Alemão", "dutch": "Neerlandês",
+            "japanese": "Japonês",
         }
         mode_labels = {
             "word": "Palavra inteira", "phrase": "Expressão",
