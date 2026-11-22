@@ -3079,7 +3079,11 @@ class JoeWindow(QMainWindow):
         )
 
     def _benchmark_tts_performance(self) -> None:
-        if self.active_worker is not None or self.active_generation_worker is not None:
+        if (
+            self.active_worker is not None
+            or self.active_generation_worker is not None
+            or self.clipboard_generation_worker is not None
+        ):
             QMessageBox.information(
                 self,
                 "Joe ocupado",
@@ -3093,7 +3097,15 @@ class JoeWindow(QMainWindow):
         selected_voice = self.voice_path.text().strip() or None
         source_text = self.tts_text.toPlainText().strip()
         if source_text:
-            prepared_text = self._prepared_speech_text(source_text, language)
+            try:
+                prepared_text = self._prepared_speech_text(source_text, language)
+            except Exception as exc:  # noqa: BLE001
+                QMessageBox.warning(
+                    self,
+                    "Não foi possível preparar o texto",
+                    f"Revise as opções de pronúncia antes de comparar o desempenho.\n\n{exc}",
+                )
+                return
             chunks = split_text_into_chunks(prepared_text, max_chars=280)
             sample_text = chunks[0] if chunks else ""
         else:
