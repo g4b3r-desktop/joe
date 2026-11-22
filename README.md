@@ -62,7 +62,7 @@ Consulte [as limitações oficiais do Colab](https://research.google.com/colabor
 
 O aplicativo foi pensado para Linux desktop e também pode ser executado em Windows/macOS com Python compatível.
 
-**Perfil de referência: Linux Mint, Core i5-2400, 16 GB RAM e RTX 3060.** O Pocket TTS roda na CPU. Para ASR, o Joe oferece seleção explícita entre CPU e NVIDIA GPU. No modo CPU, usa Photon se o processador for compatível; caso contrário, usa Transformers. No modo CUDA, usa a implementação de referência Transformers em FP16 quando a build CUDA do PyTorch está instalada.
+**Perfil de referência: Linux Mint, Core i5-2400, 16 GB RAM e RTX 3060.** O Pocket TTS permite escolher CPU ou NVIDIA GPU (CUDA) nas configurações de Texto → Áudio. A CPU usa quantização dinâmica INT8; CUDA move o modelo para a GPU sem essa quantização. Também é possível ajustar a quantidade de threads usadas pelo PyTorch na CPU. A comparação **Comparar CPU × CUDA** executa o mesmo texto, modelo e voz nos dois dispositivos e mostra separadamente o carregamento do modelo, preparação da voz, tempo médio de geração, velocidade em tempo real e pico de VRAM. O resultado depende do modelo e do hardware; CUDA não é necessariamente mais rápida em todos os computadores. Para ASR, o Joe oferece seleção independente entre CPU e NVIDIA GPU. No modo CPU, usa Photon se o processador for compatível; caso contrário, usa Transformers. No modo CUDA, usa a implementação de referência Transformers em FP16 quando a build CUDA do PyTorch está instalada.
 
 A implementação Photon do Parakeet Redux usa kernels AVX-512 VNNI em x86. O i5-2400 oferece AVX, mas não AVX-512; por isso, selecione NVIDIA GPU (CUDA) para usar a RTX 3060. O modelo também documenta execução em CUDA com FP16. O modo CPU é útil quando outros modelos já estão ocupando VRAM.
 
@@ -111,7 +111,7 @@ bash scripts/install-desktop.sh --uninstall
 
 O lançador chama o `run.sh` da pasta onde o repositório foi instalado, usando o ambiente virtual `.venv`. Se você mover a pasta do Joe, execute novamente `bash scripts/install-desktop.sh` para atualizar o caminho do `joe.desktop`.
 
-O Pocket TTS continua na CPU. Na aba Áudio → Texto, selecione **NVIDIA GPU (CUDA)** para usar a RTX; escolha **CPU (preserva a VRAM)** quando estiver executando outros modelos. A instalação CUDA ocupa mais espaço em disco.
+Para o **Parakeet (Áudio → Texto)**, selecione **NVIDIA GPU (CUDA)** para usar a RTX; escolha **CPU (preserva a VRAM)** quando estiver executando outros modelos. Para o **Pocket TTS (Texto → Áudio)**, abra **Configurações → Hardware e desempenho do Pocket TTS** para alternar entre CPU e CUDA e ajustar as threads da CPU. A instalação CUDA ocupa mais espaço em disco.
 
 Inicie:
 
