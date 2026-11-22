@@ -1787,14 +1787,14 @@ class JoeWindow(QMainWindow):
         hardware_group = QGroupBox("Hardware e desempenho do Pocket TTS")
         hardware_form = QFormLayout(hardware_group)
         self.tts_device = QComboBox()
-        self.tts_device.addItem("CPU (INT8 — preserva a VRAM)", "cpu")
+        self.tts_device.addItem("CPU (processador)", "cpu")
         self.tts_device.addItem("NVIDIA GPU (CUDA — usa VRAM)", "cuda")
         saved_tts_device = str(self.app_settings.value("tts_device", "cpu"))
         saved_device_index = self.tts_device.findData(saved_tts_device)
         self.tts_device.setCurrentIndex(max(0, saved_device_index))
         self.tts_device.setToolTip(
-            "CPU usa quantização INT8. CUDA move o modelo para a NVIDIA GPU e desativa "
-            "a quantização INT8, que não é compatível com esse caminho."
+            "Na CPU, você pode ativar ou desativar a quantização INT8 abaixo. "
+            "Na CUDA, o Pocket TTS usa pesos sem quantização INT8."
         )
 
         self.tts_cpu_threads = QSpinBox()
