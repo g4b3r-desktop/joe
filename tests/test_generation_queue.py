@@ -157,3 +157,19 @@ def test_queue_snapshots_selected_model_variant():
     )
 
     assert task.model_variant == "portuguese_24l"
+
+
+
+def test_queue_snapshots_tts_compute_device_and_cpu_threads():
+    queue = GenerationQueue()
+    task = queue.enqueue(
+        text="Olá",
+        speech_text="Olá",
+        language="portuguese",
+        output_path="/tmp/hello.wav",
+        tts_device="cuda",
+        cpu_threads=4,
+    )
+
+    assert task.tts_device == "cuda"
+    assert task.cpu_threads == 4
