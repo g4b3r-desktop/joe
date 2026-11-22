@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import shutil
 import sqlite3
 from dataclasses import dataclass
@@ -23,6 +24,7 @@ class AudioHistoryEntry:
     realtime_speed: float
     backend: str
     text_content: str | None
+    generation_settings_json: str
 
     @property
     def voice_label(self) -> str:
@@ -64,7 +66,8 @@ class AudioHistoryStore:
                     generation_seconds REAL NOT NULL DEFAULT 0,
                     realtime_speed REAL NOT NULL DEFAULT 0,
                     backend TEXT NOT NULL DEFAULT 'Local',
-                    text_content TEXT
+                    text_content TEXT,
+                    generation_settings_json TEXT NOT NULL DEFAULT ''
                 )
                 """
             )
@@ -75,6 +78,11 @@ class AudioHistoryStore:
             if "model_variant" not in columns:
                 connection.execute(
                     "ALTER TABLE audio_history ADD COLUMN model_variant TEXT NOT NULL DEFAULT ''"
+                )
+            if "generation_settings_json" not in columns:
+                connection.execute(
+                    "ALTER TABLE audio_history ADD COLUMN generation_settings_json "
+                    "TEXT NOT NULL DEFAULT ''"
                 )
             connection.execute(
                 "CREATE INDEX IF NOT EXISTS idx_audio_history_created_at "
@@ -102,6 +110,7 @@ class AudioHistoryStore:
             realtime_speed=float(row["realtime_speed"]),
             backend=str(row["backend"]),
             text_content=row["text_content"],
+            generation_settings_json=str(row["generation_settings_json"] or ""),
         )
 
     def add_generated_audio(
@@ -116,6 +125,7 @@ class AudioHistoryStore:
         model_variant: str = "",
         backend: str = "Local",
         text_content: str | None = None,
+        generation_settings: dict[str, object] | None = None,
         created_at: datetime | None = None,
     ) -> AudioHistoryEntry:
         path = Path(audio_path).expanduser().resolve(strict=True)
@@ -142,6 +152,9 @@ class AudioHistoryStore:
             if str(backend).casefold() in remote_sources
             else "Local"
         )
+        settings_json = json.dumps(
+            generation_settings or {}, ensure_ascii=False, sort_keys=True
+        )
 
         with self._connect() as connection:
             connection.execute(
@@ -149,8 +162,8 @@ class AudioHistoryStore:
                 INSERT INTO audio_history (
                     audio_path, file_name, created_at, duration_seconds, size_bytes,
                     voice_path, voice_alias, language, model_variant, generation_seconds,
-                    realtime_speed, backend, text_content
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    realtime_speed, backend, text_content, generation_settings_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(audio_path) DO UPDATE SET
                     file_name=excluded.file_name,
                     created_at=excluded.created_at,
@@ -163,7 +176,8 @@ class AudioHistoryStore:
                     generation_seconds=excluded.generation_seconds,
                     realtime_speed=excluded.realtime_speed,
                     backend=excluded.backend,
-                    text_content=excluded.text_content
+                    text_content=excluded.text_content,
+                    generation_settings_json=excluded.generation_settings_json
                 """,
                 (
                     str(path),
@@ -179,6 +193,7 @@ class AudioHistoryStore:
                     speed,
                     source,
                     text_content,
+                    settings_json,
                 ),
             )
             row = connection.execute(
