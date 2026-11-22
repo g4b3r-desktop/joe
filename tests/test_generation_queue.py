@@ -52,9 +52,9 @@ def test_failed_task_preserves_multiline_error_diagnostics():
     task = add(queue, "voice")
     queue.start(task.task_id)
     diagnostic = (
-        "Falha ao gerar o arquivo voice.wav.\\n"
-        "Erro: RuntimeError: falha no modelo\\n\\n"
-        "Traceback técnico:\\nTraceback (most recent call last): ..."
+        "Falha ao gerar o arquivo voice.wav.\n"
+        "Erro: RuntimeError: falha no modelo\n\n"
+        "Traceback técnico:\nTraceback (most recent call last): ..."
     )
 
     queue.fail(task.task_id, diagnostic)
