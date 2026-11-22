@@ -18,6 +18,7 @@ class GenerationTask:
     tts_device: str = "cpu"
     cpu_threads: int = 2
     tts_quantization: bool = True
+    tts_profile: str = "custom"
     voice_path: str | None = None
     voice_alias: str = ""
     remote: bool = False
@@ -58,6 +59,7 @@ class GenerationQueue:
         tts_device: str = "cpu",
         cpu_threads: int = 2,
         tts_quantization: bool = True,
+        tts_profile: str = "custom",
         voice_path: str | None = None,
         voice_alias: str = "",
         remote: bool = False,
@@ -82,6 +84,7 @@ class GenerationQueue:
             tts_device=tts_device,
             cpu_threads=int(cpu_threads),
             tts_quantization=bool(tts_quantization),
+            tts_profile=str(tts_profile or "custom"),
             voice_path=voice_path,
             voice_alias=voice_alias,
             remote=remote,
