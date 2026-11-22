@@ -18,6 +18,7 @@ class AudioHistoryEntry:
     voice_path: str
     voice_alias: str
     language: str
+    model_variant: str
     generation_seconds: float
     realtime_speed: float
     backend: str
@@ -59,6 +60,7 @@ class AudioHistoryStore:
                     voice_path TEXT NOT NULL DEFAULT '',
                     voice_alias TEXT NOT NULL DEFAULT '',
                     language TEXT NOT NULL DEFAULT '',
+                    model_variant TEXT NOT NULL DEFAULT '',
                     generation_seconds REAL NOT NULL DEFAULT 0,
                     realtime_speed REAL NOT NULL DEFAULT 0,
                     backend TEXT NOT NULL DEFAULT 'Local',
@@ -66,6 +68,14 @@ class AudioHistoryStore:
                 )
                 """
             )
+            columns = {
+                str(row["name"])
+                for row in connection.execute("PRAGMA table_info(audio_history)")
+            }
+            if "model_variant" not in columns:
+                connection.execute(
+                    "ALTER TABLE audio_history ADD COLUMN model_variant TEXT NOT NULL DEFAULT ''"
+                )
             connection.execute(
                 "CREATE INDEX IF NOT EXISTS idx_audio_history_created_at "
                 "ON audio_history(created_at DESC)"
@@ -87,6 +97,7 @@ class AudioHistoryStore:
             voice_path=str(row["voice_path"]),
             voice_alias=str(row["voice_alias"]),
             language=str(row["language"]),
+            model_variant=str(row["model_variant"]),
             generation_seconds=float(row["generation_seconds"]),
             realtime_speed=float(row["realtime_speed"]),
             backend=str(row["backend"]),
@@ -102,6 +113,7 @@ class AudioHistoryStore:
         voice_path: str | Path | None = None,
         voice_alias: str = "",
         language: str = "",
+        model_variant: str = "",
         backend: str = "Local",
         text_content: str | None = None,
         created_at: datetime | None = None,
@@ -136,9 +148,9 @@ class AudioHistoryStore:
                 """
                 INSERT INTO audio_history (
                     audio_path, file_name, created_at, duration_seconds, size_bytes,
-                    voice_path, voice_alias, language, generation_seconds,
+                    voice_path, voice_alias, language, model_variant, generation_seconds,
                     realtime_speed, backend, text_content
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(audio_path) DO UPDATE SET
                     file_name=excluded.file_name,
                     created_at=excluded.created_at,
@@ -147,6 +159,7 @@ class AudioHistoryStore:
                     voice_path=excluded.voice_path,
                     voice_alias=excluded.voice_alias,
                     language=excluded.language,
+                    model_variant=excluded.model_variant,
                     generation_seconds=excluded.generation_seconds,
                     realtime_speed=excluded.realtime_speed,
                     backend=excluded.backend,
@@ -161,6 +174,7 @@ class AudioHistoryStore:
                     voice,
                     alias,
                     language,
+                    str(model_variant or "").strip(),
                     elapsed,
                     speed,
                     source,

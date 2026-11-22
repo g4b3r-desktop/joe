@@ -126,17 +126,17 @@ class AudioHistoryPanel(QWidget):
         advanced_filters.addStretch(1)
         layout.addLayout(advanced_filters)
 
-        self.table = QTableWidget(0, 8)
+        self.table = QTableWidget(0, 9)
         self.table.setHorizontalHeaderLabels([
             "Arquivo", "Data", "Duração", "Tamanho",
-            "Voz", "Tempo de geração", "Velocidade", "Origem",
+            "Voz", "Modelo TTS", "Tempo de geração", "Velocidade", "Origem",
         ])
         self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.table.verticalHeader().setVisible(False)
         self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
-        for column in range(1, 8):
+        for column in range(1, 9):
             self.table.horizontalHeader().setSectionResizeMode(
                 column, QHeaderView.ResizeMode.ResizeToContents
             )
@@ -268,6 +268,7 @@ class AudioHistoryPanel(QWidget):
                 format_duration(entry.duration_seconds),
                 self._format_size(entry.size_bytes),
                 entry.voice_label,
+                entry.model_variant or "Padrão",
                 format_duration(entry.generation_seconds),
                 speed,
                 entry.source_label,

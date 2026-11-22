@@ -33,6 +33,7 @@ def test_add_and_read_metadata_without_storing_text_by_default(tmp_path):
     assert entry.generation_seconds == 5
     assert entry.realtime_speed == 4
     assert entry.voice_label == "Narradora"
+    assert entry.model_variant == ""
     assert entry.source_label == "Google Colab"
     assert entry.text_content is None
     assert store.get(entry.id) == entry
@@ -208,3 +209,51 @@ def test_clear_text_content_is_idempotent(tmp_path):
 
     assert store.count_text_entries() == 0
     assert store.clear_text_content() == 0
+
+
+def test_audio_history_stores_the_selected_model_variant(tmp_path):
+    audio = make_audio(tmp_path / "model-choice.wav")
+    store = AudioHistoryStore(tmp_path / "history.sqlite3")
+
+    entry = store.add_generated_audio(
+        audio,
+        duration_seconds=12,
+        generation_seconds=4,
+        language="portuguese",
+        model_variant="portuguese_24l",
+    )
+
+    assert entry.model_variant == "portuguese_24l"
+    assert store.get(entry.id).model_variant == "portuguese_24l"
+
+
+def test_existing_history_database_is_migrated_with_default_model_variant(tmp_path):
+    import sqlite3
+
+    database = tmp_path / "legacy.sqlite3"
+    with sqlite3.connect(database) as connection:
+        connection.execute(
+            """
+            CREATE TABLE audio_history (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                audio_path TEXT NOT NULL UNIQUE,
+                file_name TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                duration_seconds REAL NOT NULL DEFAULT 0,
+                size_bytes INTEGER NOT NULL DEFAULT 0,
+                voice_path TEXT NOT NULL DEFAULT '',
+                voice_alias TEXT NOT NULL DEFAULT '',
+                language TEXT NOT NULL DEFAULT '',
+                generation_seconds REAL NOT NULL DEFAULT 0,
+                realtime_speed REAL NOT NULL DEFAULT 0,
+                backend TEXT NOT NULL DEFAULT 'Local',
+                text_content TEXT
+            )
+            """
+        )
+
+    store = AudioHistoryStore(database)
+    audio = make_audio(tmp_path / "legacy-new.wav")
+    entry = store.add_generated_audio(audio, duration_seconds=2, generation_seconds=1)
+
+    assert entry.model_variant == ""

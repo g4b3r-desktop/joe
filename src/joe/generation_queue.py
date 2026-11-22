@@ -14,6 +14,7 @@ class GenerationTask:
     speech_text: str = field(repr=False)
     language: str
     output_path: str
+    model_variant: str = ""
     voice_path: str | None = None
     voice_alias: str = ""
     remote: bool = False
@@ -50,6 +51,7 @@ class GenerationQueue:
         speech_text: str,
         language: str,
         output_path: str,
+        model_variant: str | None = None,
         voice_path: str | None = None,
         voice_alias: str = "",
         remote: bool = False,
@@ -66,6 +68,7 @@ class GenerationQueue:
             speech_text=speech_text,
             language=language,
             output_path=output_path,
+            model_variant=model_variant or language,
             voice_path=voice_path,
             voice_alias=voice_alias,
             remote=remote,

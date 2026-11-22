@@ -78,6 +78,11 @@ from joe.pronunciation_dictionary import (
 from joe.services.colab_api import ColabAPIClient, ColabAPIError
 from joe.services.parakeet import ParakeetReduxService
 from joe.services.pocket_tts import PocketTTSService
+from joe.pocket_tts_models import (
+    default_model_variant,
+    is_model_variant_for_language,
+    model_variants_for_language,
+)
 from joe.text_normalization import normalize_text_for_tts
 from joe.pronunciation_rules import (
     load_pronunciation_rules,
@@ -279,6 +284,7 @@ class TTSGenerationWorker(QRunnable):
                                     self.task.language,
                                     self.task.voice_path,
                                     cancel_event=self.cancel_event,
+                                    model_variant=self.task.model_variant,
                                 )
                                 if self.cancel_event.is_set():
                                     self.signals.cancelled.emit(self.task.task_id)
@@ -290,6 +296,7 @@ class TTSGenerationWorker(QRunnable):
                                     self.task.language,
                                     chunk_path,
                                     self.task.voice_path,
+                                    self.task.model_variant,
                                 )
                             if not chunk_path.is_file() or chunk_path.stat().st_size == 0:
                                 raise RuntimeError("O serviço TTS não produziu um WAV válido.")
@@ -1587,11 +1594,33 @@ class JoeWindow(QMainWindow):
         saved_language = str(self.app_settings.value("tts_language", "portuguese"))
         language_index = self.tts_language.findData(saved_language)
         self.tts_language.setCurrentIndex(max(0, language_index))
-        self.tts_language.currentIndexChanged.connect(
-            lambda: self.app_settings.setValue(
-                "tts_language", self.tts_language.currentData()
-            )
+
+        raw_model_preferences = self.app_settings.value("tts_model_variants", "{}")
+        try:
+            self._tts_model_preferences = json.loads(str(raw_model_preferences))
+        except (TypeError, ValueError):
+            self._tts_model_preferences = {}
+        if not isinstance(self._tts_model_preferences, dict):
+            self._tts_model_preferences = {}
+        saved_model_variant = str(
+            self.app_settings.value("tts_model_variant", default_model_variant(saved_language))
         )
+        if (
+            saved_language not in self._tts_model_preferences
+            and is_model_variant_for_language(saved_language, saved_model_variant)
+        ):
+            self._tts_model_preferences[saved_language] = saved_model_variant
+
+        self.tts_model_variant = QComboBox()
+        self.tts_model_variant.setToolTip(
+            "Escolha a variante oficial do Pocket TTS usada nas próximas gerações."
+        )
+        self.tts_model_variant.currentIndexChanged.connect(self._save_tts_model_variant)
+        self.tts_model_variant_info = QLabel()
+        self.tts_model_variant_info.setObjectName("muted")
+        self.tts_model_variant_info.setWordWrap(True)
+        self._refresh_tts_model_variants()
+        self.tts_language.currentIndexChanged.connect(self._on_tts_language_changed)
 
         self.voice_path = QLineEdit(str(self.app_settings.value("voice_path", "")))
         self.voice_path.setReadOnly(True)
@@ -1641,6 +1670,8 @@ class JoeWindow(QMainWindow):
         voice_group = QGroupBox("Idioma e voz")
         voice_form = QFormLayout(voice_group)
         voice_form.addRow("Idioma da fala", self.tts_language)
+        voice_form.addRow("Versão do Pocket TTS", self.tts_model_variant)
+        voice_form.addRow("Detalhes da versão", self.tts_model_variant_info)
         voice_form.addRow("Pasta da biblioteca", library_row)
         voice_form.addRow("Voz padrão / referência", voice_row)
         settings_layout.addWidget(voice_group)
@@ -1837,6 +1868,7 @@ class JoeWindow(QMainWindow):
             "name": name,
             "voice_path": self.voice_path.text().strip(),
             "language": str(self.tts_language.currentData() or "portuguese"),
+            "model_variant": str(self.tts_model_variant.currentData() or "portuguese"),
             "normalization_enabled": self.tts_normalization_enabled.isChecked(),
         }
         self._save_voice_profiles()
@@ -1854,6 +1886,9 @@ class JoeWindow(QMainWindow):
         language_index = self.tts_language.findData(profile["language"])
         if language_index >= 0:
             self.tts_language.setCurrentIndex(language_index)
+        model_index = self.tts_model_variant.findData(profile.get("model_variant", ""))
+        if model_index >= 0:
+            self.tts_model_variant.setCurrentIndex(model_index)
         self.tts_normalization_enabled.setChecked(
             profile["normalization_enabled"]
         )
@@ -2015,6 +2050,7 @@ class JoeWindow(QMainWindow):
         language: str,
         backend: str,
         original_text: str,
+        model_variant: str = "",
     ) -> None:
         try:
             duration = (
@@ -2040,6 +2076,7 @@ class JoeWindow(QMainWindow):
                 voice_path=voice_path,
                 voice_alias=voice_alias,
                 language=language,
+                model_variant=model_variant,
                 backend=backend,
                 text_content=stored_text,
             )
@@ -2060,6 +2097,7 @@ class JoeWindow(QMainWindow):
             voice_path=task.voice_path,
             voice_alias=task.voice_alias,
             language=task.language,
+            model_variant=task.model_variant,
             backend="Google Colab" if task.remote else "Local",
             original_text=task.text,
         )
@@ -2072,6 +2110,7 @@ class JoeWindow(QMainWindow):
         language: str,
         voice_path: str | None,
         remote: bool,
+        model_variant: str = "",
     ) -> None:
         voice_key = canonical_voice_path(voice_path) if voice_path else ""
         voice_alias = self.favorite_voices.get(
@@ -2086,6 +2125,7 @@ class JoeWindow(QMainWindow):
             language=language,
             backend="Google Colab" if remote else "Local",
             original_text=copied_text,
+            model_variant=model_variant,
         )
 
     def _build_asr_tab(self) -> QWidget:
@@ -2806,6 +2846,55 @@ class JoeWindow(QMainWindow):
             self.pronunciation_rules = rules
             self._save_advanced_pronunciation_rules()
 
+
+    def _refresh_tts_model_variants(self) -> None:
+        language = str(self.tts_language.currentData() or "portuguese")
+        preferred = str(
+            self._tts_model_preferences.get(language, default_model_variant(language))
+        )
+        options = model_variants_for_language(language)
+        self.tts_model_variant.blockSignals(True)
+        self.tts_model_variant.clear()
+        for variant, label, description in options:
+            self.tts_model_variant.addItem(label, variant)
+            self.tts_model_variant.setItemData(
+                self.tts_model_variant.count() - 1,
+                description,
+                Qt.ItemDataRole.ToolTipRole,
+            )
+        selected = self.tts_model_variant.findData(preferred)
+        if selected < 0:
+            selected = self.tts_model_variant.findData(default_model_variant(language))
+        self.tts_model_variant.setCurrentIndex(max(0, selected))
+        self.tts_model_variant.blockSignals(False)
+        self._save_tts_model_variant()
+
+    def _save_tts_model_variant(self, *_args) -> None:
+        if not hasattr(self, "tts_model_variant"):
+            return
+        language = str(self.tts_language.currentData() or "portuguese")
+        variant = str(
+            self.tts_model_variant.currentData() or default_model_variant(language)
+        )
+        description = ""
+        for candidate, _label, details in model_variants_for_language(language):
+            if candidate == variant:
+                description = details
+                break
+        self.tts_model_variant_info.setText(description)
+        self.tts_model_variant.setToolTip(description)
+        self._tts_model_preferences[language] = variant
+        self.app_settings.setValue("tts_model_variant", variant)
+        self.app_settings.setValue(
+            "tts_model_variants",
+            json.dumps(self._tts_model_preferences, ensure_ascii=False, sort_keys=True),
+        )
+
+    def _on_tts_language_changed(self, *_args) -> None:
+        language = str(self.tts_language.currentData() or "portuguese")
+        self.app_settings.setValue("tts_language", language)
+        self._refresh_tts_model_variants()
+
     def _save_tts_output_settings(self, *_args) -> None:
         if not hasattr(self, "tts_output_directory"):
             return
@@ -2917,9 +3006,12 @@ class JoeWindow(QMainWindow):
             output += ".safetensors"
         destination = Path(output).expanduser()
         language = str(self.tts_language.currentData())
+        model_variant = str(self.tts_model_variant.currentData() or language)
 
         def export() -> Path:
-            return self.tts.export_voice_state(source, destination, language)
+            return self.tts.export_voice_state(
+                source, destination, language, model_variant
+            )
 
         def completed(result: object) -> None:
             saved = Path(result)
@@ -3108,6 +3200,7 @@ class JoeWindow(QMainWindow):
             return
 
         language = str(self.tts_language.currentData())
+        model_variant = str(self.tts_model_variant.currentData() or language)
         try:
             speech_text = self._prepared_speech_text(copied_text, language)
             remote = (
@@ -3140,13 +3233,15 @@ class JoeWindow(QMainWindow):
 
         if remote is not None:
             def generate_clipboard_chunk(chunk_text: str, output_path: Path) -> Path:
-                audio_data = remote.generate_audio(chunk_text, language, voice)
+                audio_data = remote.generate_audio(
+                    chunk_text, language, voice, model_variant=model_variant
+                )
                 write_bytes_atomically(output_path, audio_data)
                 return output_path
         else:
             def generate_clipboard_chunk(chunk_text: str, output_path: Path) -> Path:
                 return self.tts.generate(
-                    chunk_text, language, str(output_path), voice
+                    chunk_text, language, str(output_path), voice, model_variant
                 )
 
         dialog = ClipboardAudioDialog(
@@ -3166,6 +3261,7 @@ class JoeWindow(QMainWindow):
                 language,
                 voice,
                 remote is not None,
+                model_variant,
             )
         )
         self.clipboard_audio_window = dialog
@@ -3301,6 +3397,7 @@ class JoeWindow(QMainWindow):
                 return
 
         language = str(self.tts_language.currentData())
+        model_variant = str(self.tts_model_variant.currentData() or language)
         try:
             speech_text = self._prepared_speech_text(text, language)
         except Exception as exc:  # noqa: BLE001
@@ -3329,6 +3426,7 @@ class JoeWindow(QMainWindow):
                 speech_text=speech_text,
                 language=language,
                 output_path=str(destination),
+                model_variant=model_variant,
                 voice_path=selected_voice,
                 voice_alias=selected_voice_alias,
                 remote=remote,
@@ -3812,6 +3910,7 @@ class JoeWindow(QMainWindow):
             self.tts_favorites_button,
             self.tts_settings_button,
             self.tts_language,
+            self.tts_model_variant,
             self.clipboard_chunk_size,
             self.voice_path,
             self.voice_button,

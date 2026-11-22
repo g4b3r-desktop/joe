@@ -42,3 +42,82 @@ def test_failed_wav_write_preserves_previous_audio_and_cleans_temp_file(tmp_path
 
     assert destination.read_bytes() == b"old audio"
     assert sorted(path.name for path in tmp_path.iterdir()) == ["audio.wav"]
+
+
+def test_model_catalog_exposes_variants_by_language():
+    from joe.pocket_tts_models import (
+        default_model_variant,
+        is_model_variant_for_language,
+        model_variants_for_language,
+    )
+
+    assert default_model_variant("portuguese") == "portuguese"
+    assert is_model_variant_for_language("portuguese", "portuguese_24l")
+    assert not is_model_variant_for_language("portuguese", "english_7m_2026-10")
+    assert {option[0] for option in model_variants_for_language("english")} >= {
+        "english",
+        "english_18m_2026-10",
+        "english_7m_refl_2026-10",
+        "english_2m_2026-10",
+        "english_drifting_26-09",
+    }
+
+
+def test_generate_uses_the_selected_model_variant(monkeypatch, tmp_path):
+    import sys
+    from types import SimpleNamespace
+
+    from joe.services.pocket_tts import PocketTTSService
+
+    loaded = []
+
+    class FakeAudio:
+        def detach(self):
+            return self
+
+        def cpu(self):
+            return self
+
+        def numpy(self):
+            return [0.0, 0.1, -0.1]
+
+    class FakeModel:
+        sample_rate = 24_000
+
+        def get_state_for_audio_prompt(self, _voice):
+            return object()
+
+        def generate_audio(self, _state, _text):
+            return FakeAudio()
+
+    class FakeTTSModel:
+        @staticmethod
+        def load_model(*, language, quantize):
+            loaded.append((language, quantize))
+            return FakeModel()
+
+    class FakeSoundFile:
+        @staticmethod
+        def write(path, _samples, _rate, subtype):
+            assert subtype == "PCM_16"
+            Path(path).write_bytes(b"fake wav")
+
+        @staticmethod
+        def info(_path):
+            return SimpleNamespace(frames=3, samplerate=24_000)
+
+    monkeypatch.setitem(sys.modules, "torch", SimpleNamespace(set_num_threads=lambda _n: None))
+    monkeypatch.setitem(sys.modules, "soundfile", FakeSoundFile)
+    monkeypatch.setitem(sys.modules, "pocket_tts", SimpleNamespace(TTSModel=FakeTTSModel))
+
+    service = PocketTTSService()
+    destination = tmp_path / "variant.wav"
+    service.generate(
+        "Olá",
+        "portuguese",
+        destination,
+        model_variant="portuguese_24l",
+    )
+
+    assert loaded == [("portuguese_24l", True)]
+    assert destination.read_bytes() == b"fake wav"

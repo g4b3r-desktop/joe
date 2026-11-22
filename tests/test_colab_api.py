@@ -138,3 +138,32 @@ def test_colab_job_polling_stops_when_remote_reports_cancelled(monkeypatch):
         client._wait_for_result("job-123", job_timeout=1)
 
     assert error.value.cancelled
+
+
+def test_colab_client_sends_selected_pocket_tts_model_variant(monkeypatch):
+    import httpx
+
+    client = ColabAPIClient("https://example.trycloudflare.com", "x" * 40)
+    submitted = {}
+
+    def request(_method, _endpoint, **kwargs):
+        submitted.update(kwargs["data"])
+        return httpx.Response(202, json={"job_id": "job-model-variant"})
+
+    monkeypatch.setattr(client, "_request", request)
+    monkeypatch.setattr(
+        client,
+        "_wait_for_result",
+        lambda *_args, **_kwargs: httpx.Response(
+            200, content=b"RIFF" + b"\x00" * 4 + b"WAVE"
+        ),
+    )
+
+    client.generate_audio(
+        "Olá",
+        "portuguese",
+        model_variant="portuguese_24l",
+    )
+
+    assert submitted["language"] == "portuguese"
+    assert submitted["model_variant"] == "portuguese_24l"

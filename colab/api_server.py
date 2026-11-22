@@ -30,6 +30,22 @@ PARAKEET_MODEL_ID = "moondream/parakeet-redux"
 DEFAULT_VOICE = os.environ.get("JOE_TTS_DEFAULT_VOICE") or None
 USE_DRIVE_MODELS = os.environ.get("JOE_TTS_USE_DRIVE_MODELS") == "1"
 
+SUPPORTED_TTS_MODEL_VARIANTS = {
+    "portuguese": {"portuguese", "portuguese_24l"},
+    "english": {
+        "english", "english_2026-01", "english_2026-04", "english_2026-09",
+        "english_2026-09_2", "english_drifting_26-09",
+        "english_18m_2026-10", "english_18m_refl_2026-10",
+        "english_7m_2026-10", "english_7m_refl_2026-10",
+        "english_2m_2026-10", "english_2m_refl_2026-10",
+    },
+    "spanish": {"spanish", "spanish_24l"},
+    "french": {"french", "french_24l"},
+    "italian": {"italian", "italian_24l"},
+    "german": {"german", "german_24l"},
+    "dutch": {"dutch", "dutch_24l"},
+}
+
 app = FastAPI(
     title="Joe Colab Inference API",
     docs_url=None,
@@ -77,16 +93,23 @@ async def _read_upload(upload: UploadFile) -> bytes:
     return data
 
 
-def _get_tts_model(language: str) -> Any:
-    model = _tts_models.get(language)
+def _get_tts_model(language: str, model_variant: str) -> Any:
+    model = _tts_models.get(model_variant)
     if model is None:
+        # The Colab worker is sequential; retain only the selected variant in memory.
+        _tts_voice_states.clear()
+        _tts_models.clear()
         local_config = os.environ.get("JOE_TTS_CONFIG_PATH")
-        if USE_DRIVE_MODELS and (not local_config or language != "portuguese"):
+        if USE_DRIVE_MODELS and (
+            not local_config or not Path(local_config).expanduser().is_file()
+        ):
             raise RuntimeError(
                 "O Pocket TTS está configurado para usar modelos do Google Drive, "
-                "mas a configuração local do idioma não foi aplicada."
+                "mas a configuração local não foi aplicada."
             )
-        if local_config and language == "portuguese":
+        # The Drive YAML remains the Portuguese default. Other official variants
+        # are loaded directly by their documented Pocket TTS identifiers.
+        if local_config and language == "portuguese" and model_variant == "portuguese":
             config_path = Path(local_config).expanduser()
             if not config_path.is_file():
                 raise FileNotFoundError(
@@ -94,12 +117,14 @@ def _get_tts_model(language: str) -> Any:
                 )
             model = TTSModel.load_model(config=str(config_path), quantize=False)
         else:
-            model = TTSModel.load_model(language=language, quantize=False)
-        _tts_models[language] = model
+            model = TTSModel.load_model(language=model_variant, quantize=False)
+        _tts_models[model_variant] = model
     return model
 
 
-def _generate_tts(text: str, language: str, voice_file: str | None) -> bytes:
+def _generate_tts(
+    text: str, language: str, model_variant: str, voice_file: str | None
+) -> bytes:
     voice_source = voice_file or DEFAULT_VOICE
     if not voice_source:
         raise RuntimeError(
@@ -117,8 +142,8 @@ def _generate_tts(text: str, language: str, voice_file: str | None) -> bytes:
         else str(voice_source)
     )
     with _tts_lock:
-        model = _get_tts_model(language)
-        key = (language, voice_identity)
+        model = _get_tts_model(language, model_variant)
+        key = (model_variant, voice_identity)
         voice_state = _tts_voice_states.get(key)
         if voice_state is None:
             voice_state = model.get_state_for_audio_prompt(voice_source)
@@ -215,6 +240,7 @@ def health(_: None = Depends(require_token)) -> dict[str, Any]:
         "asr_loaded": _asr_model is not None,
         "asr_backend": _asr_backend,
         "tts_loaded_languages": sorted(_tts_models.keys()),
+        "tts_loaded_model_variants": sorted(_tts_models.keys()),
         "tts_local_drive_config": bool(os.environ.get("JOE_TTS_CONFIG_PATH")),
         "tts_drive_models_required": USE_DRIVE_MODELS,
         "tts_default_voice_local": bool(DEFAULT_VOICE and Path(DEFAULT_VOICE).is_file()),
@@ -299,14 +325,18 @@ def _submit_job(kind: str, function: Any, *args: Any) -> str:
 
 
 def _generate_tts_job(
-    text: str, language: str, voice_data: bytes | None, voice_suffix: str
+    text: str,
+    language: str,
+    model_variant: str,
+    voice_data: bytes | None,
+    voice_suffix: str,
 ) -> bytes:
     with tempfile.TemporaryDirectory(prefix="joe-tts-job-") as temp_dir:
         voice_path = None
         if voice_data is not None:
             voice_path = str(Path(temp_dir) / f"voice{voice_suffix}")
             Path(voice_path).write_bytes(voice_data)
-        return _generate_tts(text, language, voice_path)
+        return _generate_tts(text, language, model_variant, voice_path)
 
 
 def _transcribe_job(audio_data: bytes, suffix: str, timestamps: str) -> dict[str, Any]:
@@ -320,6 +350,7 @@ def _transcribe_job(audio_data: bytes, suffix: str, timestamps: str) -> dict[str
 async def submit_tts_job(
     text: str = Form(...),
     language: str = Form("portuguese"),
+    model_variant: str | None = Form(default=None),
     voice: UploadFile | None = File(default=None),
 ) -> dict[str, str]:
     text = text.strip()
@@ -327,15 +358,19 @@ async def submit_tts_job(
         raise HTTPException(status_code=400, detail="O texto não pode ficar vazio.")
     if len(text) > MAX_TEXT_CHARS:
         raise HTTPException(status_code=413, detail="Texto excede o limite de 20.000 caracteres.")
-    allowed_languages = {
-        "english", "french", "german", "portuguese",
-        "italian", "spanish", "dutch",
-    }
-    if language not in allowed_languages:
+    if language not in SUPPORTED_TTS_MODEL_VARIANTS:
         raise HTTPException(status_code=422, detail="Idioma não suportado pelo Pocket TTS.")
+    selected_model = (model_variant or language).strip()
+    if selected_model not in SUPPORTED_TTS_MODEL_VARIANTS[language]:
+        raise HTTPException(
+            status_code=422,
+            detail="A versão selecionada não está disponível para o idioma informado.",
+        )
     voice_data = await _read_upload(voice) if voice is not None else None
     suffix = _safe_suffix(voice.filename) if voice is not None else ".wav"
-    job_id = _submit_job("tts", _generate_tts_job, text, language, voice_data, suffix)
+    job_id = _submit_job(
+        "tts", _generate_tts_job, text, language, selected_model, voice_data, suffix
+    )
     return {"job_id": job_id, "status": "queued"}
 
 

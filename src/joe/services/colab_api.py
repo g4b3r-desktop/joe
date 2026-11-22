@@ -143,8 +143,13 @@ class ColabAPIClient:
         language: str,
         voice_path: str | Path | None = None,
         cancel_event: Event | None = None,
+        model_variant: str | None = None,
     ) -> bytes:
-        data = {"text": text, "language": language}
+        data = {
+            "text": text,
+            "language": language,
+            "model_variant": model_variant or language,
+        }
         files: list[Any] = []
         opened = None
         try:

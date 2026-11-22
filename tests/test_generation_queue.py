@@ -128,3 +128,16 @@ def test_queue_preserves_voice_alias_in_the_task_snapshot():
 
     assert task.voice_path == "/voices/voice.wav"
     assert task.voice_alias == "Narradora"
+
+
+def test_queue_snapshots_selected_model_variant():
+    queue = GenerationQueue()
+    task = queue.enqueue(
+        text="Olá",
+        speech_text="Olá",
+        language="portuguese",
+        model_variant="portuguese_24l",
+        output_path="/tmp/hello.wav",
+    )
+
+    assert task.model_variant == "portuguese_24l"

@@ -3,6 +3,8 @@ from __future__ import annotations
 import tempfile
 from pathlib import Path
 
+from joe.pocket_tts_models import default_model_variant, is_model_variant_for_language
+
 DEFAULT_VOICE = "hf://kyutai/tts-voices/alba-mackenna/casual.wav"
 
 
@@ -19,6 +21,7 @@ class PocketTTSService:
         language: str,
         output_path: str | Path,
         voice_path: str | Path | None = None,
+        model_variant: str | None = None,
     ) -> Path:
         if not text.strip():
             raise ValueError("Digite algum texto antes de gerar o áudio.")
@@ -32,19 +35,28 @@ class PocketTTSService:
                 "Dependências do Pocket TTS ausentes. Execute ./scripts/install-linux.sh."
             ) from exc
 
+        model_variant = model_variant or default_model_variant(language)
+        if not is_model_variant_for_language(language, model_variant):
+            raise ValueError(
+                f"A versão {model_variant!r} não está disponível para o idioma {language!r}."
+            )
+
         # Keep inference bounded on older desktop CPUs.
         try:
             torch.set_num_threads(2)
         except RuntimeError:
             pass
 
-        model = self._models.get(language)
+        model = self._models.get(model_variant)
         if model is None:
-            model = TTSModel.load_model(language=language, quantize=True)
-            self._models[language] = model
+            # Keep only the active variant loaded to bound RAM on desktop systems.
+            self._voice_states.clear()
+            self._models.clear()
+            model = TTSModel.load_model(language=model_variant, quantize=True)
+            self._models[model_variant] = model
 
         voice_source = str(voice_path) if voice_path else DEFAULT_VOICE
-        state_key = (language, voice_source)
+        state_key = (model_variant, voice_source)
         voice_state = self._voice_states.get(state_key)
         if voice_state is None:
             voice_state = model.get_state_for_audio_prompt(voice_source)
@@ -61,6 +73,7 @@ class PocketTTSService:
         voice_audio_path: str | Path,
         output_path: str | Path,
         language: str,
+        model_variant: str | None = None,
     ) -> Path:
         """Encode a reference recording once and save its reusable KV state."""
         source = Path(voice_audio_path).expanduser()
@@ -83,13 +96,18 @@ class PocketTTSService:
         except RuntimeError:
             pass
 
-        model = self._models.get(language)
+        model_variant = model_variant or default_model_variant(language)
+        if not is_model_variant_for_language(language, model_variant):
+            raise ValueError(
+                f"A versão {model_variant!r} não está disponível para o idioma {language!r}."
+            )
+        model = self._models.get(model_variant)
         if model is None:
-            model = TTSModel.load_model(language=language, quantize=True)
-            self._models[language] = model
+            model = TTSModel.load_model(language=model_variant, quantize=True)
+            self._models[model_variant] = model
 
         source_key = str(source.resolve())
-        state_key = (language, source_key)
+        state_key = (model_variant, source_key)
         voice_state = self._voice_states.get(state_key)
         if voice_state is None:
             voice_state = model.get_state_for_audio_prompt(source_key)

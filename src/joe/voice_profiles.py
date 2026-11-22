@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from joe.pocket_tts_models import default_model_variant, is_model_variant_for_language
+
 SUPPORTED_VOICE_PROFILE_LANGUAGES = {
     "portuguese",
     "english",
@@ -27,6 +29,14 @@ def _normalize_voice_profile(raw: Any) -> dict[str, str | bool] | None:
         "name": name,
         "voice_path": str(raw.get("voice_path", "")).strip(),
         "language": language,
+        "model_variant": (
+            str(raw.get("model_variant", default_model_variant(language))).strip()
+            if is_model_variant_for_language(
+                language,
+                str(raw.get("model_variant", default_model_variant(language))).strip(),
+            )
+            else default_model_variant(language)
+        ),
         "normalization_enabled": bool(raw.get("normalization_enabled", True)),
     }
 

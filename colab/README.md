@@ -28,7 +28,7 @@ Authorization: Bearer <JOE_API_TOKEN>
 ## Rotas
 
 - GET /health: status do servidor, GPU e estado dos modelos.
-- POST /v1/jobs/tts: multipart com text, language e campo de arquivo voice opcional; retorna job_id.
+- POST /v1/jobs/tts: multipart com text, language, model_variant opcional e campo de arquivo voice opcional; retorna job_id. Se model_variant for omitido, o servidor usa a versão padrão do idioma.
 - POST /v1/jobs/transcribe: multipart com arquivo audio e campo timestamps (none, segment ou word); retorna job_id.
 - GET /v1/jobs/{job_id}: consulta queued, running, completed ou failed.
 - GET /v1/jobs/{job_id}/result: baixa o WAV ou recebe o JSON quando completed.
@@ -51,6 +51,10 @@ O notebook carrega os Secrets usando `google.colab.userdata.get()` e os disponib
 **Não use uma URL Quick Tunnel em `JOE_API_URL` esperando que ela permaneça igual.** O Quick Tunnel cria um subdomínio aleatório e temporário; nesse modo, atualize a URL no Joe depois de reiniciar o runtime. Para manter a URL, publique um hostname fixo no Named Tunnel e direcione-o para `http://localhost:8000`.
 
 Não grave os segredos diretamente em células, arquivos do repositório, variáveis persistentes do Drive ou screenshots compartilhados. O serviço aceita uploads até 80 MB e texto até 20 mil caracteres. O túnel público é para desenvolvimento/uso pessoal; não é uma implantação de produção.
+
+### Variantes do Pocket TTS
+
+O campo opcional `model_variant` aceita somente variantes oficiais compatíveis com o idioma informado. O Joe desktop envia esse campo automaticamente para que a mesma seleção funcione no modo Local e no Colab. Português, espanhol, francês, italiano, alemão e neerlandês oferecem o modelo padrão e a variante de 24 camadas (preview). Inglês também oferece versões datadas, sampler Drifting e variantes compactas de 18,2 M, 6,9 M e 1,9 M de parâmetros. A variante padrão portuguesa continua usando o YAML configurado no Google Drive; ao selecionar outra variante, o servidor carrega o modelo oficial correspondente pelo identificador do Pocket TTS.
 
 ## Modelos no Google Drive
 
