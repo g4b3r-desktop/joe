@@ -3158,8 +3158,13 @@ class JoeWindow(QMainWindow):
         finally:
             self._applying_tts_profile = False
 
-        self._save_tts_hardware_settings()
+        self.app_settings.setValue("tts_device", str(self.tts_device.currentData() or "cpu"))
+        self.app_settings.setValue("tts_cpu_threads", int(self.tts_cpu_threads.value()))
+        self.app_settings.setValue(
+            "tts_quantization", bool(self.tts_quantization.isChecked())
+        )
         self.app_settings.setValue("tts_performance_profile", profile)
+        self._refresh_tts_hardware_info()
         self.statusBar().showMessage(
             f"Perfil {self.tts_performance_profile.currentText()} aplicado.", 4000
         )
