@@ -125,12 +125,15 @@ def format_tts_benchmark_report(
         "",
     ]
     successful = []
-    labels = {
-        "cpu": f"CPU — {cpu_threads} thread(s), INT8",
-        "cuda": "NVIDIA CUDA — sem quantização INT8",
-    }
     for result in results:
-        lines.append(labels.get(result.device, result.device.upper()))
+        if result.device == "cpu":
+            quantization_label = "INT8" if result.quantized else "sem quantização"
+            label = f"CPU — {cpu_threads} thread(s), {quantization_label}"
+        elif result.device == "cuda":
+            label = "NVIDIA CUDA — sem quantização INT8"
+        else:
+            label = result.device.upper()
+        lines.append(label)
         if result.error:
             lines.append(f"  Não foi possível medir: {result.error}")
             lines.append("")
@@ -171,8 +174,11 @@ def format_tts_benchmark_report(
             )
         else:
             lines.append("Resultado: desempenho semelhante nos dois dispositivos.")
+        cpu_quantization = (
+            "INT8 ativada" if cpu.quantized else "sem quantização INT8"
+        )
         lines.append(
-            "Observação: CPU usa quantização INT8; CUDA usa pesos sem essa quantização. "
+            f"Observação: CPU com {cpu_quantization}; CUDA sempre sem quantização INT8. "
             "A comparação representa as configurações reais usadas pelo Joe."
         )
     elif cpu and cuda is None:
