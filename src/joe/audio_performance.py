@@ -175,7 +175,7 @@ def format_tts_benchmark_report(
         else:
             lines.append("Resultado: desempenho semelhante nos dois dispositivos.")
         cpu_quantization = (
-            "INT8 ativada" if cpu.quantized else "sem quantização INT8"
+            "INT8 ativada" if cpu.quantized else "INT8 desativada"
         )
         lines.append(
             f"Observação: CPU com {cpu_quantization}; CUDA sempre sem quantização INT8. "
