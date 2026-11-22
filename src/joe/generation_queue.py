@@ -15,6 +15,8 @@ class GenerationTask:
     language: str
     output_path: str
     model_variant: str = ""
+    tts_device: str = "cpu"
+    cpu_threads: int = 2
     voice_path: str | None = None
     voice_alias: str = ""
     remote: bool = False
@@ -52,6 +54,8 @@ class GenerationQueue:
         language: str,
         output_path: str,
         model_variant: str | None = None,
+        tts_device: str = "cpu",
+        cpu_threads: int = 2,
         voice_path: str | None = None,
         voice_alias: str = "",
         remote: bool = False,
@@ -63,12 +67,18 @@ class GenerationQueue:
             raise ValueError("O texto da tarefa não pode ficar vazio.")
         if not output_path.strip():
             raise ValueError("A tarefa precisa de um caminho de saída.")
+        if tts_device not in {"cpu", "cuda"}:
+            raise ValueError("Dispositivo TTS inválido. Escolha cpu ou cuda.")
+        if int(cpu_threads) < 1:
+            raise ValueError("A quantidade de threads da CPU precisa ser maior que zero.")
         task = GenerationTask(
             text=text,
             speech_text=speech_text,
             language=language,
             output_path=output_path,
             model_variant=model_variant or language,
+            tts_device=tts_device,
+            cpu_threads=int(cpu_threads),
             voice_path=voice_path,
             voice_alias=voice_alias,
             remote=remote,
