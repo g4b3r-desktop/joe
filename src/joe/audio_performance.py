@@ -15,6 +15,23 @@ class AudioPerformance:
     remote: bool = False
 
 
+@dataclass(frozen=True, slots=True)
+class TTSBenchmarkResult:
+    """One isolated Pocket TTS benchmark run for a selected compute device."""
+
+    device: str
+    cpu_threads: int
+    model_load_seconds: float = 0.0
+    voice_prepare_seconds: float = 0.0
+    generation_seconds: float = 0.0
+    audio_duration_seconds: float = 0.0
+    character_count: int = 0
+    peak_vram_mb: float = 0.0
+    quantized: bool = False
+    repeats: int = 0
+    error: str = ""
+
+
 def wav_duration_seconds(path: str | Path) -> float:
     """Retorna a duração do WAV sem carregar as amostras de áudio na memória."""
     try:
@@ -92,4 +109,75 @@ def format_performance_report(metrics: AudioPerformance) -> str:
             "No modo local, o cronômetro inclui o carregamento do modelo quando necessário."
         )
 
+    return "\n".join(lines)
+
+
+def format_tts_benchmark_report(
+    results: list[TTSBenchmarkResult],
+    *,
+    cpu_threads: int,
+) -> str:
+    """Format CPU/CUDA measurements with load, voice setup and inference separated."""
+    lines = [
+        "Comparação de desempenho — Pocket TTS",
+        f"Mesmo texto, idioma, modelo e voz. Threads configuradas: {cpu_threads}.",
+        "Carga do modelo e preparação da voz são mostradas separadamente da geração.",
+        "",
+    ]
+    successful = []
+    labels = {
+        "cpu": f"CPU — {cpu_threads} thread(s), INT8",
+        "cuda": "NVIDIA CUDA — sem quantização INT8",
+    }
+    for result in results:
+        lines.append(labels.get(result.device, result.device.upper()))
+        if result.error:
+            lines.append(f"  Não foi possível medir: {result.error}")
+            lines.append("")
+            continue
+        speed = (
+            result.audio_duration_seconds / result.generation_seconds
+            if result.generation_seconds > 0
+            else 0.0
+        )
+        lines.extend(
+            [
+                f"  Carregamento do modelo: {format_duration(result.model_load_seconds)}",
+                f"  Preparação da voz: {format_duration(result.voice_prepare_seconds)}",
+                (
+                    f"  Geração média ({result.repeats} execução(ões)): "
+                    f"{format_duration(result.generation_seconds)}"
+                ),
+                f"  Áudio produzido: {format_duration(result.audio_duration_seconds)}",
+                f"  Velocidade: {_format_number(speed, 2)}× tempo real",
+                f"  Memória de VRAM de pico: {_format_number(result.peak_vram_mb, 0)} MB",
+            ]
+        )
+        successful.append(result)
+        lines.append("")
+
+    by_device = {result.device: result for result in successful}
+    cpu = by_device.get("cpu")
+    cuda = by_device.get("cuda")
+    if cpu and cuda and cpu.generation_seconds > 0 and cuda.generation_seconds > 0:
+        ratio = cpu.generation_seconds / cuda.generation_seconds
+        if ratio > 1.02:
+            lines.append(
+                f"Resultado: CUDA foi {_format_number(ratio, 2)}× mais rápida na geração medida."
+            )
+        elif ratio < 0.98:
+            lines.append(
+                f"Resultado: CPU foi {_format_number(1 / ratio, 2)}× mais rápida na geração medida."
+            )
+        else:
+            lines.append("Resultado: desempenho semelhante nos dois dispositivos.")
+        lines.append(
+            "Observação: CPU usa quantização INT8; CUDA usa pesos sem essa quantização. "
+            "A comparação representa as configurações reais usadas pelo Joe."
+        )
+    elif cpu and cuda is None:
+        lines.append("Não foi possível obter uma comparação completa entre CPU e CUDA.")
+    lines.append(
+        "A medição não altera a configuração escolhida para as próximas gerações."
+    )
     return "\n".join(lines)
