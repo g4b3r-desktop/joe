@@ -257,3 +257,27 @@ def test_existing_history_database_is_migrated_with_default_model_variant(tmp_pa
     entry = store.add_generated_audio(audio, duration_seconds=2, generation_seconds=1)
 
     assert entry.model_variant == ""
+
+
+
+def test_generation_settings_are_saved_and_survive_history_reads(tmp_path):
+    audio = make_audio(tmp_path / "cuda-tts.wav")
+    store = AudioHistoryStore(tmp_path / "history.sqlite3")
+    settings = {
+        "backend": "Pocket TTS local",
+        "device": "cuda",
+        "cpu_threads": 4,
+        "quantization": False,
+        "profile": "performance",
+        "local_settings_applied": True,
+    }
+
+    entry = store.add_generated_audio(
+        audio,
+        duration_seconds=8,
+        generation_seconds=2,
+        generation_settings=settings,
+    )
+
+    assert '"device": "cuda"' in entry.generation_settings_json
+    assert store.get(entry.id) == entry
