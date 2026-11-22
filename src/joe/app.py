@@ -45,6 +45,7 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPushButton,
     QScrollArea,
+    QSpinBox,
     QStatusBar,
     QTabWidget,
     QTableWidget,
@@ -64,6 +65,7 @@ from joe.audio_performance import (
     format_duration,
     format_elapsed_status,
     format_performance_report,
+    format_tts_benchmark_report,
     wav_duration_seconds,
 )
 from joe.local_ipc import LocalCommandServer, send_local_command
@@ -310,6 +312,8 @@ class TTSGenerationWorker(QRunnable):
                                     chunk_path,
                                     self.task.voice_path,
                                     self.task.model_variant,
+                                    device_preference=self.task.tts_device,
+                                    cpu_threads=self.task.cpu_threads,
                                 )
                             if not chunk_path.is_file() or chunk_path.stat().st_size == 0:
                                 raise RuntimeError("O serviço TTS não produziu um WAV válido.")
@@ -1778,6 +1782,54 @@ class JoeWindow(QMainWindow):
         voice_form.addRow("Voz padrão / referência", voice_row)
         settings_layout.addWidget(voice_group)
 
+        # Local Pocket TTS compute settings and an on-device CPU/CUDA comparison.
+        hardware_group = QGroupBox("Hardware e desempenho do Pocket TTS")
+        hardware_form = QFormLayout(hardware_group)
+        self.tts_device = QComboBox()
+        self.tts_device.addItem("CPU (INT8 — preserva a VRAM)", "cpu")
+        self.tts_device.addItem("NVIDIA GPU (CUDA — usa VRAM)", "cuda")
+        saved_tts_device = str(self.app_settings.value("tts_device", "cpu"))
+        saved_device_index = self.tts_device.findData(saved_tts_device)
+        self.tts_device.setCurrentIndex(max(0, saved_device_index))
+        self.tts_device.setToolTip(
+            "CPU usa quantização INT8. CUDA move o modelo para a NVIDIA GPU e desativa "
+            "a quantização INT8, que não é compatível com esse caminho."
+        )
+
+        self.tts_cpu_threads = QSpinBox()
+        self.tts_cpu_threads.setRange(1, max(1, min(128, os.cpu_count() or 1)))
+        saved_cpu_threads = self.app_settings.value("tts_cpu_threads", 2, type=int)
+        self.tts_cpu_threads.setValue(
+            max(self.tts_cpu_threads.minimum(), min(self.tts_cpu_threads.maximum(), saved_cpu_threads))
+        )
+        self.tts_cpu_threads.setToolTip(
+            "Quantidade de threads intra-op do PyTorch. A alteração é aplicada às próximas "
+            "gerações locais; valores acima do número de núcleos disponíveis não são oferecidos."
+        )
+
+        self.tts_hardware_info = QLabel()
+        self.tts_hardware_info.setObjectName("muted")
+        self.tts_hardware_info.setWordWrap(True)
+        self.tts_device.currentIndexChanged.connect(self._save_tts_hardware_settings)
+        self.tts_cpu_threads.valueChanged.connect(self._save_tts_hardware_settings)
+
+        self.tts_benchmark_button = QPushButton("Comparar CPU × CUDA")
+        self.tts_benchmark_button.setToolTip(
+            "Executa o mesmo texto e voz em CPU e CUDA, medindo carga, preparação da voz, "
+            "geração, velocidade em tempo real e pico de VRAM."
+        )
+        self.tts_benchmark_button.clicked.connect(self._benchmark_tts_performance)
+
+        hardware_actions = QHBoxLayout()
+        hardware_actions.addWidget(self.tts_benchmark_button)
+        hardware_actions.addStretch(1)
+        hardware_form.addRow("Dispositivo para geração local", self.tts_device)
+        hardware_form.addRow("Threads da CPU", self.tts_cpu_threads)
+        hardware_form.addRow("Estado do hardware", self.tts_hardware_info)
+        hardware_form.addRow("", hardware_actions)
+        settings_layout.addWidget(hardware_group)
+        self._refresh_tts_hardware_info()
+
         # Named voice profiles are independent from favorites and pronunciation rules.
         profile_group = QGroupBox("Perfis de voz")
         profile_layout = QFormLayout(profile_group)
@@ -2998,6 +3050,78 @@ class JoeWindow(QMainWindow):
         self.app_settings.setValue("tts_language", language)
         self._refresh_tts_model_variants()
 
+    def _save_tts_hardware_settings(self, *_args) -> None:
+        if not hasattr(self, "tts_device") or not hasattr(self, "tts_cpu_threads"):
+            return
+        self.app_settings.setValue("tts_device", str(self.tts_device.currentData() or "cpu"))
+        self.app_settings.setValue("tts_cpu_threads", int(self.tts_cpu_threads.value()))
+        self._refresh_tts_hardware_info()
+
+    def _refresh_tts_hardware_info(self) -> None:
+        if not hasattr(self, "tts_hardware_info"):
+            return
+        logical_cpus = os.cpu_count() or 1
+        if torch.cuda.is_available():
+            try:
+                gpu_name = torch.cuda.get_device_name(0)
+                vram_gb = torch.cuda.get_device_properties(0).total_memory / (1024 ** 3)
+                cuda_status = f"CUDA disponível: {gpu_name} ({vram_gb:.1f} GB de VRAM)."
+            except Exception as exc:  # noqa: BLE001
+                cuda_status = f"CUDA detectada, mas não foi possível consultar a GPU: {exc}"
+        else:
+            cuda_status = (
+                "CUDA indisponível nesta instalação do PyTorch. Para usar a NVIDIA GPU, "
+                "instale uma build CUDA compatível com o driver."
+            )
+        self.tts_hardware_info.setText(
+            f"CPU: {logical_cpus} processador(es) lógico(s). {cuda_status} "
+            "A comparação usa INT8 na CPU e pesos sem quantização INT8 na CUDA."
+        )
+
+    def _benchmark_tts_performance(self) -> None:
+        if self.active_worker is not None or self.active_generation_worker is not None:
+            QMessageBox.information(
+                self,
+                "Joe ocupado",
+                "Aguarde a tarefa atual terminar antes de iniciar a comparação de desempenho.",
+            )
+            return
+
+        language = str(self.tts_language.currentData() or "portuguese")
+        model_variant = str(self.tts_model_variant.currentData() or language)
+        cpu_threads = int(self.tts_cpu_threads.value())
+        selected_voice = self.voice_path.text().strip() or None
+        source_text = self.tts_text.toPlainText().strip()
+        if source_text:
+            prepared_text = self._prepared_speech_text(source_text, language)
+            chunks = split_text_into_chunks(prepared_text, max_chars=280)
+            sample_text = chunks[0] if chunks else ""
+        else:
+            sample_text = (
+                "Este é um teste de desempenho do Pocket TTS para comparar "
+                "a velocidade de geração usando o processador e a placa de vídeo."
+            )
+
+        def benchmark() -> str:
+            results = self.tts.benchmark_devices(
+                sample_text,
+                language,
+                selected_voice,
+                model_variant,
+                cpu_threads=cpu_threads,
+                repeats=2,
+            )
+            return format_tts_benchmark_report(results, cpu_threads=cpu_threads)
+
+        def completed(report: object) -> None:
+            QMessageBox.information(
+                self,
+                "Comparação de desempenho — Pocket TTS",
+                str(report),
+            )
+
+        self._run_task("Comparando o Pocket TTS em CPU e CUDA…", benchmark, completed)
+
     def _save_tts_output_settings(self, *_args) -> None:
         if not hasattr(self, "tts_output_directory"):
             return
@@ -3113,7 +3237,12 @@ class JoeWindow(QMainWindow):
 
         def export() -> Path:
             return self.tts.export_voice_state(
-                source, destination, language, model_variant
+                source,
+                destination,
+                language,
+                model_variant,
+                device_preference=str(self.tts_device.currentData() or "cpu"),
+                cpu_threads=int(self.tts_cpu_threads.value()),
             )
 
         def completed(result: object) -> None:
@@ -3333,6 +3462,8 @@ class JoeWindow(QMainWindow):
 
         destination = temp_dir / "clipboard_audio.wav"
         voice = self.voice_path.text().strip() or None
+        tts_device = str(self.tts_device.currentData() or "cpu")
+        cpu_threads = int(self.tts_cpu_threads.value())
 
         if remote is not None:
             def generate_clipboard_chunk(chunk_text: str, output_path: Path) -> Path:
@@ -3344,7 +3475,13 @@ class JoeWindow(QMainWindow):
         else:
             def generate_clipboard_chunk(chunk_text: str, output_path: Path) -> Path:
                 return self.tts.generate(
-                    chunk_text, language, str(output_path), voice, model_variant
+                    chunk_text,
+                    language,
+                    str(output_path),
+                    voice,
+                    model_variant,
+                    device_preference=tts_device,
+                    cpu_threads=cpu_threads,
                 )
 
         dialog = ClipboardAudioDialog(
@@ -3532,6 +3669,8 @@ class JoeWindow(QMainWindow):
                 language=language,
                 output_path=str(destination),
                 model_variant=model_variant,
+                tts_device=str(self.tts_device.currentData() or "cpu"),
+                cpu_threads=int(self.tts_cpu_threads.value()),
                 voice_path=selected_voice,
                 voice_alias=selected_voice_alias,
                 remote=remote,
@@ -4025,6 +4164,9 @@ class JoeWindow(QMainWindow):
             self.tts_play_button,
             self.tts_favorites_button,
             self.tts_settings_button,
+            self.tts_device,
+            self.tts_cpu_threads,
+            self.tts_benchmark_button,
             self.tts_language,
             self.tts_model_variant,
             self.clipboard_chunk_size,
