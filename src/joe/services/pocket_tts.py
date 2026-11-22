@@ -194,6 +194,9 @@ class PocketTTSService:
                 f"A versão {model_variant!r} não está disponível para o idioma {language!r}."
             )
         self._configure_torch(torch, cpu_threads)
+        # Release any model retained by normal generation before the two isolated runs.
+        # This prevents a previously selected CUDA model from consuming VRAM during the test.
+        self.close()
 
         voice_source = str(voice_path) if voice_path else (
             default_voice_for_language(language) or DEFAULT_VOICE
