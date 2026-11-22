@@ -47,6 +47,22 @@ def test_queue_tracks_progress_and_completes_active_task():
     assert queue.active_task() is None
 
 
+def test_failed_task_preserves_multiline_error_diagnostics():
+    queue = GenerationQueue()
+    task = add(queue, "voice")
+    queue.start(task.task_id)
+    diagnostic = (
+        "Falha ao gerar o arquivo voice.wav.\\n"
+        "Erro: RuntimeError: falha no modelo\\n\\n"
+        "Traceback técnico:\\nTraceback (most recent call last): ..."
+    )
+
+    queue.fail(task.task_id, diagnostic)
+
+    assert task.status == "failed"
+    assert task.error == diagnostic
+
+
 def test_failed_task_can_be_retried_and_keeps_its_request():
     queue = GenerationQueue()
     task = add(queue, "voice")
