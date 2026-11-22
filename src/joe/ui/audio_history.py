@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sqlite3
 from datetime import datetime
 from pathlib import Path
@@ -126,17 +127,18 @@ class AudioHistoryPanel(QWidget):
         advanced_filters.addStretch(1)
         layout.addLayout(advanced_filters)
 
-        self.table = QTableWidget(0, 9)
+        self.table = QTableWidget(0, 10)
         self.table.setHorizontalHeaderLabels([
             "Arquivo", "Data", "Duração", "Tamanho",
-            "Voz", "Modelo TTS", "Tempo de geração", "Velocidade", "Origem",
+            "Voz", "Modelo TTS", "Tempo de geração", "Velocidade",
+            "Configuração TTS", "Origem",
         ])
         self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.table.verticalHeader().setVisible(False)
         self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
-        for column in range(1, 9):
+        for column in range(1, 10):
             self.table.horizontalHeader().setSectionResizeMode(
                 column, QHeaderView.ResizeMode.ResizeToContents
             )
@@ -184,6 +186,37 @@ class AudioHistoryPanel(QWidget):
 
         self.table.itemSelectionChanged.connect(self._update_action_state)
         self.refresh()
+
+    @staticmethod
+    def _format_generation_settings(settings_json: str) -> str:
+        if not settings_json:
+            return "—"
+        try:
+            settings = json.loads(settings_json)
+        except (TypeError, ValueError):
+            return "Detalhes indisponíveis"
+        if not isinstance(settings, dict):
+            return "—"
+        if settings.get("local_settings_applied") is False:
+            return "Remoto"
+        device = "CUDA" if settings.get("device") == "cuda" else "CPU"
+        try:
+            threads = max(1, int(settings.get("cpu_threads", 1)))
+        except (TypeError, ValueError):
+            threads = 1
+        parts = [device, f"{threads} thread(s)"]
+        if device == "CPU":
+            parts.append("INT8" if settings.get("quantization") else "sem INT8")
+        profile_names = {
+            "economy": "Econômico",
+            "balanced": "Equilibrado",
+            "performance": "Desempenho",
+            "custom": "Personalizado",
+        }
+        profile = profile_names.get(str(settings.get("profile", "custom")))
+        if profile:
+            parts.append(profile)
+        return " · ".join(parts)
 
     @staticmethod
     def _format_size(size_bytes: int) -> str:
@@ -271,6 +304,7 @@ class AudioHistoryPanel(QWidget):
                 entry.model_variant or "Padrão",
                 format_duration(entry.generation_seconds),
                 speed,
+                self._format_generation_settings(entry.generation_settings_json),
                 entry.source_label,
             )
             for column, value in enumerate(values):
@@ -278,6 +312,14 @@ class AudioHistoryPanel(QWidget):
                 if column == 0:
                     item.setData(Qt.ItemDataRole.UserRole, entry.id)
                     item.setToolTip(entry.audio_path)
+                elif column == 8 and entry.generation_settings_json:
+                    try:
+                        settings = json.loads(entry.generation_settings_json)
+                        item.setToolTip(
+                            json.dumps(settings, ensure_ascii=False, indent=2, sort_keys=True)
+                        )
+                    except (TypeError, ValueError):
+                        item.setToolTip(entry.generation_settings_json)
                 self.table.setItem(row, column, item)
             if not Path(entry.audio_path).is_file():
                 self.table.item(row, 0).setText(f"{entry.file_name} (arquivo ausente)")
