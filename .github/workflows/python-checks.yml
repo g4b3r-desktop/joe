@@ -6,6 +6,7 @@ on:
       - feature/desktop-audio-studio
       - feature/colab-model-api
       - feature/joe-studio-improvements
+      - feature/pocket-tts-cuda-performance
   pull_request:
     branches:
       - main
