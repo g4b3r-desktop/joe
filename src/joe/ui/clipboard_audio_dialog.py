@@ -686,10 +686,12 @@ class ClipboardAudioDialog(QDialog):
                 else "Modo local: pode incluir o carregamento do modelo."
             )
             if elapsed > 0 and duration > 0:
-                self.summary_label.setText(
+                summary = (
                     f"{duration:.1f} s de áudio · gerado em "
-                    f"{self._format_elapsed(elapsed)} · {len(self.phrase_texts)} frases"
-                ).replace(".", ",")
+                    f"{self._format_elapsed(elapsed)} · "
+                    f"{self.total_chunks or len(self.phrase_texts)} frases"
+                )
+                self.summary_label.setText(summary.replace(".", ","))
             else:
                 self.summary_label.setText(
                     f"Áudio pronto · {self.total_chunks or len(self.phrase_texts)} frases"
