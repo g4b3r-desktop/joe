@@ -175,7 +175,7 @@ def test_generate_audio_ignores_local_voice_path_when_drive_voice_id_is_set(
         if endpoint == "/v1/jobs/job-drive-voice":
             return httpx.Response(200, json={"status": "completed"})
         if endpoint == "/v1/jobs/job-drive-voice/result":
-            return httpx.Response(200, content=b"RIFF" + b"\\x00" * 4 + b"WAVE")
+            return httpx.Response(200, content=b"RIFF" + b"\x00" * 4 + b"WAVE")
         raise AssertionError((method, endpoint))
 
     monkeypatch.setattr(client, "_request", request)
