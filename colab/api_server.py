@@ -674,6 +674,7 @@ def list_drive_assets() -> dict[str, Any]:
         for manifest_path in models_root.glob("*/manifest.json"):
             try:
                 manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+                manifest["model_fingerprint"] = model_fingerprint(manifest)
                 models.append(manifest)
             except (OSError, ValueError):
                 continue
