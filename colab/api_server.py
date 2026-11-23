@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import gc
 import hmac
 import hashlib
 import importlib.metadata
@@ -42,8 +43,12 @@ from drive_assets import (
     sha256_file,
     validate_model_files,
 )
-import os, torch
-torch.set_num_threads(os.cpu_count() or 2)
+from tts_runtime import (
+    configure_torch_threads,
+    ensure_supported_torch,
+    inspect_audio_samples,
+    resolve_tts_device,
+)
 
 API_TOKEN = os.environ.get("JOE_API_TOKEN", "")
 if len(API_TOKEN) < 32:
@@ -60,6 +65,31 @@ ASSET_UPLOAD_CHUNK_BYTES = 8 * 1024 * 1024
 MAX_MODEL_ASSET_BYTES = 4_000_000_000
 MAX_VOICE_ASSET_BYTES = 80 * 1024 * 1024
 
+# Pocket TTS remains CPU-first, but this Colab worker can explicitly move the
+# nn.Module to CUDA. Auto prefers CUDA when available and safely falls back.
+TTS_DEVICE_MODE = os.environ.get("JOE_TTS_DEVICE", "auto").strip().lower()
+TTS_DEVICE_ERROR: str | None = None
+TTS_VERSION_ERROR: str | None = None
+TTS_THREADS_ERROR: str | None = None
+try:
+    ensure_supported_torch(torch.__version__)
+except RuntimeError as exc:
+    TTS_VERSION_ERROR = str(exc)
+try:
+    TTS_CPU_THREADS = configure_torch_threads(
+        torch, os.environ.get("JOE_TTS_CPU_THREADS", "1")
+    )
+except (TypeError, ValueError) as exc:
+    TTS_THREADS_ERROR = str(exc)
+    TTS_CPU_THREADS = configure_torch_threads(torch, 1)
+try:
+    TTS_DEVICE_SELECTED = resolve_tts_device(
+        TTS_DEVICE_MODE, torch.cuda.is_available()
+    )
+except (RuntimeError, ValueError) as exc:
+    TTS_DEVICE_ERROR = str(exc)
+    TTS_DEVICE_SELECTED = "cpu"
+
 app = FastAPI(
     title="Joe Colab Inference API",
     docs_url=None,
@@ -70,6 +100,9 @@ app = FastAPI(
 _tts_lock = threading.Lock()
 _asr_lock = threading.Lock()
 _tts_models: dict[str, Any] = {}
+_tts_loaded_devices: dict[str, str] = {}
+_tts_device_fallback_reason: str | None = None
+_last_tts_metrics: dict[str, Any] | None = None
 _tts_voice_states: dict[tuple[str, str], Any] = {}
 _asr_context: Any = None
 _asr_model: Any = None
@@ -101,12 +134,59 @@ async def _read_upload(upload: UploadFile) -> bytes:
     return data
 
 
+def _load_tts_model_for_inference(loader: Any, model_variant: str) -> Any:
+    global _tts_device_fallback_reason
+
+    if TTS_VERSION_ERROR:
+        raise RuntimeError(TTS_VERSION_ERROR)
+    if TTS_THREADS_ERROR:
+        raise RuntimeError(TTS_THREADS_ERROR)
+    if TTS_DEVICE_ERROR:
+        raise RuntimeError(TTS_DEVICE_ERROR)
+
+    model = loader()
+    selected_device = TTS_DEVICE_SELECTED
+    try:
+        model.to(selected_device)
+    except Exception as exc:
+        if TTS_DEVICE_MODE != "auto" or selected_device != "cuda":
+            raise RuntimeError(
+                f"Não foi possível mover o Pocket TTS para {selected_device}: "
+                f"{type(exc).__name__}: {exc}. Selecione CPU ou Automático."
+            ) from exc
+        # Auto is the only mode allowed to fall back after CUDA allocation fails.
+        del model
+        gc.collect()
+        try:
+            torch.cuda.empty_cache()
+        except Exception:
+            pass
+        model = loader()
+        model.to("cpu")
+        selected_device = "cpu"
+        _tts_device_fallback_reason = (
+            "CUDA estava disponível, mas o carregamento na GPU falhou; "
+            f"o modelo foi colocado na CPU ({type(exc).__name__}: {exc})."
+        )
+
+    model.eval()
+    actual_device = str(getattr(model, "device", selected_device))
+    if "cuda" in actual_device.lower():
+        actual_device = "cuda"
+    else:
+        actual_device = "cpu"
+    _tts_loaded_devices[model_variant] = actual_device
+    return model
+
+
 def _get_tts_model(language: str, model_variant: str) -> Any:
     model = _tts_models.get(model_variant)
     if model is None:
-        # The Colab worker is sequential; retain only the selected variant in memory.
+        # The worker is sequential; retain only the selected variant in memory.
         _tts_voice_states.clear()
         _tts_models.clear()
+        _tts_loaded_devices.clear()
+
         if DIRECT_DRIVE_ASSETS:
             drive_config = DRIVE_ASSETS_ROOT / "models" / model_variant / "config.yaml"
             if not drive_config.is_file():
@@ -114,48 +194,49 @@ def _get_tts_model(language: str, model_variant: str) -> Any:
                     f"Modelo {model_variant!r} ainda não foi enviado ao Google Drive. "
                     "Use 'Enviar modelo local ao Google Drive' na aba Colab do Joe."
                 )
-            model = TTSModel.load_model(config=str(drive_config), quantize=False)
-            _tts_models[model_variant] = model
-            return model
-        local_config = os.environ.get("JOE_TTS_CONFIG_PATH")
-        local_24l_config = os.environ.get("JOE_TTS_24L_CONFIG_PATH")
-        selected_local_config = None
-        if language == "portuguese" and model_variant == "portuguese":
-            selected_local_config = local_config
-        elif language == "portuguese" and model_variant == "portuguese_24l":
-            selected_local_config = local_24l_config
-
-        if language != "japanese" and USE_DRIVE_MODELS:
-            if selected_local_config:
-                if not Path(selected_local_config).expanduser().is_file():
-                    raise FileNotFoundError(
-                        "Configuração local do Pocket TTS não encontrada: "
-                        f"{selected_local_config}"
-                    )
-            elif language == "portuguese":
-                raise RuntimeError(
-                    "O Pocket TTS está configurado para usar modelos do Google Drive, "
-                    f"mas a configuração da variante {model_variant!r} não foi aplicada."
-                )
-            elif not local_config or not Path(local_config).expanduser().is_file():
-                raise RuntimeError(
-                    "O Pocket TTS está configurado para usar modelos do Google Drive, "
-                    "mas a configuração local não foi aplicada."
-                )
-
-        # Each Portuguese variant uses its own YAML and its matching checkpoint,
-        # tokenizer and voice-state architecture. Japanese remains a community
-        # model loaded from its published YAML; other variants use built-in IDs.
-        if selected_local_config:
-            config_path = Path(selected_local_config).expanduser()
-            model = TTSModel.load_model(config=str(config_path), quantize=False)
-        else:
-            model = load_tts_model(
-                TTSModel, language, model_variant, quantize=False
+            loader = lambda: TTSModel.load_model(
+                config=str(drive_config), quantize=False
             )
+        else:
+            local_config = os.environ.get("JOE_TTS_CONFIG_PATH")
+            local_24l_config = os.environ.get("JOE_TTS_24L_CONFIG_PATH")
+            selected_local_config = None
+            if language == "portuguese" and model_variant == "portuguese":
+                selected_local_config = local_config
+            elif language == "portuguese" and model_variant == "portuguese_24l":
+                selected_local_config = local_24l_config
+
+            if language != "japanese" and USE_DRIVE_MODELS:
+                if selected_local_config:
+                    if not Path(selected_local_config).expanduser().is_file():
+                        raise FileNotFoundError(
+                            "Configuração local do Pocket TTS não encontrada: "
+                            f"{selected_local_config}"
+                        )
+                elif language == "portuguese":
+                    raise RuntimeError(
+                        "O Pocket TTS está configurado para usar modelos do Google Drive, "
+                        f"mas a configuração da variante {model_variant!r} não foi aplicada."
+                    )
+                elif not local_config or not Path(local_config).expanduser().is_file():
+                    raise RuntimeError(
+                        "O Pocket TTS está configurado para usar modelos do Google Drive, "
+                        "mas a configuração local não foi aplicada."
+                    )
+
+            if selected_local_config:
+                config_path = Path(selected_local_config).expanduser()
+                loader = lambda: TTSModel.load_model(
+                    config=str(config_path), quantize=False
+                )
+            else:
+                loader = lambda: load_tts_model(
+                    TTSModel, language, model_variant, quantize=False
+                )
+
+        model = _load_tts_model_for_inference(loader, model_variant)
         _tts_models[model_variant] = model
     return model
-
 
 def _generate_tts(
     text: str,
@@ -247,14 +328,47 @@ def _generate_tts(
                 ) from exc
             _tts_voice_states[key] = voice_state
 
+        global _last_tts_metrics
+        effective_device = _tts_loaded_devices.get(model_variant, TTS_DEVICE_SELECTED)
+        if effective_device == "cuda":
+            torch.cuda.synchronize()
+        generation_started = time.perf_counter()
         try:
-            audio = model.generate_audio(voice_state, text)
+            with torch.inference_mode():
+                audio = model.generate_audio(voice_state, text)
+            if effective_device == "cuda":
+                torch.cuda.synchronize()
         except Exception as exc:
             raise RuntimeError(
                 f"Falha na síntese do texto com o modelo '{model_variant}' "
-                f"e a voz '{voice_label}'. Detalhe: {type(exc).__name__}: {exc}"
+                f"e a voz '{voice_label}' no dispositivo {effective_device}. "
+                f"Detalhe: {type(exc).__name__}: {exc}"
             ) from exc
-        samples = audio.detach().cpu().numpy()
+        elapsed_seconds = max(time.perf_counter() - generation_started, 0.000001)
+        samples = audio.detach().to("cpu").float().numpy()
+        sample_rate = int(model.sample_rate)
+        signal_metrics = inspect_audio_samples(samples, sample_rate)
+        _last_tts_metrics = {
+            **signal_metrics,
+            "elapsed_seconds": elapsed_seconds,
+            "realtime_factor": signal_metrics["duration_seconds"] / elapsed_seconds,
+            "device": effective_device,
+            "cpu_threads": TTS_CPU_THREADS,
+            "language": language,
+            "model_variant": model_variant,
+            "voice": voice_label,
+            "text_characters": len(text),
+            "sample_rate": sample_rate,
+            "torch_version": str(torch.__version__),
+        }
+        print(
+            "[JOE_TTS] "
+            f"device={effective_device} threads={TTS_CPU_THREADS} "
+            f"variant={model_variant} audio={signal_metrics['duration_seconds']:.2f}s "
+            f"elapsed={elapsed_seconds:.2f}s "
+            f"RTF={_last_tts_metrics['realtime_factor']:.2f} "
+            f"peak={signal_metrics['peak']:.5f} rms={signal_metrics['rms']:.5f}"
+        )
 
     with tempfile.NamedTemporaryFile(suffix=".wav") as output:
         sf.write(output.name, samples, int(model.sample_rate), subtype="PCM_16")
@@ -548,11 +662,33 @@ def commit_asset_upload(upload_id: str) -> dict[str, Any]:
             _assemble_uploaded_file(session_dir, "checkpoint", metadata["files"]["checkpoint"], checkpoint)
             _assemble_uploaded_file(session_dir, "tokenizer", metadata["files"]["tokenizer"], tokenizer)
             validation = validate_model_files(checkpoint, tokenizer)
+            ensure_supported_torch(torch.__version__)
             from pocket_tts.utils.config import CONFIGS_DIR
             import yaml
 
-            # The YAML is written in the staging folder but must reference the
-            # final Drive directory, because staging is atomically renamed below.
+            # Load the exact staged checkpoint and tokenizer through Pocket TTS.
+            # This checks the actual model architecture/state-dict compatibility,
+            # not only whether the files are syntactically valid.
+            validation_data = config_for_uploaded_model(
+                model_variant, staging, CONFIGS_DIR
+            )
+            validation_config = staging / "validation-config.yaml"
+            validation_config.write_text(
+                yaml.safe_dump(validation_data, sort_keys=False, allow_unicode=True),
+                encoding="utf-8",
+            )
+            validation_model = TTSModel.load_model(
+                config=str(validation_config), quantize=False
+            )
+            if not getattr(validation_model, "has_voice_cloning", True):
+                raise ValueError(
+                    "O checkpoint foi carregado, mas não contém os pesos de clonagem de voz."
+                )
+            del validation_model
+            gc.collect()
+            validation_config.unlink(missing_ok=True)
+
+            # The installed YAML must reference the final Drive directory, not staging.
             config_data = config_for_uploaded_model(model_variant, destination, CONFIGS_DIR)
             config_path = staging / "config.yaml"
             config_path.write_text(
@@ -570,6 +706,8 @@ def commit_asset_upload(upload_id: str) -> dict[str, Any]:
                 "tokenizer_size": validation["tokenizer_size"],
                 "tensor_count": validation["tensor_count"],
                 "pocket_tts_version": model_version,
+                "torch_version": str(torch.__version__),
+                "validated_by_pocket_tts_loader": True,
                 "created_at": datetime.now(timezone.utc).isoformat(),
             }
             atomic_write_json(staging / "manifest.json", manifest)
@@ -730,6 +868,16 @@ def health(_: None = Depends(require_token)) -> dict[str, Any]:
         "hf_cache_configured": bool(os.environ.get("HF_HOME")),
         "cuda_available": torch.cuda.is_available(),
         "gpu_name": gpu_name,
+        "torch_version": str(torch.__version__),
+        "tts_device_mode": TTS_DEVICE_MODE,
+        "tts_device_selected": TTS_DEVICE_SELECTED,
+        "tts_loaded_devices": dict(_tts_loaded_devices),
+        "tts_cpu_threads": TTS_CPU_THREADS,
+        "tts_device_error": TTS_DEVICE_ERROR,
+        "tts_runtime_version_error": TTS_VERSION_ERROR,
+        "tts_threads_error": TTS_THREADS_ERROR,
+        "tts_device_fallback_reason": _tts_device_fallback_reason,
+        "last_tts_generation": dict(_last_tts_metrics) if _last_tts_metrics else None,
     }
 
 
