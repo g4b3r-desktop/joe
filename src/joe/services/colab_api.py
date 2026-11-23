@@ -501,3 +501,66 @@ class ColabAPIClient:
         if not job_id:
             raise ColabAPIError("A API não retornou o identificador da tarefa de transcrição.")
         return self._wait_for_result(job_id).json()
+
+class ColabVoiceSession:
+    """Prepare one reference voice in Drive and reuse its voice_id across TTS chunks."""
+
+    def __init__(
+        self,
+        client: ColabAPIClient,
+        voice_path: str | Path | None,
+        language: str,
+        model_variant: str,
+        name: str | None = None,
+    ) -> None:
+        self.client = client
+        self.voice_path = Path(voice_path).expanduser() if voice_path else None
+        self.language = language
+        self.model_variant = model_variant
+        self.name = name
+        self._prepared = False
+        self._voice_id: str | None = None
+
+    @property
+    def voice_id(self) -> str | None:
+        return self._voice_id
+
+    def prepare(self) -> str | None:
+        """Upload/process the reference audio at most once per shortcut generation."""
+        if self._prepared:
+            return self._voice_id
+        if self.voice_path is None:
+            self._prepared = True
+            return None
+
+        prepared = self.client.prepare_voice(
+            self.voice_path,
+            self.language,
+            self.model_variant,
+            name=self.name,
+        )
+        voice_id = str(prepared.get("voice_id") or "").strip()
+        if not voice_id:
+            raise ColabAPIError(
+                "O Colab não retornou o identificador da voz preparada no Drive. "
+                "Confira a preparação da voz no notebook."
+            )
+        self._voice_id = voice_id
+        self._prepared = True
+        return voice_id
+
+    def generate_audio(
+        self,
+        text: str,
+        cancel_event: Event | None = None,
+    ) -> bytes:
+        """Generate one chunk using the already prepared Drive voice, never multipart."""
+        self.prepare()
+        return self.client.generate_audio(
+            text,
+            self.language,
+            voice_path=self.voice_path,
+            cancel_event=cancel_event,
+            model_variant=self.model_variant,
+            voice_id=self._voice_id,
+        )
