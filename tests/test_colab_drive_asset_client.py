@@ -70,6 +70,7 @@ def test_prepare_voice_uploads_reference_audio_and_returns_voice_id(monkeypatch,
     audio = tmp_path / "Kessya.wav"
     audio.write_bytes(b"fake wav reference")
     client = _client()
+    monkeypatch.setattr(client, "list_assets", lambda: {"models": [], "voices": []})
     submitted_chunks = []
 
     def request(method, endpoint, **kwargs):
