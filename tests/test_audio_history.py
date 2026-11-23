@@ -281,3 +281,58 @@ def test_generation_settings_are_saved_and_survive_history_reads(tmp_path):
 
     assert '"device": "cuda"' in entry.generation_settings_json
     assert store.get(entry.id) == entry
+
+
+
+def test_list_entries_supports_pagination_without_changing_default_behavior(tmp_path):
+    store = AudioHistoryStore(tmp_path / "history.sqlite3")
+    for index in range(5):
+        audio = make_audio(tmp_path / f"audio-{index}.wav")
+        store.add_generated_audio(
+            audio,
+            duration_seconds=index + 1,
+            generation_seconds=1,
+            created_at=datetime.fromisoformat(
+                f"2026-11-{index + 1:02d}T10:00:00-03:00"
+            ),
+        )
+
+    first_page = store.list_entries(limit=2, offset=0)
+    second_page = store.list_entries(limit=2, offset=2)
+    final_page = store.list_entries(limit=2, offset=4)
+
+    assert [entry.file_name for entry in first_page] == [
+        "audio-4.wav", "audio-3.wav"
+    ]
+    assert [entry.file_name for entry in second_page] == [
+        "audio-2.wav", "audio-1.wav"
+    ]
+    assert [entry.file_name for entry in final_page] == ["audio-0.wav"]
+    assert len(store.list_entries()) == 5
+
+
+def test_count_entries_applies_the_same_filters_as_list_entries(tmp_path):
+    store = AudioHistoryStore(tmp_path / "history.sqlite3")
+    for index, voice in enumerate(
+        ("Narradora", "Narradora", "Documentário", "Narradora")
+    ):
+        audio = make_audio(tmp_path / f"clip-{index}.wav")
+        store.add_generated_audio(
+            audio,
+            duration_seconds=(index + 1) * 5,
+            generation_seconds=1,
+            voice_alias=voice,
+            created_at=datetime.fromisoformat(
+                f"2026-11-{index + 1:02d}T10:00:00-03:00"
+            ),
+        )
+
+    filters = {
+        "voice": "Narradora",
+        "date_from": "2026-11-02",
+        "date_to": "2026-11-04",
+        "min_duration": 10,
+        "max_duration": 20,
+    }
+    assert store.count_entries(**filters) == 2
+    assert len(store.list_entries(**filters, limit=1)) == 1
