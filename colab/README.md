@@ -45,7 +45,7 @@ Todas as rotas são autenticadas. A inferência roda em um worker sequencial e s
 
 ## Segurança e configuração persistente
 
-O pacote `pocket-tts[quantize]` instala o backend de quantização utilizado por `TTSModel.load_model(quantize=True)`. O notebook instala esse extra a partir de `requirements.txt` antes de iniciar a API.
+O backend Colab instala `pocket-tts>=4.0.1` e `torch>=2.5`. Não instala o extra `[quantize]`, pois a API usa pesos float32 e precisa permitir CUDA. O projeto Pocket TTS registra que PyTorch 2.4.0 produz áudio incorreto; o servidor bloqueia versões anteriores a 2.5 para evitar WAVs defeituosos.
 
 Para não redigitar URL e token a cada sessão, configure uma vez estes Secrets no painel de chave do Google Colab e habilite **Notebook access**:
 
@@ -58,6 +58,22 @@ O notebook carrega os Secrets usando `google.colab.userdata.get()` e os disponib
 **Não use uma URL Quick Tunnel em `JOE_API_URL` esperando que ela permaneça igual.** O Quick Tunnel cria um subdomínio aleatório e temporário; nesse modo, atualize a URL no Joe depois de reiniciar o runtime. Para manter a URL, publique um hostname fixo no Named Tunnel e direcione-o para `http://localhost:8000`.
 
 Não grave os segredos diretamente em células, arquivos do repositório, variáveis persistentes do Drive ou screenshots compartilhados. O serviço aceita uploads até 80 MB e texto até 20 mil caracteres. O túnel público é para desenvolvimento/uso pessoal; não é uma implantação de produção.
+
+### Dispositivo, threads e qualidade da síntese
+
+A célula **Configurar desempenho e qualidade do Pocket TTS** controla a inferência:
+
+- **Automático:** usa CUDA quando `torch.cuda.is_available()` é verdadeiro; caso contrário, usa CPU.
+- **Somente CPU:** mantém o modelo na CPU.
+- **Forçar GPU CUDA:** exige CUDA disponível e informa erro explícito se o runtime não tiver GPU.
+- **Threads CPU:** configurável entre 1 e o número de CPUs disponíveis no container. O padrão é 1, seguindo a recomendação de desempenho do projeto Pocket TTS.
+- **Passos de qualidade:** o padrão é 5 (`sampler_decode_steps=5`). O padrão upstream é 1; mais passos aumentam o tempo de geração e podem melhorar a qualidade. Ajuste para 1 quando priorizar velocidade.
+
+As opções são aplicadas na próxima inicialização do servidor. Depois de alterá-las, execute novamente a célula **Iniciar a API do Joe e publicar o túnel**. O modo Automático só faz fallback para CPU quando o carregamento/movimentação para CUDA falhar; os modos explícitos não trocam silenciosamente de dispositivo.
+
+O endpoint `/health` informa versão do PyTorch, dispositivo selecionado e realmente carregado, threads, passos e métricas da última síntese (tempo, duração, RTF, pico e RMS). Os logs do servidor também imprimem uma linha `[JOE_TTS]` por geração.
+
+Na instalação de um modelo no Drive, além de conferir Safetensors e JSON, o backend carrega o checkpoint e o tokenizer pelo próprio `TTSModel.load_model()` usando o YAML da variante. O upload é recusado se o checkpoint não for compatível com a arquitetura ou não oferecer clonagem de voz. Isso verifica a compatibilidade estrutural, mas não substitui uma audição humana para avaliar pronúncia.
 
 ### Variantes do Pocket TTS
 
