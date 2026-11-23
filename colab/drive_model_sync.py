@@ -9,7 +9,7 @@ from collections import Counter
 from pathlib import Path
 from typing import Any, Callable
 
-MAX_ARCHIVE_BYTES = 4 * 1024**3  # 4 GiB
+MAX_ARCHIVE_BYTES = 4_000_000_000  # 4 GB (decimal bytes)
 
 # ZIP member -> (Hugging Face repo, file, pinned revision, validation type).
 MODEL_ASSETS = {
