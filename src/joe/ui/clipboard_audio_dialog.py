@@ -847,6 +847,8 @@ class ClipboardAudioDialog(QDialog):
                 self.phrase_list.scrollToItem(
                     item, QListWidget.ScrollHint.EnsureVisible
                 )
+        else:
+            self.phrase_list.setCurrentRow(-1)
         self.phrase_list.viewport().update()
 
     def _play_phrase_item(self, item: QListWidgetItem) -> None:
