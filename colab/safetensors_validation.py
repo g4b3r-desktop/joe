@@ -20,7 +20,7 @@ def validate_safetensors_file(path: str | Path) -> dict[str, int]:
                 "renomeado como .safetensors. Selecione o WAV original ou "
                 "reexporte o estado de voz com Pocket TTS."
             )
-        if prefix.startswith(b"PK\\x03\\x04"):
+        if prefix.startswith(b"PK\x03\x04"):
             raise ValueError(
                 "o conteúdo começa com um cabeçalho ZIP: não é um estado "
                 "Safetensors válido. Não renomeie um .pt/.pth/.zip para "
