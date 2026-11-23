@@ -292,7 +292,7 @@ def ensure_portuguese_model_in_zip(
 
             final_size = temporary_zip.stat().st_size
             if final_size > max_archive_bytes:
-                limit_gib = max_archive_bytes / (1024**3)
+                limit_gb = max_archive_bytes / 1_000_000_000
                 raise ArchiveSizeLimitError(
                     "O ZIP atualizado ultrapassaria o limite configurado de "
                     f"{limit_gib:.2f} GiB ({final_size:,} bytes). "
