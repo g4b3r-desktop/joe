@@ -3,15 +3,16 @@
 from pathlib import Path
 
 
-def safe_upload_suffix(filename: str | None) -> str:
-    """Return a safe suffix, preserving Pocket TTS voice-state files.
+def safe_upload_suffix(
+    filename: str | None, *, allow_safetensors: bool = False
+) -> str:
+    """Return a safe suffix, optionally preserving Pocket TTS voice states.
 
-    ``.safetensors`` is intentionally accepted even though it is longer than
-    the short audio suffixes. The Colab API writes uploads to a temporary file
-    using this suffix, and Pocket TTS selects its Safetensors loader by suffix.
+    Safetensors is allowed only for the TTS voice upload. The transcription
+    endpoint continues to accept audio formats only.
     """
     suffix = Path(filename or "audio.wav").suffix.lower()
-    if suffix == ".safetensors":
+    if allow_safetensors and suffix == ".safetensors":
         return suffix
     if not suffix or len(suffix) > 10 or not suffix[1:].isalnum():
         return ".wav"
