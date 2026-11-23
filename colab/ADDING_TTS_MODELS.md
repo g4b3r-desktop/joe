@@ -1,5 +1,8 @@
 # Adicionar novos modelos e idiomas ao Colab
 
+> **Aviso para a branch `feature/colab-drive-direct-assets`:** este é um guia histórico da integração baseada em ZIP. O notebook atual não usa `JOE_MODELS.zip`, `ensure_portuguese_model_in_zip()` nem extração de modelos. Para o fluxo atual, siga a seção **Armazenamento direto no Google Drive (sem ZIP)** do [README do Colab](README.md). O upload direto pelo Joe exige `model.safetensors` e `tokenizer.json` da variante selecionada; modelos comunitários com YAML próprio ainda exigem integração específica.
+
+
 Este guia explica como ampliar o suporte de modelos TTS no notebook do JOE. Ele é voltado a quem altera o código do projeto; **não basta copiar um checkpoint para o Google Drive**. O notebook, a sincronização do ZIP e a API precisam reconhecer a nova configuração.
 
 > **Estado atual desta branch:** a sincronização automática de `colab/drive_model_sync.py` está implementada especificamente para as variantes `portuguese` e `portuguese_24l`. A função `ensure_portuguese_model_in_zip()` não descobre idiomas automaticamente. Inglês, japonês ou outro idioma só estarão disponíveis no modo Colab depois de integrar seus arquivos e configurações nas etapas deste documento.
