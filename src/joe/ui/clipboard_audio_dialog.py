@@ -329,8 +329,8 @@ class PhraseItemDelegate(QStyledItemDelegate):
 class ClipboardAudioDialog(QDialog):
     """Janela compacta do atalho, com reprodução progressiva das frases."""
 
-    closed = __import__("PySide6.QtCore", fromlist=["Signal"]).Signal()
-    saved = __import__("PySide6.QtCore", fromlist=["Signal"]).Signal(str, object)
+    closed = Signal()
+    saved = Signal(str, object)
 
     def __init__(
         self,
