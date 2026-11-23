@@ -1187,6 +1187,76 @@ class HotkeyBridge(QObject):
     command_received = Signal(str)
 
 
+class WrappedTextItemDelegate(QStyledItemDelegate):
+    """Paint list rows with word wrapping, including long words and paths."""
+
+    def _document(self, text: str, font, text_color: str, width: int) -> QTextDocument:
+        document = QTextDocument()
+        document.setDocumentMargin(0)
+        document.setDefaultFont(font)
+        document.setPlainText(text)
+        text_option = QTextOption()
+        text_option.setWrapMode(QTextOption.WrapMode.WrapAtWordBoundaryOrAnywhere)
+        document.setDefaultTextOption(text_option)
+        document.setDefaultStyleSheet(f"body {{ color: {text_color}; }}")
+        document.setTextWidth(max(120, width))
+        return document
+
+    def sizeHint(self, option, index) -> QSize:  # noqa: N802
+        view = self.parent()
+        width = option.rect.width()
+        if width <= 0 and isinstance(view, QListWidget):
+            width = view.viewport().width()
+        if width <= 0:
+            width = 520
+        text = str(index.data(Qt.ItemDataRole.DisplayRole) or "")
+        document = self._document(text, option.font, "#edf2f8", width - 48)
+        height = max(48, int(document.size().height()) + 28)
+        return QSize(width, height)
+
+    def paint(self, painter: QPainter, option, index) -> None:
+        view_option = QStyleOptionViewItem(option)
+        self.initStyleOption(view_option, index)
+        text = view_option.text
+        view_option.text = ""
+
+        widget = view_option.widget
+        style = widget.style() if widget is not None else QApplication.style()
+        style.drawControl(
+            QStyle.ControlElement.CE_ItemViewItem,
+            view_option,
+            painter,
+            widget,
+        )
+        text_rect = style.subElementRect(
+            QStyle.SubElement.SE_ItemViewItemText,
+            view_option,
+            widget,
+        )
+        color = view_option.palette.color(QPalette.ColorRole.Text).name()
+        document = self._document(
+            text,
+            view_option.font,
+            color,
+            text_rect.width(),
+        )
+        painter.save()
+        painter.translate(text_rect.topLeft())
+        document.drawContents(
+            painter,
+            QRectF(0, 0, text_rect.width(), text_rect.height()),
+        )
+        painter.restore()
+
+
+class WrappedListWidget(QListWidget):
+    """A list that recalculates wrapped row heights when its viewport changes."""
+
+    def resizeEvent(self, event) -> None:  # noqa: N802
+        super().resizeEvent(event)
+        self.doItemsLayout()
+
+
 class ClipboardAudioDialog(QDialog):
     """Compact player with clickable generated phrases and optional ASR segments."""
 
@@ -1229,145 +1299,197 @@ class ClipboardAudioDialog(QDialog):
         self.performance_timer.setInterval(500)
         self.performance_timer.timeout.connect(self._update_performance_elapsed)
 
-        self.setWindowTitle("Joe — Texto copiado para áudio")
+        self.setWindowTitle("Joe — Áudio do atalho")
         self.setWindowFlags(Qt.WindowType.Window)
         self.setWindowIcon(QApplication.windowIcon())
         self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
-        self.setMinimumSize(700, 560)
-        self.resize(900, 700)
+        self.setMinimumSize(760, 620)
+        self.resize(1040, 800)
 
         self.setStyleSheet("""
             QDialog {
-                background: #111722;
-                color: #edf2f8;
+                background: #0c1420;
+                color: #edf3fb;
                 font-size: 11pt;
             }
+            QFrame#appHeader {
+                background: #172438;
+                border: 1px solid #2b405b;
+                border-radius: 13px;
+            }
+            QLabel#brandMark {
+                background: #216db8;
+                border-radius: 9px;
+                color: #ffffff;
+                padding: 8px 11px;
+                font-size: 12pt;
+                font-weight: 800;
+            }
+            QLabel#windowTitle {
+                color: #f5f8fd;
+                font-size: 17pt;
+                font-weight: 700;
+            }
+            QLabel#windowSubtitle {
+                color: #aebdd0;
+                font-size: 10pt;
+            }
             QGroupBox {
-                background: #182231;
-                border: 1px solid #34445b;
-                border-radius: 10px;
+                background: #141f2e;
+                border: 1px solid #2b3b50;
+                border-radius: 12px;
                 margin-top: 13px;
-                padding: 14px 12px 12px 12px;
-                color: #eaf0f8;
+                padding: 15px 13px 13px 13px;
+                color: #e7eef8;
                 font-size: 11pt;
-                font-weight: 600;
+                font-weight: 650;
             }
             QGroupBox::title {
                 subcontrol-origin: margin;
-                left: 12px;
+                left: 14px;
                 padding: 0 6px;
-                color: #c8d7e9;
+                color: #d3dfed;
             }
             QLabel {
-                color: #e8edf5;
+                color: #e7eef8;
                 font-size: 10.5pt;
             }
             QLabel#muted, QLabel#metricsText, QLabel#recognitionText {
-                color: #b7c4d4;
+                color: #aebdd0;
                 font-size: 10pt;
                 font-weight: normal;
             }
             QLabel#statusCard {
-                background: #1c2b3d;
-                border: 1px solid #3a5877;
-                border-radius: 9px;
-                padding: 12px;
-                color: #f0f6ff;
-                font-size: 11pt;
+                background: #172b40;
+                border: 1px solid #355b7e;
+                border-radius: 10px;
+                padding: 12px 14px;
+                color: #eff7ff;
+                font-size: 10.5pt;
                 font-weight: 600;
             }
+            QFrame#metricTile {
+                background: #101a28;
+                border: 1px solid #2a3d54;
+                border-radius: 10px;
+            }
+            QLabel#metricCaption {
+                color: #9fb0c4;
+                font-size: 9pt;
+                font-weight: 600;
+            }
+            QLabel#metricValue {
+                color: #f4f8ff;
+                font-size: 16pt;
+                font-weight: 700;
+            }
             QTextEdit {
-                background: #101925;
-                border: 1px solid #35465e;
-                border-radius: 8px;
-                padding: 9px;
-                color: #f1f5fa;
-                selection-background-color: #2868ad;
+                background: #0e1825;
+                border: 1px solid #2b4057;
+                border-radius: 9px;
+                padding: 10px;
+                color: #f0f5fb;
+                selection-background-color: #245f9c;
                 font-size: 11pt;
             }
             QListWidget {
-                background: #101925;
-                border: 1px solid #34445b;
-                border-radius: 8px;
-                padding: 6px;
-                color: #edf2f8;
-                font-size: 11pt;
+                background: #0e1825;
+                border: 1px solid #2b4057;
+                border-radius: 9px;
+                padding: 7px;
+                color: #edf3fb;
+                font-size: 10.5pt;
                 outline: none;
             }
             QListWidget::item {
-                background: #1b2737;
-                border: 1px solid #29394d;
-                border-radius: 7px;
-                padding: 10px 11px;
-                margin: 3px 1px;
+                background: #172435;
+                border: 1px solid #26394f;
+                border-radius: 8px;
+                padding: 9px 11px;
+                margin: 3px 2px;
             }
             QListWidget::item:hover {
-                background: #25374c;
-                border-color: #496888;
+                background: #20364d;
+                border-color: #41678c;
             }
             QListWidget::item:selected {
-                background: #244b70;
-                border-color: #5b9bd0;
+                background: #234a70;
+                border-color: #5a91c3;
                 color: #ffffff;
+            }
+            QFrame#playerBar {
+                background: #172438;
+                border: 1px solid #30445f;
+                border-radius: 12px;
             }
             QPushButton {
-                min-height: 40px;
-                padding: 5px 13px;
-                border: 1px solid #465873;
-                border-radius: 8px;
-                background: #263449;
-                color: #f2f5fa;
+                min-height: 42px;
+                padding: 6px 15px;
+                border: 1px solid #405570;
+                border-radius: 9px;
+                background: #26374d;
+                color: #f1f5fa;
                 font-size: 10.5pt;
+                font-weight: 550;
             }
             QPushButton:hover {
-                background: #334761;
-                border-color: #6b89ad;
+                background: #334b66;
+                border-color: #6687aa;
             }
             QPushButton:disabled {
-                background: #202a37;
-                border-color: #303c4c;
-                color: #77869a;
+                background: #1b2736;
+                border-color: #293849;
+                color: #718196;
             }
             QPushButton#primaryButton {
-                background: #1769bd;
-                border: 1px solid #398be0;
+                background: #176fc5;
+                border: 1px solid #3b91df;
                 color: #ffffff;
-                font-weight: 600;
+                font-weight: 700;
             }
             QPushButton#primaryButton:hover {
-                background: #217bd4;
+                background: #2482da;
             }
         """)
 
         root_layout = QVBoxLayout(self)
-        root_layout.setContentsMargins(16, 14, 16, 14)
-        root_layout.setSpacing(10)
+        root_layout.setContentsMargins(20, 18, 20, 18)
+        root_layout.setSpacing(12)
 
-        # O conteúdo pode crescer sem empurrar os controles para fora da janela.
+        # Identidade visual e título da janela.
+        header = QFrame(self)
+        header.setObjectName("appHeader")
+        header_layout = QHBoxLayout(header)
+        header_layout.setContentsMargins(16, 13, 18, 13)
+        header_layout.setSpacing(13)
+        brand = QLabel("JOE")
+        brand.setObjectName("brandMark")
+        brand.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        header_layout.addWidget(brand, 0, Qt.AlignmentFlag.AlignVCenter)
+        title_column = QVBoxLayout()
+        title_column.setSpacing(2)
+        title = QLabel("Texto convertido em áudio")
+        title.setObjectName("windowTitle")
+        subtitle = QLabel("Ouça o resultado completo ou selecione frases individuais.")
+        subtitle.setObjectName("windowSubtitle")
+        subtitle.setWordWrap(True)
+        title_column.addWidget(title)
+        title_column.addWidget(subtitle)
+        header_layout.addLayout(title_column, 1)
+        root_layout.addWidget(header)
+
+        # O conteúdo principal rola verticalmente; os comandos do player ficam fixos.
         scroll_area = QScrollArea(self)
         scroll_area.setWidgetResizable(True)
+        scroll_area.setFrameShape(QFrame.Shape.NoFrame)
         scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         content_widget = QWidget()
         layout = QVBoxLayout(content_widget)
-        layout.setContentsMargins(4, 4, 8, 8)
-        layout.setSpacing(8)
+        layout.setContentsMargins(2, 2, 8, 8)
+        layout.setSpacing(10)
 
-        preview_group = QGroupBox("Texto recebido pelo atalho")
-        preview_layout = QVBoxLayout(preview_group)
-        preview_layout.setContentsMargins(10, 10, 10, 8)
-        self.preview_label = QTextEdit()
-        self.preview_label.setReadOnly(True)
-        self.preview_label.setAcceptRichText(False)
-        self.preview_label.setLineWrapMode(QTextEdit.LineWrapMode.WidgetWidth)
-        self.preview_label.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
-        self.preview_label.setMinimumHeight(82)
-        self.preview_label.setMaximumHeight(150)
-        self.preview_label.setPlaceholderText("O texto copiado aparecerá aqui.")
-        preview_layout.addWidget(self.preview_label)
-        layout.addWidget(preview_group)
-
-        self.status_label = QLabel("Preparando trechos de áudio…")
+        self.status_label = QLabel("Preparando os trechos de áudio…")
         self.status_label.setObjectName("statusCard")
         self.status_label.setWordWrap(True)
         self.status_label.setTextInteractionFlags(
@@ -1375,11 +1497,62 @@ class ClipboardAudioDialog(QDialog):
         )
         layout.addWidget(self.status_label)
 
+        preview_group = QGroupBox("Texto recebido pelo atalho")
+        preview_layout = QVBoxLayout(preview_group)
+        preview_layout.setContentsMargins(10, 11, 10, 9)
+        self.preview_label = QTextEdit()
+        self.preview_label.setReadOnly(True)
+        self.preview_label.setAcceptRichText(False)
+        self.preview_label.setLineWrapMode(QTextEdit.LineWrapMode.WidgetWidth)
+        self.preview_label.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+        )
+        self.preview_label.setVerticalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAsNeeded
+        )
+        self.preview_label.setMinimumHeight(100)
+        self.preview_label.setMaximumHeight(210)
+        self.preview_label.setPlaceholderText("O texto copiado aparecerá aqui.")
+        preview_layout.addWidget(self.preview_label)
+        layout.addWidget(preview_group)
+
         metrics_group = QGroupBox("Desempenho da geração")
         metrics_layout = QVBoxLayout(metrics_group)
-        metrics_layout.setContentsMargins(10, 10, 10, 8)
+        metrics_layout.setContentsMargins(10, 11, 10, 9)
+        metrics_grid = QGridLayout()
+        metrics_grid.setHorizontalSpacing(9)
+        metrics_grid.setVerticalSpacing(9)
+        self.metric_values: dict[str, QLabel] = {}
+        metric_specs = (
+            ("elapsed", "TEMPO DE GERAÇÃO", "—"),
+            ("duration", "DURAÇÃO DO ÁUDIO", "—"),
+            ("speed", "VELOCIDADE EFETIVA", "—"),
+            ("rate", "TEXTO POR SEGUNDO", "—"),
+        )
+        for index, (key, caption, initial) in enumerate(metric_specs):
+            tile = QFrame()
+            tile.setObjectName("metricTile")
+            tile_layout = QVBoxLayout(tile)
+            tile_layout.setContentsMargins(12, 9, 12, 10)
+            tile_layout.setSpacing(3)
+            caption_label = QLabel(caption)
+            caption_label.setObjectName("metricCaption")
+            caption_label.setWordWrap(True)
+            value_label = QLabel(initial)
+            value_label.setObjectName("metricValue")
+            value_label.setWordWrap(True)
+            value_label.setTextInteractionFlags(
+                Qt.TextInteractionFlag.TextSelectableByMouse
+            )
+            tile_layout.addWidget(caption_label)
+            tile_layout.addWidget(value_label)
+            metrics_grid.addWidget(tile, index // 2, index % 2)
+            self.metric_values[key] = value_label
+        metrics_grid.setColumnStretch(0, 1)
+        metrics_grid.setColumnStretch(1, 1)
+        metrics_layout.addLayout(metrics_grid)
         self.performance_label = QLabel(
-            "As medições de tempo e velocidade aparecerão aqui."
+            "O Joe mede o tempo neste computador, inclusive a espera do serviço remoto quando usado."
         )
         self.performance_label.setObjectName("metricsText")
         self.performance_label.setWordWrap(True)
@@ -1389,17 +1562,29 @@ class ClipboardAudioDialog(QDialog):
         metrics_layout.addWidget(self.performance_label)
         layout.addWidget(metrics_group)
 
+        phrases_group = QGroupBox(
+            f"Frases geradas ({len(self.phrase_texts)})"
+            if self.phrase_texts
+            else "Frases geradas"
+        )
+        phrases_layout = QVBoxLayout(phrases_group)
+        phrases_layout.setContentsMargins(10, 11, 10, 9)
         self.phrases_title = QLabel(
-            "Selecione uma frase para ouvir somente aquele trecho."
+            "Clique em uma frase para ouvir somente aquele trecho."
         )
         self.phrases_title.setObjectName("muted")
-        self.phrase_list = QListWidget()
+        self.phrases_title.setWordWrap(True)
+        self.phrase_list = WrappedListWidget()
+        self.phrase_list.setItemDelegate(WrappedTextItemDelegate(self.phrase_list))
         self.phrase_list.setWordWrap(True)
         self.phrase_list.setTextElideMode(Qt.TextElideMode.ElideNone)
+        self.phrase_list.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+        )
         self.phrase_list.setSpacing(4)
         self.phrase_list.setUniformItemSizes(False)
-        self.phrase_list.setMinimumHeight(160)
-        self.phrase_list.setMaximumHeight(330)
+        self.phrase_list.setMinimumHeight(145)
+        self.phrase_list.setMaximumHeight(430)
         self.phrase_list.itemClicked.connect(self._play_phrase_item)
         for index, phrase in enumerate(self.phrase_texts, start=1):
             item = QListWidgetItem(f"◷  {index:03d}   {phrase}")
@@ -1408,45 +1593,54 @@ class ClipboardAudioDialog(QDialog):
             item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEnabled)
             self.phrase_list.addItem(item)
         if self.phrase_texts:
-            phrases_group = QGroupBox(f"Frases geradas ({len(self.phrase_texts)})")
-            phrases_layout = QVBoxLayout(phrases_group)
-            phrases_layout.setContentsMargins(10, 10, 10, 8)
             phrases_layout.addWidget(self.phrases_title)
             phrases_layout.addWidget(self.phrase_list)
             layout.addWidget(phrases_group)
         else:
+            phrases_group.hide()
             self.phrases_title.hide()
             self.phrase_list.hide()
 
+        recognition_group = QGroupBox("Reconhecimento de fala")
+        recognition_layout = QVBoxLayout(recognition_group)
+        recognition_layout.setContentsMargins(10, 11, 10, 9)
         self.recognition_title = QLabel("Trechos reconhecidos")
         self.recognition_title.setObjectName("muted")
+        self.recognition_title.setWordWrap(True)
         self.recognition_info = QLabel(
             "O reconhecimento será iniciado quando o WAV completo estiver pronto."
         )
         self.recognition_info.setWordWrap(True)
         self.recognition_info.setObjectName("muted")
-        self.recognition_list = QListWidget()
+        self.recognition_list = WrappedListWidget()
+        self.recognition_list.setItemDelegate(
+            WrappedTextItemDelegate(self.recognition_list)
+        )
         self.recognition_list.setWordWrap(True)
         self.recognition_list.setTextElideMode(Qt.TextElideMode.ElideNone)
+        self.recognition_list.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+        )
         self.recognition_list.setSpacing(4)
         self.recognition_list.setUniformItemSizes(False)
-        self.recognition_list.setMinimumHeight(120)
-        self.recognition_list.setMaximumHeight(260)
+        self.recognition_list.setMinimumHeight(110)
+        self.recognition_list.setMaximumHeight(310)
         self.recognition_list.setEnabled(False)
         self.recognition_list.itemClicked.connect(self._play_recognized_segment)
         self.recognition_text_label = QLabel("")
         self.recognition_text_label.setWordWrap(True)
         self.recognition_text_label.setObjectName("recognitionText")
+        self.recognition_text_label.setTextInteractionFlags(
+            Qt.TextInteractionFlag.TextSelectableByMouse
+        )
         self.recognition_text_label.hide()
+        recognition_layout.addWidget(self.recognition_info)
+        recognition_layout.addWidget(self.recognition_list)
+        recognition_layout.addWidget(self.recognition_text_label)
         if recognition_enabled:
-            recognition_group = QGroupBox("Reconhecimento de fala")
-            recognition_layout = QVBoxLayout(recognition_group)
-            recognition_layout.setContentsMargins(10, 10, 10, 8)
-            recognition_layout.addWidget(self.recognition_info)
-            recognition_layout.addWidget(self.recognition_list)
-            recognition_layout.addWidget(self.recognition_text_label)
             layout.addWidget(recognition_group)
         else:
+            recognition_group.hide()
             self.recognition_title.hide()
             self.recognition_info.hide()
             self.recognition_list.hide()
@@ -1455,17 +1649,20 @@ class ClipboardAudioDialog(QDialog):
         scroll_area.setWidget(content_widget)
         root_layout.addWidget(scroll_area, 1)
 
-        # A barra de ações permanece visível mesmo quando o conteúdo é rolado.
-        buttons = QHBoxLayout()
+        # Player e comandos fixos na parte inferior, como em um aplicativo desktop.
+        player_bar = QFrame(self)
+        player_bar.setObjectName("playerBar")
+        buttons = QHBoxLayout(player_bar)
+        buttons.setContentsMargins(11, 10, 11, 10)
         buttons.setSpacing(8)
-        self.play_button = QPushButton("▶  Reproduzir áudio completo")
+        self.play_button = QPushButton("▶  Ouvir áudio completo")
         self.play_button.setObjectName("primaryButton")
         self.play_button.setEnabled(False)
         self.play_button.clicked.connect(self._play)
-        self.pause_button = QPushButton("Pausar")
+        self.pause_button = QPushButton("Ⅱ  Pausar")
         self.pause_button.setEnabled(False)
         self.pause_button.clicked.connect(self._pause)
-        self.save_button = QPushButton("Salvar WAV…")
+        self.save_button = QPushButton("↓  Salvar WAV…")
         self.save_button.setEnabled(False)
         self.save_button.clicked.connect(self._save)
         self.details_button = QPushButton("Detalhes técnicos")
@@ -1474,14 +1671,15 @@ class ClipboardAudioDialog(QDialog):
         self.close_button = QPushButton("Fechar")
         self.close_button.clicked.connect(self.close)
 
-        buttons.addWidget(self.play_button, 2)
+        buttons.addWidget(self.play_button, 3)
         buttons.addWidget(self.pause_button, 1)
         buttons.addWidget(self.save_button, 1)
         buttons.addWidget(self.details_button, 1)
         buttons.addWidget(self.close_button, 1)
-        root_layout.addLayout(buttons)
+        root_layout.addWidget(player_bar)
 
         self.player.mediaStatusChanged.connect(self._on_media_status_changed)
+        self.player.positionChanged.connect(self._stop_timed_segment)
         self.player.positionChanged.connect(self._stop_timed_segment)
 
     def set_text_preview(self, text: str) -> None:
@@ -1490,9 +1688,17 @@ class ClipboardAudioDialog(QDialog):
 
     def start_measurement(self, remote: bool = False) -> None:
         self.generation_started_at = time.perf_counter()
+        self.metric_values["elapsed"].setText(format_duration(0))
+        self.metric_values["duration"].setText("Aguardando")
+        self.metric_values["speed"].setText("Calculando")
+        self.metric_values["rate"].setText("Calculando")
         self.performance_label.setText(
-            "Medição do Joe neste computador — "
-            f"{format_elapsed_status(0)}"
+            "Cronômetro iniciado pelo Joe. "
+            + (
+                "A medição inclui o envio, a fila e a resposta do Google Colab."
+                if remote
+                else "A medição pode incluir o carregamento do modelo local."
+            )
         )
         self.performance_timer.start()
 
@@ -1501,10 +1707,7 @@ class ClipboardAudioDialog(QDialog):
             self.performance_timer.stop()
             return
         elapsed = time.perf_counter() - self.generation_started_at
-        self.performance_label.setText(
-            "Medição do Joe neste computador — "
-            f"{format_elapsed_status(elapsed)}"
-        )
+        self.metric_values["elapsed"].setText(format_duration(elapsed))
 
     def set_progress(self, message: str) -> None:
         if self.is_closing or (
@@ -1547,10 +1750,36 @@ class ClipboardAudioDialog(QDialog):
         performance = result.get("performance")
         self.performance = performance if isinstance(performance, AudioPerformance) else None
         if isinstance(performance, AudioPerformance):
-            self.performance_label.setText(format_performance_report(performance))
-        else:
+            elapsed = max(0.0, performance.elapsed_seconds)
+            duration = max(0.0, performance.audio_duration_seconds)
+            speed = duration / elapsed if elapsed > 0 else 0.0
+            character_rate = (
+                performance.character_count / elapsed if elapsed > 0 else 0.0
+            )
+            self.metric_values["elapsed"].setText(format_duration(elapsed))
+            self.metric_values["duration"].setText(format_duration(duration))
+            self.metric_values["speed"].setText(
+                f"{speed:.2f}×".replace(".", ",") if speed else "—"
+            )
+            self.metric_values["rate"].setText(
+                f"{character_rate:.1f} car/s".replace(".", ",")
+                if character_rate
+                else "—"
+            )
             self.performance_label.setText(
-                "Áudio pronto; não foi possível calcular todas as métricas."
+                "Medição realizada pelo Joe neste computador. "
+                + (
+                    "No modo remoto, o tempo inclui envio, fila e espera pela API."
+                    if performance.remote
+                    else "No modo local, o tempo inclui o carregamento do modelo quando necessário."
+                )
+            )
+        else:
+            self.metric_values["duration"].setText("Indisponível")
+            self.metric_values["speed"].setText("—")
+            self.metric_values["rate"].setText("—")
+            self.performance_label.setText(
+                "Áudio pronto, mas não foi possível calcular todas as métricas."
             )
         self.play_button.setEnabled(bool(self.chunk_paths))
         self.save_button.setEnabled(True)
@@ -1572,6 +1801,9 @@ class ClipboardAudioDialog(QDialog):
         self.details_button.setVisible(bool(self.failure_details))
         self.performance_timer.stop()
         self.generation_started_at = None
+        self.metric_values["duration"].setText("Não concluído")
+        self.metric_values["speed"].setText("—")
+        self.metric_values["rate"].setText("—")
         self.performance_label.setText(
             "Medição interrompida porque a geração não foi concluída."
         )
@@ -1629,10 +1861,9 @@ class ClipboardAudioDialog(QDialog):
         if note:
             self.recognition_info.setToolTip(note)
         if recognized_text:
-            compact = " ".join(recognized_text.split())
-            if len(compact) > 320:
-                compact = compact[:317].rstrip() + "…"
-            self.recognition_text_label.setText(f"Texto reconhecido: {compact}")
+            self.recognition_text_label.setText(
+                f"Texto reconhecido:\\n{recognized_text}"
+            )
             self.recognition_text_label.setToolTip(recognized_text)
             self.recognition_text_label.show()
         else:
