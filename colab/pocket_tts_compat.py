@@ -30,11 +30,23 @@ def load_tts_model(
     model_variant: str,
     *,
     quantize: bool,
+    sampler_decode_steps: int = 5,
+    temp: float | None = None,
 ) -> Any:
     """Load a built-in Pocket TTS variant or the Japanese community YAML model."""
     if language == "japanese" and model_variant == "japanese":
-        return model_class.load_model(config=JAPANESE_MODEL_CONFIG, quantize=quantize)
-    return model_class.load_model(language=model_variant, quantize=quantize)
+        return model_class.load_model(
+            config=JAPANESE_MODEL_CONFIG,
+            quantize=quantize,
+            sampler_decode_steps=sampler_decode_steps,
+            temp=temp,
+        )
+    return model_class.load_model(
+        language=model_variant,
+        quantize=quantize,
+        sampler_decode_steps=sampler_decode_steps,
+        temp=temp,
+    )
 
 
 def default_voice_for_language(language: str, configured_voice: str | None) -> str | None:
