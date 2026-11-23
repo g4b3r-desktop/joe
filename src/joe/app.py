@@ -19,10 +19,12 @@ import torch  # noqa: F401
 
 # isort: split
 from PySide6.QtCore import (
-    QObject, QRunnable, QSize, QSettings, QStandardPaths, QThreadPool,
+    QObject, QRunnable, QRectF, QSize, QSettings, QStandardPaths, QThreadPool,
     QTime, QTimer, QUrl, Qt, Signal,
 )
-from PySide6.QtGui import QAction, QDesktopServices, QIcon
+from PySide6.QtGui import (
+    QAction, QDesktopServices, QIcon, QPalette, QPainter, QTextDocument, QTextOption,
+)
 from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
 from PySide6.QtWidgets import (
     QApplication,
@@ -35,6 +37,8 @@ from PySide6.QtWidgets import (
     QHeaderView,
     QInputDialog,
     QFormLayout,
+    QFrame,
+    QGridLayout,
     QGroupBox,
     QHBoxLayout,
     QLabel,
@@ -47,6 +51,9 @@ from PySide6.QtWidgets import (
     QScrollArea,
     QSpinBox,
     QStatusBar,
+    QStyle,
+    QStyleOptionViewItem,
+    QStyledItemDelegate,
     QTabWidget,
     QTableWidget,
     QTableWidgetItem,
@@ -1492,6 +1499,7 @@ class ClipboardAudioDialog(QDialog):
         self.status_label = QLabel("Preparando os trechos de áudio…")
         self.status_label.setObjectName("statusCard")
         self.status_label.setWordWrap(True)
+        self.status_label.setTextFormat(Qt.TextFormat.PlainText)
         self.status_label.setTextInteractionFlags(
             Qt.TextInteractionFlag.TextSelectableByMouse
         )
@@ -1556,6 +1564,7 @@ class ClipboardAudioDialog(QDialog):
         )
         self.performance_label.setObjectName("metricsText")
         self.performance_label.setWordWrap(True)
+        self.performance_label.setTextFormat(Qt.TextFormat.PlainText)
         self.performance_label.setTextInteractionFlags(
             Qt.TextInteractionFlag.TextSelectableByMouse
         )
@@ -1611,6 +1620,7 @@ class ClipboardAudioDialog(QDialog):
             "O reconhecimento será iniciado quando o WAV completo estiver pronto."
         )
         self.recognition_info.setWordWrap(True)
+        self.recognition_info.setTextFormat(Qt.TextFormat.PlainText)
         self.recognition_info.setObjectName("muted")
         self.recognition_list = WrappedListWidget()
         self.recognition_list.setItemDelegate(
@@ -1629,6 +1639,7 @@ class ClipboardAudioDialog(QDialog):
         self.recognition_list.itemClicked.connect(self._play_recognized_segment)
         self.recognition_text_label = QLabel("")
         self.recognition_text_label.setWordWrap(True)
+        self.recognition_text_label.setTextFormat(Qt.TextFormat.PlainText)
         self.recognition_text_label.setObjectName("recognitionText")
         self.recognition_text_label.setTextInteractionFlags(
             Qt.TextInteractionFlag.TextSelectableByMouse
@@ -1725,9 +1736,10 @@ class ClipboardAudioDialog(QDialog):
         self.chunk_paths_by_index[index] = audio_path
         if self.phrase_texts and 1 <= index <= self.phrase_list.count():
             item = self.phrase_list.item(index - 1)
-            item.setText(f"✓ {index:03d} · {text}")
+            item.setText(f"✓  {index:03d}   {text}")
             item.setToolTip("Clique para reproduzir somente esta frase.")
             item.setFlags(item.flags() | Qt.ItemFlag.ItemIsEnabled)
+            self.phrase_list.doItemsLayout()
         self.play_button.setEnabled(True)
         if (
             not self.generation_finished
@@ -1840,6 +1852,7 @@ class ClipboardAudioDialog(QDialog):
             item.setToolTip("Clique para ouvir somente este segmento reconhecido.")
             self.recognition_list.addItem(item)
 
+        self.recognition_list.doItemsLayout()
         self._recognized_segments = segments
         self.recognition_list.setEnabled(bool(segments))
         note = str(data.get("note", "")).strip()
@@ -1862,7 +1875,7 @@ class ClipboardAudioDialog(QDialog):
             self.recognition_info.setToolTip(note)
         if recognized_text:
             self.recognition_text_label.setText(
-                f"Texto reconhecido:\\n{recognized_text}"
+                f"Texto reconhecido:\n{recognized_text}"
             )
             self.recognition_text_label.setToolTip(recognized_text)
             self.recognition_text_label.show()
