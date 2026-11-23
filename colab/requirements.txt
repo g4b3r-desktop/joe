@@ -7,3 +7,4 @@ soundfile>=0.12
 transformers>=4.57
 scipy>=1.13
 PyYAML>=6
+huggingface_hub>=0.24
