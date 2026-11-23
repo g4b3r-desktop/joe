@@ -963,6 +963,7 @@ class ClipboardAudioDialog(QDialog):
         self.playing_phrase = False
         self.playing_timed_segment = False
         self._active_segment_end_ms: int | None = None
+        self._pending_segment_start_ms: int | None = None
         self.is_closing = False
         self.failure_details = ""
         self.generation_started_at: float | None = None
@@ -1235,6 +1236,7 @@ class ClipboardAudioDialog(QDialog):
         self.playing_final_audio = False
         self.playing_timed_segment = False
         self._active_segment_end_ms = None
+        self._pending_segment_start_ms = None
         self.playing_phrase = True
         self.current_chunk_path = path
         self.player.stop()
@@ -1262,10 +1264,13 @@ class ClipboardAudioDialog(QDialog):
         current = self.player.source().toLocalFile()
         target = str(self.audio_path.resolve())
         if not current or Path(current).resolve() != Path(target):
+            self._pending_segment_start_ms = start_ms
             self.player.stop()
             self.player.setSource(QUrl.fromLocalFile(target))
-        self.player.setPosition(start_ms)
-        self.player.play()
+        else:
+            self._pending_segment_start_ms = None
+            self.player.setPosition(start_ms)
+            self.player.play()
         self.pause_button.setEnabled(True)
         self.status_label.setText(
             f"Reproduzindo segmento reconhecido {index + 1}: "
@@ -1279,6 +1284,7 @@ class ClipboardAudioDialog(QDialog):
             and int(position_ms) >= self._active_segment_end_ms
         ):
             self._active_segment_end_ms = None
+            self._pending_segment_start_ms = None
             self.playing_timed_segment = False
             self.player.stop()
             self.pause_button.setEnabled(False)
@@ -1311,6 +1317,7 @@ class ClipboardAudioDialog(QDialog):
             self.playing_phrase = False
             self.playing_timed_segment = False
             self._active_segment_end_ms = None
+            self._pending_segment_start_ms = None
             self.current_chunk_path = None
             self.player.setSource(QUrl.fromLocalFile(str(self.audio_path.resolve())))
             self.player.play()
@@ -1368,6 +1375,16 @@ class ClipboardAudioDialog(QDialog):
         self.player.setSource(QUrl())
 
     def _on_media_status_changed(self, status) -> None:
+        if (
+            status == QMediaPlayer.MediaStatus.LoadedMedia
+            and self._pending_segment_start_ms is not None
+            and self.playing_timed_segment
+        ):
+            start_ms = self._pending_segment_start_ms
+            self._pending_segment_start_ms = None
+            self.player.setPosition(start_ms)
+            self.player.play()
+            return
         if status != QMediaPlayer.MediaStatus.EndOfMedia:
             return
         if self.playing_timed_segment:
@@ -1430,6 +1447,7 @@ class ClipboardAudioDialog(QDialog):
         self.generation_started_at = None
         self.play_requested = False
         self._active_segment_end_ms = None
+        self._pending_segment_start_ms = None
         try:
             self.player.positionChanged.disconnect(self._stop_timed_segment)
             self.player.mediaStatusChanged.disconnect(self._on_media_status_changed)
