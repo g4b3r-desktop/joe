@@ -13,6 +13,7 @@ on:
       - fix/colab-safetensors-voice-state
       - feat/colab-drive-model-autosync
       - fix/colab-tts-safetensors-diagnostics
+      - fix/colab-safetensors-upload-suffix
   pull_request:
     branches:
       - main
