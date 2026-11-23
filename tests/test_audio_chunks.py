@@ -70,3 +70,42 @@ def test_merge_resamples_and_normalizes_mono_stereo(tmp_path):
     assert info.samplerate == 8000
     assert info.channels == 1
     assert info.frames == 800 + 800
+
+    from joe.audio_chunks import split_text_into_phrases
+
+    text = "Primeira frase. Segunda frase! Terceira frase?"
+    phrases = split_text_into_phrases(text, max_chars=80)
+
+    assert phrases == ["Primeira frase.", "Segunda frase!", "Terceira frase?"]
+    assert " ".join(phrases) == text
+
+
+def test_split_text_into_phrases_keeps_long_sentences_word_safe():
+    from joe.audio_chunks import split_text_into_phrases
+
+    text = "uma palavra " * 20 + ". Outra frase."
+    phrases = split_text_into_phrases(text, max_chars=48)
+
+    assert len(phrases) > 2
+    assert all(len(phrase) <= 48 for phrase in phrases)
+    assert " ".join(phrases) == text.strip()
+
+
+def test_split_text_into_phrases_handles_newlines_and_empty_text():
+    from joe.audio_chunks import split_text_into_phrases
+
+    assert split_text_into_phrases("  ") == []
+    assert split_text_into_phrases("Linha um\nLinha dois.") == [
+        "Linha um", "Linha dois."
+    ]
+
+
+def test_split_text_into_phrases_rejects_small_limit():
+    from joe.audio_chunks import split_text_into_phrases
+
+    try:
+        split_text_into_phrases("texto", max_chars=20)
+    except ValueError as exc:
+        assert "pelo menos 40" in str(exc)
+    else:
+        raise AssertionError("Era esperado um ValueError")
