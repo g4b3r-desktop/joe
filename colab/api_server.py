@@ -314,6 +314,364 @@ def _transcribe(audio_path: str, timestamps: str) -> dict[str, Any]:
         "device": "CUDA" if "CUDA" in _asr_backend else "CPU",
     }
 
+
+def _require_direct_drive() -> Path:
+    if not DIRECT_DRIVE_ASSETS:
+        raise HTTPException(
+            status_code=409,
+            detail="O notebook não habilitou o armazenamento direto no Google Drive. "
+            "Reinicie pelo notebook novo do Joe.",
+        )
+    if not DRIVE_ASSETS_ROOT.is_dir():
+        raise HTTPException(
+            status_code=503,
+            detail="Google Drive não está montado. Reinicie a célula de configuração do Drive.",
+        )
+    return DRIVE_ASSETS_ROOT
+
+
+def _validate_asset_variant(language: str, model_variant: str) -> None:
+    if language not in SUPPORTED_TTS_MODEL_VARIANTS:
+        raise HTTPException(status_code=422, detail="Idioma TTS não suportado.")
+    if model_variant not in SUPPORTED_TTS_MODEL_VARIANTS[language]:
+        raise HTTPException(
+            status_code=422,
+            detail="A variante selecionada não pertence ao idioma informado.",
+        )
+
+
+def _upload_session_path(root: Path, upload_id: str) -> Path:
+    if not re.fullmatch(r"[a-f0-9]{32}", upload_id):
+        raise HTTPException(status_code=400, detail="Identificador de upload inválido.")
+    path = root / ".uploads" / upload_id
+    if not path.is_dir():
+        raise HTTPException(status_code=404, detail="Sessão de upload não encontrada ou expirada.")
+    return path
+
+
+def _assemble_uploaded_file(
+    session_dir: Path, key: str, metadata: dict[str, Any], destination: Path
+) -> None:
+    size = int(metadata["size"])
+    expected_hash = str(metadata["sha256"])
+    chunk_count = math.ceil(size / ASSET_UPLOAD_CHUNK_BYTES)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    digest = hashlib.sha256()
+    written = 0
+    with destination.open("wb") as output:
+        for index in range(chunk_count):
+            part = session_dir / f"{key}.{index:06d}.part"
+            if not part.is_file():
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"Upload incompleto: falta o bloco {index + 1}/{chunk_count} do arquivo {key}.",
+                )
+            with part.open("rb") as source:
+                while True:
+                    data = source.read(1024 * 1024)
+                    if not data:
+                        break
+                    output.write(data)
+                    digest.update(data)
+                    written += len(data)
+    if written != size or not hmac.compare_digest(digest.hexdigest(), expected_hash):
+        destination.unlink(missing_ok=True)
+        raise HTTPException(
+            status_code=422,
+            detail=f"Arquivo {key} incompleto ou com SHA-256 diferente do informado.",
+        )
+
+
+@app.post("/v1/assets/uploads", dependencies=[Depends(require_token)])
+def start_asset_upload(payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
+    root = _require_direct_drive()
+    kind = str(payload.get("kind", "")).strip()
+    language = str(payload.get("language", "")).strip()
+    model_variant = str(payload.get("model_variant", "")).strip()
+    _validate_asset_variant(language, model_variant)
+
+    if kind == "model":
+        if model_variant == "japanese":
+            raise HTTPException(
+                status_code=422,
+                detail="O upload de modelos comunitários japoneses ainda não é suportado por este instalador.",
+            )
+        files = payload.get("files")
+        if not isinstance(files, dict) or set(files) != {"checkpoint", "tokenizer"}:
+            raise HTTPException(
+                status_code=422,
+                detail="Envie exatamente os arquivos checkpoint (model.safetensors) e tokenizer (tokenizer.json).",
+            )
+        total_size = 0
+        normalized_files: dict[str, dict[str, Any]] = {}
+        for key, maximum in (
+            ("checkpoint", MAX_MODEL_ASSET_BYTES),
+            ("tokenizer", 100 * 1024 * 1024),
+        ):
+            item = files[key]
+            if not isinstance(item, dict):
+                raise HTTPException(status_code=422, detail=f"Metadados inválidos para {key}.")
+            size = item.get("size")
+            checksum = str(item.get("sha256", "")).lower()
+            if not isinstance(size, int) or size <= 0 or size > maximum:
+                raise HTTPException(status_code=413, detail=f"Tamanho inválido ou acima do limite para {key}.")
+            if not re.fullmatch(r"[a-f0-9]{64}", checksum):
+                raise HTTPException(status_code=422, detail=f"SHA-256 inválido para {key}.")
+            normalized_files[key] = {
+                "size": size,
+                "sha256": checksum,
+                "name": "model.safetensors" if key == "checkpoint" else "tokenizer.json",
+            }
+            total_size += size
+        if total_size > MAX_MODEL_ASSET_BYTES:
+            raise HTTPException(status_code=413, detail="O conjunto do modelo excede o limite de 4 GB.")
+        metadata = {
+            "kind": kind,
+            "language": language,
+            "model_variant": model_variant,
+            "files": normalized_files,
+        }
+    elif kind == "voice":
+        item = payload.get("file")
+        if not isinstance(item, dict):
+            raise HTTPException(status_code=422, detail="Metadados do áudio de referência ausentes.")
+        size = item.get("size")
+        checksum = str(item.get("sha256", "")).lower()
+        filename = Path(str(item.get("name", "reference.wav"))).name
+        suffix = Path(filename).suffix.lower()
+        if suffix not in VOICE_AUDIO_SUFFIXES:
+            raise HTTPException(
+                status_code=415,
+                detail="Formato de referência não suportado. Use WAV, FLAC, MP3 ou OGG; não envie .safetensors.",
+            )
+        if not isinstance(size, int) or size <= 0 or size > MAX_VOICE_ASSET_BYTES:
+            raise HTTPException(status_code=413, detail="Áudio de referência vazio ou acima de 80 MB.")
+        if not re.fullmatch(r"[a-f0-9]{64}", checksum):
+            raise HTTPException(status_code=422, detail="SHA-256 inválido para o áudio.")
+        metadata = {
+            "kind": kind,
+            "language": language,
+            "model_variant": model_variant,
+            "name": safe_asset_name(str(payload.get("name") or Path(filename).stem)),
+            "file": {"size": size, "sha256": checksum, "name": filename, "suffix": suffix},
+        }
+        load_model_manifest(root, model_variant)
+    else:
+        raise HTTPException(status_code=422, detail="Tipo de upload desconhecido.")
+
+    upload_id = uuid.uuid4().hex
+    session_dir = root / ".uploads" / upload_id
+    session_dir.mkdir(parents=True, exist_ok=False)
+    atomic_write_json(session_dir / "upload.json", metadata)
+    return {
+        "upload_id": upload_id,
+        "chunk_bytes": ASSET_UPLOAD_CHUNK_BYTES,
+        "status": "receiving",
+    }
+
+
+@app.put(
+    "/v1/assets/uploads/{upload_id}/{asset_key}/{chunk_index}",
+    dependencies=[Depends(require_token)],
+)
+async def receive_asset_chunk(
+    upload_id: str,
+    asset_key: str,
+    chunk_index: int,
+    chunk: UploadFile = File(...),
+) -> dict[str, Any]:
+    root = _require_direct_drive()
+    session_dir = _upload_session_path(root, upload_id)
+    metadata = json.loads((session_dir / "upload.json").read_text(encoding="utf-8"))
+    files = metadata.get("files", {}) if metadata.get("kind") == "model" else {
+        "voice": metadata.get("file", {})
+    }
+    if asset_key not in files:
+        raise HTTPException(status_code=404, detail="Arquivo não pertence a esta sessão de upload.")
+    file_info = files[asset_key]
+    size = int(file_info["size"])
+    chunk_count = math.ceil(size / ASSET_UPLOAD_CHUNK_BYTES)
+    if chunk_index < 0 or chunk_index >= chunk_count:
+        raise HTTPException(status_code=416, detail="Índice de bloco fora do intervalo.")
+    data = await chunk.read(ASSET_UPLOAD_CHUNK_BYTES + 1)
+    expected_size = min(ASSET_UPLOAD_CHUNK_BYTES, size - chunk_index * ASSET_UPLOAD_CHUNK_BYTES)
+    if len(data) != expected_size:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Bloco com tamanho incorreto: esperado {expected_size} bytes, recebido {len(data)}.",
+        )
+    destination = session_dir / f"{asset_key}.{chunk_index:06d}.part"
+    temporary = destination.with_suffix(".tmp")
+    temporary.write_bytes(data)
+    os.replace(temporary, destination)
+    return {
+        "upload_id": upload_id,
+        "file": asset_key,
+        "chunk_index": chunk_index,
+        "received_bytes": len(data),
+        "total_chunks": chunk_count,
+    }
+
+
+@app.post("/v1/assets/uploads/{upload_id}/commit", dependencies=[Depends(require_token)])
+def commit_asset_upload(upload_id: str) -> dict[str, Any]:
+    root = _require_direct_drive()
+    session_dir = _upload_session_path(root, upload_id)
+    metadata = json.loads((session_dir / "upload.json").read_text(encoding="utf-8"))
+    kind = metadata["kind"]
+    language = metadata["language"]
+    model_variant = metadata["model_variant"]
+    _validate_asset_variant(language, model_variant)
+
+    if kind == "model":
+        staging = root / ".staging" / f"model-{upload_id}"
+        staging.mkdir(parents=True, exist_ok=False)
+        try:
+            checkpoint = staging / "model.safetensors"
+            tokenizer = staging / "tokenizer.json"
+            _assemble_uploaded_file(session_dir, "checkpoint", metadata["files"]["checkpoint"], checkpoint)
+            _assemble_uploaded_file(session_dir, "tokenizer", metadata["files"]["tokenizer"], tokenizer)
+            validation = validate_model_files(checkpoint, tokenizer)
+            from pocket_tts.utils.config import CONFIGS_DIR
+            import yaml
+
+            config_data = config_for_uploaded_model(model_variant, staging, CONFIGS_DIR)
+            config_path = staging / "config.yaml"
+            config_path.write_text(
+                yaml.safe_dump(config_data, sort_keys=False, allow_unicode=True),
+                encoding="utf-8",
+            )
+            model_version = importlib.metadata.version("pocket-tts")
+            manifest = {
+                "schema": 1,
+                "language": language,
+                "model_variant": model_variant,
+                "checkpoint_sha256": metadata["files"]["checkpoint"]["sha256"],
+                "tokenizer_sha256": metadata["files"]["tokenizer"]["sha256"],
+                "checkpoint_size": validation["checkpoint_size"],
+                "tokenizer_size": validation["tokenizer_size"],
+                "tensor_count": validation["tensor_count"],
+                "pocket_tts_version": model_version,
+                "created_at": datetime.now(timezone.utc).isoformat(),
+            }
+            atomic_write_json(staging / "manifest.json", manifest)
+            destination = root / "models" / model_variant
+            replace_directory_atomically(staging, destination)
+            with _tts_lock:
+                _tts_voice_states.clear()
+                _tts_models.clear()
+        except Exception:
+            shutil.rmtree(staging, ignore_errors=True)
+            raise
+        finally:
+            shutil.rmtree(session_dir, ignore_errors=True)
+        return {
+            "kind": "model",
+            "language": language,
+            "model_variant": model_variant,
+            "manifest": manifest,
+            "installed_path": str(destination),
+        }
+
+    if kind == "voice":
+        staging = root / ".staging" / f"voice-{upload_id}"
+        staging.mkdir(parents=True, exist_ok=False)
+        try:
+            audio_name = metadata["file"]["name"]
+            audio_path = staging / f"reference{metadata['file']['suffix']}"
+            _assemble_uploaded_file(session_dir, "voice", metadata["file"], audio_path)
+            model_manifest = load_model_manifest(root, model_variant)
+            fingerprint = model_fingerprint(model_manifest)
+            voice_id = (
+                f"{metadata['name']}-{metadata['file']['sha256'][:12]}-{fingerprint[:8]}"
+            )
+            destination = root / "voices" / model_variant / voice_id
+            existing_metadata = destination / "metadata.json"
+            if existing_metadata.is_file():
+                existing = json.loads(existing_metadata.read_text(encoding="utf-8"))
+                if (
+                    existing.get("source_sha256") == metadata["file"]["sha256"]
+                    and existing.get("model_fingerprint") == fingerprint
+                    and (destination / "voice_state.safetensors").is_file()
+                ):
+                    shutil.rmtree(staging, ignore_errors=True)
+                    return {
+                        "kind": "voice",
+                        "voice_id": voice_id,
+                        "name": existing.get("name", metadata["name"]),
+                        "model_variant": model_variant,
+                        "reused": True,
+                        "metadata": existing,
+                    }
+
+            with _tts_lock:
+                model = _get_tts_model(language, model_variant)
+                if not getattr(model, "has_voice_cloning", True):
+                    raise RuntimeError(
+                        f"O modelo {model_variant!r} carregado não tem pesos de clonagem de voz."
+                    )
+                voice_state = model.get_state_for_audio_prompt(str(audio_path))
+                from pocket_tts import export_model_state
+                export_model_state(voice_state, staging / "voice_state.safetensors")
+
+            from safetensors_validation import validate_safetensors_file
+            validate_safetensors_file(staging / "voice_state.safetensors")
+            voice_metadata = {
+                "schema": 1,
+                "voice_id": voice_id,
+                "name": metadata["name"],
+                "language": language,
+                "model_variant": model_variant,
+                "model_fingerprint": fingerprint,
+                "source_name": audio_name,
+                "source_sha256": metadata["file"]["sha256"],
+                "voice_state_sha256": sha256_file(staging / "voice_state.safetensors"),
+                "pocket_tts_version": model_manifest["pocket_tts_version"],
+                "created_at": datetime.now(timezone.utc).isoformat(),
+            }
+            atomic_write_json(staging / "metadata.json", voice_metadata)
+            replace_directory_atomically(staging, destination)
+        except Exception:
+            shutil.rmtree(staging, ignore_errors=True)
+            raise
+        finally:
+            shutil.rmtree(session_dir, ignore_errors=True)
+        return {
+            "kind": "voice",
+            "voice_id": voice_id,
+            "name": metadata["name"],
+            "model_variant": model_variant,
+            "reused": False,
+            "metadata": voice_metadata,
+        }
+
+    shutil.rmtree(session_dir, ignore_errors=True)
+    raise HTTPException(status_code=422, detail="Tipo de upload desconhecido.")
+
+
+@app.get("/v1/assets", dependencies=[Depends(require_token)])
+def list_drive_assets() -> dict[str, Any]:
+    root = _require_direct_drive()
+    models = []
+    voices = []
+    models_root = root / "models"
+    if models_root.is_dir():
+        for manifest_path in models_root.glob("*/manifest.json"):
+            try:
+                manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+                models.append(manifest)
+            except (OSError, ValueError):
+                continue
+    voices_root = root / "voices"
+    if voices_root.is_dir():
+        for metadata_path in voices_root.glob("*/*/metadata.json"):
+            try:
+                voices.append(json.loads(metadata_path.read_text(encoding="utf-8")))
+            except (OSError, ValueError):
+                continue
+    return {"root": str(root), "models": models, "voices": voices}
+
+
 @app.get("/health")
 def health(_: None = Depends(require_token)) -> dict[str, Any]:
     gpu_name = None
