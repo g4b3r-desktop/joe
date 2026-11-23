@@ -84,3 +84,19 @@ Para clonagem personalizada, o Joe também pode enviar um áudio de referência 
 O notebook configura `weights_path` para o checkpoint de clonagem em `pocket-tts/languages/portuguese/model.safetensors` e o tokenizer para o arquivo local do Drive. Se existir, também configura o checkpoint de fallback sem clonagem em `pocket-tts-without-voice-cloning/languages/portuguese/model.safetensors`. A API é impedida de iniciar em modo Drive se a configuração local não tiver sido aplicada.
 
 A voz de referência padrão não é mais um endereço `hf://`. Se o Joe não enviar um WAV na requisição, configure um WAV local no campo **Voz padrão WAV**. Os arquivos de voz em formato WAV são áudio de referência; não são os pesos do modelo.
+
+### Sincronização automática do modelo no ZIP do Drive
+
+Ao aplicar a configuração do Drive, o notebook verifica estes dois arquivos do Pocket TTS português:
+
+- `pocket-tts/languages/portuguese/model.safetensors`
+- `pocket-tts-without-voice-cloning/languages/portuguese/tokenizer.json`
+
+A origem é o repositório oficial `kyutai/pocket-tts` no Hugging Face. Se o ZIP não existir, ele será criado. Se um arquivo estiver ausente ou inválido, somente o arquivo necessário será baixado e adicionado ao ZIP. Os demais itens existentes no arquivo são preservados.
+
+O tamanho máximo do ZIP atualizado é **4 GiB (4.294.967.296 bytes)**. Se a estimativa ou o tamanho final ultrapassar esse valor, a atualização é cancelada e o ZIP anterior não é substituído.
+
+Como o repositório do modelo exige aceitar as condições de acesso, o usuário precisa aceitar os termos em <https://huggingface.co/kyutai/pocket-tts> e criar um token Hugging Face com permissão de leitura. Salve-o no painel **Secrets** do Colab como `HF_TOKEN` e habilite **Notebook access**. O token não é gravado no Drive, no ZIP nem no notebook. Caso os dois arquivos já estejam válidos no ZIP, não é necessário informar o token.
+
+A rotina de sincronização fica em `colab/drive_model_sync.py`; seus testes automatizados ficam em `tests/test_colab_drive_model_sync.py`.
+
