@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from pathlib import Path
-
 from joe.model_discovery import discover_local_models, default_model_search_roots
 
 
