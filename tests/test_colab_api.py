@@ -43,7 +43,7 @@ def test_colab_tts_uploads_prepared_voice_state_files(monkeypatch, tmp_path):
         client,
         "_wait_for_result",
         lambda *_args, **_kwargs: httpx.Response(
-            200, content=b"RIFF" + b"\\x00" * 4 + b"WAVE"
+            200, content=b"RIFF" + bytes(4) + b"WAVE"
         ),
     )
 
