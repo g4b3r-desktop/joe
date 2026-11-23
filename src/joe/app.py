@@ -504,9 +504,13 @@ class GenerationQueueDialog(QDialog):
         if task.error:
             self.details_label.setText("Erro de geração — detalhes técnicos")
             self.error_details.setPlainText(task.error)
+            self.copy_error_button.setEnabled(True)
+            self.open_error_button.setEnabled(True)
         else:
             self.details_label.setText("Status da tarefa")
             self.error_details.setPlainText(task.progress or "Sem detalhes disponíveis.")
+            self.copy_error_button.setEnabled(False)
+            self.open_error_button.setEnabled(False)
 
     def _selected_error_text(self) -> str:
         task = self.queue.get(self._selected_task_id() or "")
