@@ -8,6 +8,7 @@ Este diretório contém o backend executado dentro de uma sessão Google Colab.
 - api_server.py: API FastAPI com autenticação Bearer e inferência Pocket TTS / Parakeet Redux.
 - requirements.txt: dependências Python do runtime, incluindo o extra `quantize` do Pocket TTS.
 - drive_model_sync.py: baixa somente os arquivos portugueses ausentes e atualiza o ZIP do Drive com validação e limite de 4 GB.
+- [ADDING_TTS_MODELS.md](ADDING_TTS_MODELS.md): guia para integrar outros idiomas/modelos ao Colab, incluindo sincronização, YAML, API, testes e limite do ZIP.
 
 ## Teste local do servidor (desenvolvimento)
 
@@ -109,4 +110,3 @@ O tamanho máximo do ZIP atualizado é **4 GB (4.000.000.000 bytes)**. O ZIP tem
 Como os repositórios do modelo exigem aceitar as condições de acesso, aceite os termos em <https://huggingface.co/kyutai/pocket-tts> e crie um token Hugging Face com permissão de leitura. Salve-o no painel **Secrets** do Colab como `HF_TOKEN` e habilite **Notebook access**. O token não é gravado no Drive, no ZIP nem no notebook. Se os quatro arquivos já estiverem válidos, o download e o token não serão necessários.
 
 A variante `portuguese_24l` usa os próprios pesos, tokenizer e YAML; não compartilha os arquivos da versão padrão. Estados de voz `.safetensors` preparados para 24L devem ser usados com a variante 24L. A rotina fica em `colab/drive_model_sync.py`, com testes em `tests/test_colab_drive_model_sync.py`.
-
