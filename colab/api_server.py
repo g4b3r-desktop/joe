@@ -89,21 +89,36 @@ def _get_tts_model(language: str, model_variant: str) -> Any:
         _tts_voice_states.clear()
         _tts_models.clear()
         local_config = os.environ.get("JOE_TTS_CONFIG_PATH")
-        if language != "japanese" and USE_DRIVE_MODELS and (
-            not local_config or not Path(local_config).expanduser().is_file()
-        ):
-            raise RuntimeError(
-                "O Pocket TTS está configurado para usar modelos do Google Drive, "
-                "mas a configuração local não foi aplicada."
-            )
-        # The Drive YAML remains the Portuguese default. Japanese is a community
-        # model and is loaded from its published YAML; built-in variants use IDs.
-        if local_config and language == "portuguese" and model_variant == "portuguese":
-            config_path = Path(local_config).expanduser()
-            if not config_path.is_file():
-                raise FileNotFoundError(
-                    f"Configuração local do Pocket TTS não encontrada: {config_path}"
+        local_24l_config = os.environ.get("JOE_TTS_24L_CONFIG_PATH")
+        selected_local_config = None
+        if language == "portuguese" and model_variant == "portuguese":
+            selected_local_config = local_config
+        elif language == "portuguese" and model_variant == "portuguese_24l":
+            selected_local_config = local_24l_config
+
+        if language != "japanese" and USE_DRIVE_MODELS:
+            if selected_local_config:
+                if not Path(selected_local_config).expanduser().is_file():
+                    raise FileNotFoundError(
+                        "Configuração local do Pocket TTS não encontrada: "
+                        f"{selected_local_config}"
+                    )
+            elif language == "portuguese":
+                raise RuntimeError(
+                    "O Pocket TTS está configurado para usar modelos do Google Drive, "
+                    f"mas a configuração da variante {model_variant!r} não foi aplicada."
                 )
+            elif not local_config or not Path(local_config).expanduser().is_file():
+                raise RuntimeError(
+                    "O Pocket TTS está configurado para usar modelos do Google Drive, "
+                    "mas a configuração local não foi aplicada."
+                )
+
+        # Each Portuguese variant uses its own YAML and its matching checkpoint,
+        # tokenizer and voice-state architecture. Japanese remains a community
+        # model loaded from its published YAML; other variants use built-in IDs.
+        if selected_local_config:
+            config_path = Path(selected_local_config).expanduser()
             model = TTSModel.load_model(config=str(config_path), quantize=False)
         else:
             model = load_tts_model(
