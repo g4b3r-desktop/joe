@@ -18,6 +18,7 @@ on:
       - fix/colab-pocket-tts-inference-quality
       - fix/colab-drive-voice-id-409
       - fix/colab-voice-upload-manifest-error
+      - fix/colab-hf-cache-model-upload
   pull_request:
     branches:
       - main
