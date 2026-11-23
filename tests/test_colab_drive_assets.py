@@ -124,6 +124,26 @@ def test_validate_model_files_rejects_invalid_tokenizer(tmp_path):
         validate_model_files(model, tokenizer)
 
 
+def test_validate_model_files_rejects_prepared_voice_state_as_checkpoint(tmp_path):
+    payload = b"\x00" * 4
+    header = json.dumps(
+        {
+            "flow_lm/module_state": {
+                "dtype": "F32",
+                "shape": [1],
+                "data_offsets": [0, len(payload)],
+            }
+        }
+    ).encode("utf-8")
+    model = tmp_path / "model.safetensors"
+    model.write_bytes(len(header).to_bytes(8, "little") + header + payload)
+    tokenizer = tmp_path / "tokenizer.json"
+    tokenizer.write_text(json.dumps({"version": "1.0"}), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="estado de voz preparado"):
+        validate_model_files(model, tokenizer)
+
+
 def test_replace_directory_atomically_replaces_previous_contents(tmp_path):
     destination = tmp_path / "models" / "portuguese"
     destination.mkdir(parents=True)
