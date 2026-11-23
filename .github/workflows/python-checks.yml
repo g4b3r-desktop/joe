@@ -12,6 +12,7 @@ on:
       - feature/clipboard-interactive-phrases
       - fix/colab-safetensors-voice-state
       - feat/colab-drive-model-autosync
+      - fix/colab-tts-safetensors-diagnostics
   pull_request:
     branches:
       - main
