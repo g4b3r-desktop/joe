@@ -1711,8 +1711,10 @@ class JoeWindow(QMainWindow):
 
         self.colab_upload_model_button = QPushButton("Enviar modelo local ao Google Drive…")
         self.colab_upload_model_button.setToolTip(
-            "Escolha uma pasta contendo model.safetensors e tokenizer.json. "
-            "O Colab valida e instala os arquivos individualmente no Google Drive."
+            "Selecione a pasta do idioma no cache Hugging Face (por exemplo, "
+            "languages/portuguese) ou uma pasta que contenha model.safetensors. "
+            "O Joe localiza o checkpoint e baixa tokenizer.json da mesma revisão, "
+            "se necessário, antes de enviar os arquivos ao Google Drive."
         )
         self.colab_upload_model_button.clicked.connect(self._upload_colab_model)
 
@@ -1726,7 +1728,8 @@ class JoeWindow(QMainWindow):
         self.colab_info = QLabel(
             "1. Abra o notebook do branch de armazenamento direto e execute as células.\n"
             "2. Copie a URL e o token exibidos no final e cole nos campos acima.\n"
-            "3. Envie a pasta do modelo com model.safetensors e tokenizer.json.\n"
+            "3. Envie a pasta languages/<idioma> do snapshot Hugging Face; o Joe "
+            "localiza os pesos e busca o tokenizer da mesma revisão automaticamente.\n"
             "4. Selecione um áudio original no Joe; ele será enviado e preparado no Colab.\n\n"
             "Modelos, áudios originais e estados de voz ficam em arquivos individuais no Google Drive. "
             "O novo fluxo não utiliza JOE_MODELS.zip.\n\n"
