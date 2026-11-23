@@ -33,6 +33,32 @@ def _split_long_text(text: str, max_chars: int) -> list[str]:
     return pieces
 
 
+def split_text_into_phrases(text: str, max_chars: int = 280) -> list[str]:
+    """Split speech into individual sentences for interactive phrase playback.
+
+    Sentences longer than max_chars are divided at word boundaries. Unlike
+    split_text_into_chunks, separate sentences are never merged together.
+    """
+    if max_chars < 40:
+        raise ValueError("O tamanho das frases precisa ser de pelo menos 40 caracteres.")
+    cleaned = str(text or "").strip()
+    if not cleaned:
+        return []
+
+    sentences = [
+        part.strip()
+        for part in _SENTENCE_SPLIT.split(cleaned)
+        if part.strip()
+    ]
+    phrases: list[str] = []
+    for sentence in sentences:
+        if len(sentence) <= max_chars:
+            phrases.append(sentence)
+        else:
+            phrases.extend(_split_long_text(sentence, max_chars))
+    return phrases
+
+
 def split_text_into_chunks(text: str, max_chars: int = 280) -> list[str]:
     """Split speech text near sentence/paragraph boundaries without cutting words."""
     if max_chars < 40:
