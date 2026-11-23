@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+from collections import Counter
 import shutil
 import tempfile
 import uuid
@@ -142,6 +143,7 @@ def ensure_portuguese_model_in_zip(
             names = archive.namelist()
 
     prefix = _archive_prefix(names)
+    name_counts = Counter(names)
     target_members = {
         prefix + archive_path: (repo_path, kind)
         for archive_path, (repo_path, kind) in MODEL_ASSETS.items()
@@ -152,7 +154,10 @@ def ensure_portuguese_model_in_zip(
     if archive_exists:
         with zipfile.ZipFile(destination, "r") as archive:
             for member_name, (repo_path, kind) in target_members.items():
-                if _is_valid_member(archive, member_name, kind):
+                if (
+                    name_counts[member_name] == 1
+                    and _is_valid_member(archive, member_name, kind)
+                ):
                     valid_members.add(member_name)
                 else:
                     missing_members[member_name] = (repo_path, kind)
