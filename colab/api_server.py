@@ -22,6 +22,7 @@ from pocket_tts_compat import (
     default_voice_for_language,
     load_tts_model,
 )
+from safetensors_validation import validate_safetensors_file
 import os, torch
 torch.set_num_threads(os.cpu_count() or 2)
 
@@ -129,7 +130,11 @@ def _get_tts_model(language: str, model_variant: str) -> Any:
 
 
 def _generate_tts(
-    text: str, language: str, model_variant: str, voice_file: str | None
+    text: str,
+    language: str,
+    model_variant: str,
+    voice_file: str | None,
+    voice_name: str | None = None,
 ) -> bytes:
     voice_source = voice_file or default_voice_for_language(language, DEFAULT_VOICE)
     if not voice_source:
@@ -142,19 +147,71 @@ def _generate_tts(
         if not voice_path.is_file():
             raise FileNotFoundError(f"Arquivo de voz local não encontrado: {voice_path}")
         voice_source = str(voice_path)
+
+    if voice_name:
+        voice_label = voice_name.replace("\\", "/").rsplit("/", 1)[-1]
+    elif isinstance(voice_source, str) and not voice_source.startswith(("hf://", "https://")):
+        voice_label = Path(voice_source).name
+    else:
+        voice_label = "voz predefinida"
+
     voice_identity = (
         hashlib.sha256(Path(voice_source).read_bytes()).hexdigest()
         if isinstance(voice_source, str) and Path(voice_source).is_file()
         else str(voice_source)
     )
     with _tts_lock:
-        model = _get_tts_model(language, model_variant)
+        try:
+            model = _get_tts_model(language, model_variant)
+        except Exception as exc:
+            raise RuntimeError(
+                "Falha ao carregar o checkpoint/configuração do modelo Pocket TTS "
+                f"'{model_variant}'. Confira os pesos model.safetensors e o YAML "
+                f"dessa variante. Detalhe: {type(exc).__name__}: {exc}"
+            ) from exc
+
         key = (model_variant, voice_identity)
         voice_state = _tts_voice_states.get(key)
         if voice_state is None:
-            voice_state = model.get_state_for_audio_prompt(voice_source)
+            is_local_file = (
+                isinstance(voice_source, str)
+                and not voice_source.startswith(("hf://", "https://"))
+                and Path(voice_source).is_file()
+            )
+            is_safetensors = (
+                is_local_file and Path(voice_source).suffix.lower() == ".safetensors"
+            )
+            if is_safetensors:
+                try:
+                    validate_safetensors_file(voice_source)
+                except (OSError, ValueError) as exc:
+                    raise RuntimeError(
+                        f"O arquivo de voz '{voice_label}' não é um estado "
+                        f"Safetensors válido: {exc}"
+                    ) from exc
+            try:
+                voice_state = model.get_state_for_audio_prompt(voice_source)
+            except Exception as exc:
+                voice_kind = (
+                    "estado .safetensors"
+                    if is_safetensors
+                    else "áudio/URL de referência"
+                )
+                raise RuntimeError(
+                    f"Falha ao carregar a voz '{voice_label}' ({voice_kind}) "
+                    f"com o modelo '{model_variant}'. Para estados preparados, "
+                    "confirme que a voz foi exportada usando a mesma variante. "
+                    f"Detalhe: {type(exc).__name__}: {exc}"
+                ) from exc
             _tts_voice_states[key] = voice_state
-        audio = model.generate_audio(voice_state, text)
+
+        try:
+            audio = model.generate_audio(voice_state, text)
+        except Exception as exc:
+            raise RuntimeError(
+                f"Falha na síntese do texto com o modelo '{model_variant}' "
+                f"e a voz '{voice_label}'. Detalhe: {type(exc).__name__}: {exc}"
+            ) from exc
         samples = audio.detach().cpu().numpy()
 
     with tempfile.NamedTemporaryFile(suffix=".wav") as output:
@@ -337,13 +394,16 @@ def _generate_tts_job(
     model_variant: str,
     voice_data: bytes | None,
     voice_suffix: str,
+    voice_filename: str | None,
 ) -> bytes:
     with tempfile.TemporaryDirectory(prefix="joe-tts-job-") as temp_dir:
         voice_path = None
         if voice_data is not None:
             voice_path = str(Path(temp_dir) / f"voice{voice_suffix}")
             Path(voice_path).write_bytes(voice_data)
-        return _generate_tts(text, language, model_variant, voice_path)
+        return _generate_tts(
+            text, language, model_variant, voice_path, voice_name=voice_filename
+        )
 
 
 def _transcribe_job(audio_data: bytes, suffix: str, timestamps: str) -> dict[str, Any]:
@@ -375,8 +435,19 @@ async def submit_tts_job(
         )
     voice_data = await _read_upload(voice) if voice is not None else None
     suffix = _safe_suffix(voice.filename) if voice is not None else ".wav"
+    voice_filename = (
+        (voice.filename or f"voice{suffix}").replace("\\", "/").rsplit("/", 1)[-1]
+        if voice is not None else None
+    )
     job_id = _submit_job(
-        "tts", _generate_tts_job, text, language, selected_model, voice_data, suffix
+        "tts",
+        _generate_tts_job,
+        text,
+        language,
+        selected_model,
+        voice_data,
+        suffix,
+        voice_filename,
     )
     return {"job_id": job_id, "status": "queued"}
 
