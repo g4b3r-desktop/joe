@@ -11,6 +11,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "colab"))
 
 from drive_model_sync import (
     ArchiveSizeLimitError,
+    MODEL_ASSETS,
     ensure_portuguese_model_in_zip,
 )
 
@@ -265,3 +266,17 @@ def test_duplicate_model_entries_are_repaired_without_duplicate_files(tmp_path):
         assert archive.namelist().count(MODEL_MEMBER) == 1
         assert archive.namelist().count(TOKENIZER_MEMBER) == 1
 
+
+
+
+def test_each_tokenizer_uses_a_revision_from_its_own_repository():
+    expected_revision = "00eac05ed3d16bdc3f6b5d598874019c34a89214"
+    tokenizer_assets = [
+        asset
+        for member, asset in MODEL_ASSETS.items()
+        if member.endswith("/tokenizer.json")
+    ]
+
+    assert len(tokenizer_assets) == 2
+    assert all(asset[0] == "kyutai/pocket-tts-without-voice-cloning" for asset in tokenizer_assets)
+    assert all(asset[2] == expected_revision for asset in tokenizer_assets)
