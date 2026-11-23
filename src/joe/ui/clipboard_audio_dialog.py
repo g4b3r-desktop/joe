@@ -931,6 +931,12 @@ class ClipboardAudioDialog(QDialog):
             self._pause()
             return
         if state == QMediaPlayer.PlaybackState.PausedState:
+            if not (
+                self.playing_final_audio
+                or self.playing_phrase
+                or self.playing_timed_segment
+            ):
+                self.play_requested = True
             self.player.play()
             self._update_play_button()
             return
