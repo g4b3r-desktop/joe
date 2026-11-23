@@ -87,7 +87,7 @@ from joe.pronunciation_dictionary import (
     load_pronunciation_dictionary_json,
     merge_pronunciation_entries,
 )
-from joe.services.colab_api import ColabAPIClient, ColabAPIError
+from joe.services.colab_api import ColabAPIClient, ColabAPIError, ColabVoiceSession
 from joe.model_discovery import LocalModel, default_model_search_roots, discover_local_models
 from joe.services.parakeet import ParakeetReduxService
 from joe.services.pocket_tts import PocketTTSService
@@ -150,6 +150,7 @@ class ClipboardChunkWorker(QRunnable):
         output_directory: Path,
         final_path: Path,
         remote: bool = False,
+        prepare: Callable[[], object] | None = None,
     ):
         super().__init__()
         import threading
@@ -159,6 +160,7 @@ class ClipboardChunkWorker(QRunnable):
         self.output_directory = output_directory
         self.final_path = final_path
         self.remote = remote
+        self.prepare = prepare
         self.cancel_event = threading.Event()
         self.signals = ChunkWorkerSignals()
 
@@ -171,6 +173,15 @@ class ClipboardChunkWorker(QRunnable):
         total = len(self.chunks)
 
         try:
+            if self.prepare is not None:
+                if self.cancel_event.is_set():
+                    self.signals.cancelled.emit()
+                    return
+                self.signals.progress.emit(
+                    "Preparando áudio de referência e verificando a voz no Google Drive…"
+                )
+                self.prepare()
+
             for index, text in enumerate(self.chunks, start=1):
                 if self.cancel_event.is_set():
                     self.signals.cancelled.emit()
@@ -4909,11 +4920,24 @@ class JoeWindow(QMainWindow):
             remote=remote is not None,
         )
 
-        if remote is not None:
+        remote_voice_session = (
+            ColabVoiceSession(
+                remote,
+                voice,
+                language,
+                model_variant,
+            )
+            if remote is not None
+            else None
+        )
+
+        def prepare_clipboard_voice() -> None:
+            if remote_voice_session is not None:
+                remote_voice_session.prepare()
+
+        if remote_voice_session is not None:
             def generate_clipboard_chunk(chunk_text: str, output_path: Path) -> Path:
-                audio_data = remote.generate_audio(
-                    chunk_text, language, voice, model_variant=model_variant
-                )
+                audio_data = remote_voice_session.generate_audio(chunk_text)
                 write_bytes_atomically(output_path, audio_data)
                 return output_path
         else:
@@ -4966,6 +4990,11 @@ class JoeWindow(QMainWindow):
             temp_dir,
             destination,
             remote=remote is not None,
+            prepare=(
+                prepare_clipboard_voice
+                if remote_voice_session is not None and voice
+                else None
+            ),
         )
         self.clipboard_generation_worker = worker
 
