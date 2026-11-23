@@ -343,6 +343,12 @@ class PhraseItemDelegate(QStyledItemDelegate):
         ))
         return palette
 
+    def _phrase_font(self) -> QFont:
+        """Return the exact font selected in the shortcut appearance settings."""
+        font = QFont(str(self.appearance.get("font_family", "Noto Sans")))
+        font.setPixelSize(int(self.appearance.get("phrase_font_size", 14)))
+        return font
+
     def _document(self, text: str, font, width: int) -> QTextDocument:
         document = QTextDocument()
         document.setDocumentMargin(0)
@@ -365,7 +371,9 @@ class PhraseItemDelegate(QStyledItemDelegate):
         if width <= 0:
             width = 620
         text = str(index.data(Qt.ItemDataRole.DisplayRole) or "")
-        document = self._document(text, option.font, width - 154)
+        # Do not depend on QStyleOptionViewItem inheriting the QListWidget font:
+        # this delegate paints the text itself, so its font must come from settings.
+        document = self._document(text, self._phrase_font(), width - 154)
         spacing = int(self.appearance.get("row_spacing", 0))
         return QSize(width, max(48, int(document.size().height()) + 22 + spacing * 2))
 
@@ -389,8 +397,9 @@ class PhraseItemDelegate(QStyledItemDelegate):
         painter.fillRect(rect.left() + 12, separator_y, max(0, rect.width() - 24), 1, QColor(p['separator']))
 
         number = str(index.data(Qt.ItemDataRole.UserRole) or "").zfill(3)
-        number_font = option.font
-        number_font.setPointSizeF(max(9.0, number_font.pointSizeF() - 1.0))
+        phrase_font = self._phrase_font()
+        number_font = QFont(phrase_font)
+        number_font.setPixelSize(max(9, phrase_font.pixelSize() - 2))
         painter.setFont(number_font)
         painter.setPen(QColor(p['text_muted']))
         painter.drawText(
@@ -405,8 +414,8 @@ class PhraseItemDelegate(QStyledItemDelegate):
             marker, marker_color = "!", p['danger']
         else:
             marker, marker_color = "gerando…", p['pending']
-        marker_font = option.font
-        marker_font.setPointSizeF(max(8.0, marker_font.pointSizeF() - 3.0))
+        marker_font = QFont(phrase_font)
+        marker_font.setPixelSize(max(8, phrase_font.pixelSize() - 4))
         painter.setFont(marker_font)
         painter.setPen(QColor(marker_color))
         painter.drawText(
@@ -414,12 +423,12 @@ class PhraseItemDelegate(QStyledItemDelegate):
             Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft,
             marker,
         )
-        painter.setFont(option.font)
+        painter.setFont(phrase_font)
 
         text = str(index.data(Qt.ItemDataRole.DisplayRole) or "")
         spacing = int(self.appearance.get("row_spacing", 0))
         text_rect = rect.adjusted(112, 7 + spacing, -42, -7 - spacing)
-        document = self._document(text, option.font, text_rect.width())
+        document = self._document(text, phrase_font, text_rect.width())
         text_height = document.size().height()
         text_top = text_rect.top() + max(0.0, (text_rect.height() - text_height) / 2)
         painter.save()
@@ -428,6 +437,7 @@ class PhraseItemDelegate(QStyledItemDelegate):
         painter.restore()
 
         if hovered:
+            painter.setFont(phrase_font)
             painter.setPen(QColor(p['text_secondary']))
             painter.drawText(
                 rect.adjusted(rect.width() - 30, 0, -8, 0),
@@ -614,6 +624,7 @@ class ClipboardAudioDialog(QDialog):
             item.setData(Qt.ItemDataRole.UserRole + 1, False)
             item.setData(Qt.ItemDataRole.UserRole + 2, False)
             item.setData(Qt.ItemDataRole.UserRole + 3, False)
+            item.setFont(self._appearance_font())
             item.setToolTip("Aguardando geração desta frase…")
             self.phrase_list.addItem(item)
         if not self.phrase_texts:
@@ -737,12 +748,20 @@ class ClipboardAudioDialog(QDialog):
                 padding, max(10, padding - 4), padding, max(10, padding - 6)
             )
         if hasattr(self, "phrase_list"):
-            self.phrase_list.setFont(self._appearance_font())
+            phrase_font = self._appearance_font()
+            self.phrase_list.setFont(phrase_font)
+            # QListWidget items can retain their own font role. Update every item
+            # as well as the view so existing rows immediately adopt the setting.
+            for row in range(self.phrase_list.count()):
+                item = self.phrase_list.item(row)
+                if item is not None:
+                    item.setFont(phrase_font)
             self.phrase_list.setItemDelegate(
                 PhraseItemDelegate(self.phrase_list, self.appearance)
             )
             self.phrase_list.setSpacing(int(self.appearance["row_spacing"]))
             self.phrase_list.doItemsLayout()
+            self.phrase_list.updateGeometry()
             self.phrase_list.viewport().update()
 
     def _add_shortcut(self, key: str, callback) -> None:
