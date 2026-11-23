@@ -713,6 +713,9 @@ def health(_: None = Depends(require_token)) -> dict[str, Any]:
         "tts_direct_drive_models": sorted(
             path.parent.name for path in (DRIVE_ASSETS_ROOT / "models").glob("*/manifest.json")
         ) if DIRECT_DRIVE_ASSETS and (DRIVE_ASSETS_ROOT / "models").is_dir() else [],
+        "tts_direct_drive_voice_count": len(
+            list((DRIVE_ASSETS_ROOT / "voices").glob("*/*/metadata.json"))
+        ) if DIRECT_DRIVE_ASSETS and (DRIVE_ASSETS_ROOT / "voices").is_dir() else 0,
         "tts_default_voice_local": bool(DEFAULT_VOICE and Path(DEFAULT_VOICE).is_file()),
         "hf_cache_configured": bool(os.environ.get("HF_HOME")),
         "cuda_available": torch.cuda.is_available(),
