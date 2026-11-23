@@ -1092,8 +1092,13 @@ class ClipboardAudioDialog(QDialog):
         )
 
     def set_progress(self, message: str) -> None:
-        if not self.is_closing:
-            self.status_label.setText(message)
+        if self.is_closing or (
+            self.playing_final_audio
+            or self.playing_phrase
+            or self.playing_timed_segment
+        ):
+            return
+        self.status_label.setText(message)
 
     def add_chunk(self, index: int, audio_path: Path, total: int, text: str) -> None:
         if self.is_closing:
@@ -1106,7 +1111,13 @@ class ClipboardAudioDialog(QDialog):
             item.setToolTip("Clique para reproduzir somente esta frase.")
             item.setFlags(item.flags() | Qt.ItemFlag.ItemIsEnabled)
         self.play_button.setEnabled(True)
-        if not self.generation_finished and not self.play_requested and not self.playing_phrase:
+        if (
+            not self.generation_finished
+            and not self.play_requested
+            and not self.playing_final_audio
+            and not self.playing_phrase
+            and not self.playing_timed_segment
+        ):
             self.status_label.setText(
                 f"Trecho {index} de {total} pronto. Gerando os próximos…"
             )
@@ -1128,7 +1139,12 @@ class ClipboardAudioDialog(QDialog):
             )
         self.play_button.setEnabled(bool(self.chunk_paths))
         self.save_button.setEnabled(True)
-        if not self.play_requested and not self.playing_phrase and not self.playing_timed_segment:
+        if (
+            not self.play_requested
+            and not self.playing_phrase
+            and not self.playing_timed_segment
+            and not self.playing_final_audio
+        ):
             self.status_label.setText(
                 "Áudio completo pronto. Clique em uma frase para ouvi-la isoladamente "
                 "ou reproduza/salve o WAV completo."
