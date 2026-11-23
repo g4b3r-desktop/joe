@@ -787,7 +787,7 @@ def commit_asset_upload(upload_id: str) -> dict[str, Any]:
                     raise RuntimeError(
                         f"O modelo {model_variant!r} carregado não tem pesos de clonagem de voz."
                     )
-                voice_state = model.get_state_for_audio_prompt(str(audio_path))
+                voice_state = model.get_state_for_audio_prompt(str(audio_path), truncate=True)
                 from pocket_tts import export_model_state
                 export_model_state(voice_state, staging / "voice_state.safetensors")
 
