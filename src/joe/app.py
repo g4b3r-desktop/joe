@@ -1331,6 +1331,8 @@ class JoeWindow(QMainWindow):
         tabs.setCurrentIndex(self.app_settings.value("last_tab", 0, type=int))
         tabs.currentChanged.connect(self._on_main_tab_changed)
         self.setCentralWidget(tabs)
+        if tabs.currentIndex() == 3:
+            self._refresh_audio_history()
 
         bar = QStatusBar()
         self.setStatusBar(bar)
@@ -2261,7 +2263,12 @@ class JoeWindow(QMainWindow):
             self._refresh_audio_history()
 
     def _refresh_audio_history(self) -> None:
-        if hasattr(self, "history_panel"):
+        tabs = self.centralWidget()
+        if (
+            hasattr(self, "history_panel")
+            and isinstance(tabs, QTabWidget)
+            and tabs.currentIndex() == 3
+        ):
             self.history_panel.refresh()
 
     def _record_audio_history(
