@@ -62,6 +62,7 @@ from joe.system_monitor import read_hardware_metrics
 from joe.tts_profiles import build_generation_settings, performance_profile_settings
 from joe.ui.audio_history import AudioHistoryPanel
 from joe.ui.advanced_player import AdvancedAudioPlayer
+from joe.ui.error_dialog import ErrorDetailsDialog
 from joe.audio_performance import (
     AudioPerformance,
     format_duration,
@@ -442,8 +443,21 @@ class GenerationQueueDialog(QDialog):
         self.error_details.setPlaceholderText(
             "Selecione uma tarefa para consultar o status ou os detalhes do erro."
         )
-        self.error_details.setMaximumHeight(145)
+        self.error_details.setMinimumHeight(150)
+        self.error_details.setLineWrapMode(QTextEdit.LineWrapMode.WidgetWidth)
+        self.error_details.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self.error_details.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         layout.addWidget(self.error_details, 1)
+
+        detail_actions = QHBoxLayout()
+        self.copy_error_button = QPushButton("Copiar erro completo")
+        self.open_error_button = QPushButton("Abrir erro em janela")
+        detail_actions.addWidget(self.copy_error_button)
+        detail_actions.addWidget(self.open_error_button)
+        detail_actions.addStretch(1)
+        layout.addLayout(detail_actions)
+        self.copy_error_button.clicked.connect(self._copy_selected_error)
+        self.open_error_button.clicked.connect(self._open_selected_error)
         self.task_list.currentItemChanged.connect(self._refresh_task_details)
 
         buttons = QHBoxLayout()
@@ -493,6 +507,21 @@ class GenerationQueueDialog(QDialog):
         else:
             self.details_label.setText("Status da tarefa")
             self.error_details.setPlainText(task.progress or "Sem detalhes disponíveis.")
+
+    def _selected_error_text(self) -> str:
+        task = self.queue.get(self._selected_task_id() or "")
+        return task.error if task is not None and task.error else self.error_details.toPlainText()
+
+    def _copy_selected_error(self) -> None:
+        details = self._selected_error_text()
+        if details.strip():
+            QApplication.clipboard().setText(details)
+
+    def _open_selected_error(self) -> None:
+        details = self._selected_error_text()
+        if details.strip():
+            dialog = ErrorDetailsDialog("Detalhes completos do erro", details, self)
+            dialog.exec()
 
     def select_task(self, task_id: str) -> None:
         for index in range(self.task_list.count()):
@@ -4777,7 +4806,8 @@ class JoeWindow(QMainWindow):
                     "Geração interrompida. Consulte os detalhes do erro."
                 )
             self._set_busy(False, "Falha")
-            QMessageBox.critical(self, "Falha no processamento", message)
+            dialog = ErrorDetailsDialog("Falha no processamento", message, self)
+            dialog.exec()
 
         worker.signals.finished.connect(finished)
         worker.signals.failed.connect(failed)
