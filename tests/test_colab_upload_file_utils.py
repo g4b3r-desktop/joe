@@ -14,22 +14,27 @@ from upload_file_utils import safe_upload_suffix
 @pytest.mark.parametrize(
     ("filename", "expected"),
     [
-        ("Kassia_clip15s_pocket_tts.safetensors", ".safetensors"),
-        ("/tmp/voice.safetensors", ".safetensors"),
-        (r"C:\\voices\\voice.safetensors", ".safetensors"),
         ("reference.wav", ".wav"),
         ("reference.mp3", ".mp3"),
         ("reference.flac", ".flac"),
         (None, ".wav"),
         ("voice.invalid-extension-too-long", ".wav"),
+        ("Kassia_clip15s_pocket_tts.safetensors", ".wav"),
     ],
 )
-def test_safe_upload_suffix_preserves_supported_upload_formats(filename, expected):
+def test_safe_upload_suffix_preserves_audio_formats_and_rejects_unknown_files(
+    filename, expected
+):
     assert safe_upload_suffix(filename) == expected
 
 
-def test_safetensors_extension_is_not_rewritten_to_wav():
-    suffix = safe_upload_suffix("Kassia_clip15s_pocket_tts.safetensors")
-
-    assert suffix != ".wav"
-    assert suffix == ".safetensors"
+@pytest.mark.parametrize(
+    "filename",
+    [
+        "Kassia_clip15s_pocket_tts.safetensors",
+        "/tmp/voice.safetensors",
+        r"C:\\voices\\voice.safetensors",
+    ],
+)
+def test_tts_voice_upload_preserves_safetensors_extension(filename):
+    assert safe_upload_suffix(filename, allow_safetensors=True) == ".safetensors"
