@@ -120,6 +120,40 @@ def test_prepare_voice_rejects_safetensors_without_uploading(tmp_path):
         raise AssertionError("A direct Drive flow must require the original reference audio.")
 
 
+def test_generate_audio_ignores_local_voice_path_when_drive_voice_id_is_set(
+    monkeypatch, tmp_path
+):
+    local_voice = tmp_path / "male_05.wav"
+    local_voice.write_bytes(b"reference audio")
+    client = _client()
+    submitted = {}
+
+    def request(method, endpoint, **kwargs):
+        if endpoint == "/v1/jobs/tts":
+            submitted.update(kwargs["data"])
+            submitted["files"] = kwargs["files"]
+            return httpx.Response(202, json={"job_id": "job-drive-voice"})
+        if endpoint == "/v1/jobs/job-drive-voice":
+            return httpx.Response(200, json={"status": "completed"})
+        if endpoint == "/v1/jobs/job-drive-voice/result":
+            return httpx.Response(200, content=b"RIFF" + b"\\x00" * 4 + b"WAVE")
+        raise AssertionError((method, endpoint))
+
+    monkeypatch.setattr(client, "_request", request)
+
+    audio = client.generate_audio(
+        "Olá",
+        "portuguese",
+        voice_path=local_voice,
+        model_variant="portuguese",
+        voice_id="male-05-drive-id",
+    )
+
+    assert audio.startswith(b"RIFF")
+    assert submitted["voice_id"] == "male-05-drive-id"
+    assert submitted["files"] == []
+
+
 def test_generate_audio_sends_drive_voice_id_without_file_upload(monkeypatch):
     client = _client()
     submitted = {}
