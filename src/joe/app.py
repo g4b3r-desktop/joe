@@ -4233,6 +4233,19 @@ class JoeWindow(QMainWindow):
             self.statusBar().showMessage(message, 5000)
             return
 
+        if shortcut_action == "replace":
+            # The previous generation is idle. Close its dialog so the close
+            # handler releases its temporary audio and player state, then let
+            # this same shortcut invocation continue with the current clipboard.
+            dialog = self.clipboard_audio_window
+            if dialog is not None:
+                try:
+                    dialog.close()
+                except RuntimeError:
+                    # The Qt object may already have been destroyed; discard
+                    # the stale Python reference and continue with a new dialog.
+                    self.clipboard_audio_window = None
+
         if shortcut_action == "busy":
             self.statusBar().showMessage(
                 "A geração ou o reconhecimento do texto copiado já está em andamento.", 4000
