@@ -248,6 +248,7 @@ def health(_: None = Depends(require_token)) -> dict[str, Any]:
         "tts_loaded_languages": sorted(_tts_models.keys()),
         "tts_loaded_model_variants": sorted(_tts_models.keys()),
         "tts_local_drive_config": bool(os.environ.get("JOE_TTS_CONFIG_PATH")),
+        "tts_local_drive_24l_config": bool(os.environ.get("JOE_TTS_24L_CONFIG_PATH")),
         "tts_drive_models_required": USE_DRIVE_MODELS,
         "tts_default_voice_local": bool(DEFAULT_VOICE and Path(DEFAULT_VOICE).is_file()),
         "hf_cache_configured": bool(os.environ.get("HF_HOME")),
