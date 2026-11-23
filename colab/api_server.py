@@ -6,6 +6,7 @@ import importlib.metadata
 import json
 import math
 import os
+import re
 import shutil
 import tempfile
 import threading
@@ -162,12 +163,26 @@ def _generate_tts(
     model_variant: str,
     voice_file: str | None,
     voice_name: str | None = None,
+    voice_id: str | None = None,
 ) -> bytes:
-    voice_source = voice_file or default_voice_for_language(language, DEFAULT_VOICE)
+    if voice_id:
+        if not DIRECT_DRIVE_ASSETS:
+            raise RuntimeError("IDs de voz do Google Drive exigem o modo de armazenamento direto.")
+        manifest = load_model_manifest(DRIVE_ASSETS_ROOT, model_variant)
+        state_path, voice_metadata = resolve_voice_state(
+            DRIVE_ASSETS_ROOT,
+            model_variant,
+            voice_id,
+            model_fingerprint(manifest),
+        )
+        voice_source = str(state_path)
+        voice_name = voice_name or str(voice_metadata.get("name") or voice_id)
+    else:
+        voice_source = voice_file or default_voice_for_language(language, DEFAULT_VOICE)
     if not voice_source:
         raise RuntimeError(
-            "Nenhuma voz de referência local foi configurada. "
-            "Envie um WAV pelo Joe ou configure um WAV no Google Drive."
+            "Nenhuma voz foi selecionada. Escolha um áudio de referência no Joe; "
+            "no modo Drive direto, o Colab o prepara e salva automaticamente."
         )
     if isinstance(voice_source, str) and not voice_source.startswith(("hf://", "https://")):
         voice_path = Path(voice_source).expanduser()
@@ -692,6 +707,11 @@ def health(_: None = Depends(require_token)) -> dict[str, Any]:
         "tts_local_drive_config": bool(os.environ.get("JOE_TTS_CONFIG_PATH")),
         "tts_local_drive_24l_config": bool(os.environ.get("JOE_TTS_24L_CONFIG_PATH")),
         "tts_drive_models_required": USE_DRIVE_MODELS,
+        "direct_drive_assets_enabled": DIRECT_DRIVE_ASSETS and DRIVE_ASSETS_ROOT.is_dir(),
+        "drive_assets_root": str(DRIVE_ASSETS_ROOT) if DIRECT_DRIVE_ASSETS else None,
+        "tts_direct_drive_models": sorted(
+            path.parent.name for path in (DRIVE_ASSETS_ROOT / "models").glob("*/manifest.json")
+        ) if DIRECT_DRIVE_ASSETS and (DRIVE_ASSETS_ROOT / "models").is_dir() else [],
         "tts_default_voice_local": bool(DEFAULT_VOICE and Path(DEFAULT_VOICE).is_file()),
         "hf_cache_configured": bool(os.environ.get("HF_HOME")),
         "cuda_available": torch.cuda.is_available(),
@@ -780,6 +800,7 @@ def _generate_tts_job(
     voice_data: bytes | None,
     voice_suffix: str,
     voice_filename: str | None,
+    voice_id: str | None,
 ) -> bytes:
     with tempfile.TemporaryDirectory(prefix="joe-tts-job-") as temp_dir:
         voice_path = None
@@ -787,7 +808,12 @@ def _generate_tts_job(
             voice_path = str(Path(temp_dir) / f"voice{voice_suffix}")
             Path(voice_path).write_bytes(voice_data)
         return _generate_tts(
-            text, language, model_variant, voice_path, voice_name=voice_filename
+            text,
+            language,
+            model_variant,
+            voice_path,
+            voice_name=voice_filename,
+            voice_id=voice_id,
         )
 
 
@@ -804,6 +830,7 @@ async def submit_tts_job(
     language: str = Form("portuguese"),
     model_variant: str | None = Form(default=None),
     voice: UploadFile | None = File(default=None),
+    voice_id: str | None = Form(default=None),
 ) -> dict[str, str]:
     text = text.strip()
     if not text:
@@ -817,6 +844,14 @@ async def submit_tts_job(
         raise HTTPException(
             status_code=422,
             detail="A versão selecionada não está disponível para o idioma informado.",
+        )
+    if voice is not None and voice_id:
+        raise HTTPException(status_code=422, detail="Envie o arquivo de voz ou voice_id, não ambos.")
+    if DIRECT_DRIVE_ASSETS and voice is not None:
+        raise HTTPException(
+            status_code=409,
+            detail="O modo Drive direto exige preparar o áudio original no Colab. "
+            "Use o Joe atualizado, que salva o áudio no Drive antes da geração.",
         )
     voice_data = await _read_upload(voice) if voice is not None else None
     suffix = safe_upload_suffix(voice.filename, allow_safetensors=True) if voice is not None else ".wav"
@@ -833,6 +868,7 @@ async def submit_tts_job(
         voice_data,
         suffix,
         voice_filename,
+        voice_id,
     )
     return {"job_id": job_id, "status": "queued"}
 
