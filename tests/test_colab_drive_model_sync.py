@@ -280,3 +280,100 @@ def test_each_tokenizer_uses_a_revision_from_its_own_repository():
     assert len(tokenizer_assets) == 2
     assert all(asset[0] == "kyutai/pocket-tts-without-voice-cloning" for asset in tokenizer_assets)
     assert all(asset[2] == expected_revision for asset in tokenizer_assets)
+
+
+
+def _write_local_safetensors(path: Path) -> Path:
+    return _make_safetensors(path)
+
+
+def _write_local_model_config(
+    path: Path,
+    weights: Path,
+    tokenizer: Path,
+) -> Path:
+    import yaml
+
+    path.write_text(
+        yaml.safe_dump(
+            {
+                "weights_path": str(weights),
+                "flow_lm": {
+                    "lookup_table": {"tokenizer_path": str(tokenizer)}
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    return path
+
+
+def test_local_tts_configs_require_existing_valid_weights_and_tokenizers(tmp_path):
+    from drive_model_sync import validate_local_tts_configs
+
+    weights = _write_local_safetensors(tmp_path / "model.safetensors")
+    tokenizer = tmp_path / "tokenizer.json"
+    tokenizer.write_text(
+        json.dumps({"version": "1.0", "model": {"vocab": []}}),
+        encoding="utf-8",
+    )
+    standard_config = _write_local_model_config(
+        tmp_path / "portuguese.yaml", weights, tokenizer
+    )
+    config_24l = _write_local_model_config(
+        tmp_path / "portuguese_24l.yaml", weights, tokenizer
+    )
+
+    result = validate_local_tts_configs(
+        {
+            "portuguese": standard_config,
+            "portuguese_24l": config_24l,
+        }
+    )
+
+    assert set(result) == {"portuguese", "portuguese_24l"}
+    assert result["portuguese_24l"]["weights"] == str(weights.resolve())
+    assert result["portuguese_24l"]["tokenizer"] == str(tokenizer.resolve())
+
+
+def test_local_tts_configs_fail_when_checkpoint_is_missing(tmp_path):
+    from drive_model_sync import validate_local_tts_configs
+
+    tokenizer = tmp_path / "tokenizer.json"
+    tokenizer.write_text(json.dumps({"version": "1.0"}), encoding="utf-8")
+    config = _write_local_model_config(
+        tmp_path / "portuguese_24l.yaml",
+        tmp_path / "missing.safetensors",
+        tokenizer,
+    )
+
+    with pytest.raises(FileNotFoundError, match="Checkpoint.*não encontrado"):
+        validate_local_tts_configs({"portuguese_24l": config})
+
+
+def test_local_tts_configs_fail_when_tokenizer_is_missing(tmp_path):
+    from drive_model_sync import validate_local_tts_configs
+
+    weights = _write_local_safetensors(tmp_path / "model.safetensors")
+    config = _write_local_model_config(
+        tmp_path / "portuguese_24l.yaml",
+        weights,
+        tmp_path / "missing-tokenizer.json",
+    )
+
+    with pytest.raises(FileNotFoundError, match="Tokenizer.*não encontrado"):
+        validate_local_tts_configs({"portuguese_24l": config})
+
+
+def test_local_tts_configs_fail_when_tokenizer_json_is_invalid(tmp_path):
+    from drive_model_sync import validate_local_tts_configs
+
+    weights = _write_local_safetensors(tmp_path / "model.safetensors")
+    tokenizer = tmp_path / "tokenizer.json"
+    tokenizer.write_text("{invalid", encoding="utf-8")
+    config = _write_local_model_config(
+        tmp_path / "portuguese_24l.yaml", weights, tokenizer
+    )
+
+    with pytest.raises(ValueError, match="não é um JSON válido"):
+        validate_local_tts_configs({"portuguese_24l": config})
