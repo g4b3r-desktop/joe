@@ -150,7 +150,7 @@ def _dialog_stylesheet() -> str:
             background: {p["blue_soft"]};
             border: 0;
             border-radius: 8px;
-            color: #ffffff;
+            color: {p["on_blue"]};
             font-size: 17px;
             font-weight: 700;
         }}
