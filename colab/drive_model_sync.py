@@ -22,7 +22,7 @@ MODEL_ASSETS = {
     "pocket-tts-without-voice-cloning/languages/portuguese/tokenizer.json": (
         "kyutai/pocket-tts-without-voice-cloning",
         "languages/portuguese/tokenizer.json",
-        "4e1e0a6a23401048648a9fdcfde2f89348215c2a7",
+        "00eac05ed3d16bdc3f6b5d598874019c34a89214",
         "json",
     ),
     "pocket-tts/languages/portuguese_24l/model.safetensors": (
@@ -34,7 +34,7 @@ MODEL_ASSETS = {
     "pocket-tts-without-voice-cloning/languages/portuguese_24l/tokenizer.json": (
         "kyutai/pocket-tts-without-voice-cloning",
         "languages/portuguese_24l/tokenizer.json",
-        "4e1e0a6a23401048648a9fdcfde2f89348215c2a7",
+        "00eac05ed3d16bdc3f6b5d598874019c34a89214",
         "json",
     ),
 }
@@ -237,9 +237,11 @@ def ensure_portuguese_model_in_zip(
                 )
             except Exception as exc:
                 raise RuntimeError(
-                    "Não foi possível baixar os arquivos ausentes do Hugging Face. "
-                    "Confirme que o acesso ao modelo foi aceito e que HF_TOKEN tem "
-                    f"permissão de leitura. Detalhe: {type(exc).__name__}: {exc}"
+                    "Não foi possível baixar um arquivo ausente do Hugging Face. "
+                    f"Repositório: {repo_id}; arquivo: {repo_filename}; revisão: {revision}. "
+                    "Confira o acesso ao repositório e se a revisão existe nesse "
+                    "repositório. O ZIP original no Drive não foi substituído. "
+                    f"Detalhe: {type(exc).__name__}: {exc}"
                 ) from exc
 
             if not local_path.is_file() or not _is_valid_file(local_path, kind):
