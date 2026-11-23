@@ -336,3 +336,30 @@ def test_count_entries_applies_the_same_filters_as_list_entries(tmp_path):
     }
     assert store.count_entries(**filters) == 2
     assert len(store.list_entries(**filters, limit=1)) == 1
+
+
+@pytest.mark.parametrize("total", [100, 1000, 5000, 10000])
+def test_history_queries_remain_page_bounded_for_large_databases(tmp_path, total):
+    import sqlite3
+
+    database = tmp_path / "large-history.sqlite3"
+    store = AudioHistoryStore(database)
+    rows = [
+        (
+            f"/archive/audio-{index}.wav",
+            f"audio-{index}.wav",
+            f"2026-11-{(index % 28) + 1:02d}T10:00:00-03:00",
+        )
+        for index in range(total)
+    ]
+    with sqlite3.connect(database) as connection:
+        connection.executemany(
+            "INSERT INTO audio_history (audio_path, file_name, created_at) "
+            "VALUES (?, ?, ?)",
+            rows,
+        )
+
+    page = store.list_entries(limit=100, offset=max(0, total - 100))
+
+    assert len(page) == 100
+    assert store.count_entries() == total
