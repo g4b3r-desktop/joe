@@ -14,6 +14,7 @@ on:
       - fix/clipboard-colab-drive-voice-409
       - feature/clipboard-dialog-compact-ui
       - feature/clipboard-dialog-redesign
+      - feature/clipboard-dialog-appearance-settings
       - fix/colab-safetensors-voice-state
       - feat/colab-drive-model-autosync
       - fix/colab-tts-safetensors-diagnostics
