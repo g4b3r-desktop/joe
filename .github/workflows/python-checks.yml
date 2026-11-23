@@ -17,6 +17,7 @@ on:
       - feature/colab-drive-direct-assets
       - fix/colab-pocket-tts-inference-quality
       - fix/colab-drive-voice-id-409
+      - fix/colab-voice-upload-manifest-error
   pull_request:
     branches:
       - main
