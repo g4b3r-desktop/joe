@@ -2,11 +2,16 @@ from __future__ import annotations
 
 import hmac
 import hashlib
+import importlib.metadata
+import json
+import math
 import os
+import shutil
 import tempfile
 import threading
 import time
 import uuid
+from datetime import datetime, timezone
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
@@ -14,7 +19,7 @@ from typing import Any
 import moondream as md
 import soundfile as sf
 import torch
-from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, UploadFile
+from fastapi import Body, Depends, FastAPI, File, Form, Header, HTTPException, UploadFile
 from fastapi.responses import Response
 from pocket_tts import TTSModel
 from pocket_tts_compat import (
@@ -24,6 +29,18 @@ from pocket_tts_compat import (
 )
 from safetensors_validation import validate_safetensors_file
 from upload_file_utils import safe_upload_suffix
+from drive_assets import (
+    VOICE_AUDIO_SUFFIXES,
+    atomic_write_json,
+    config_for_uploaded_model,
+    load_model_manifest,
+    model_fingerprint,
+    replace_directory_atomically,
+    resolve_voice_state,
+    safe_asset_name,
+    sha256_file,
+    validate_model_files,
+)
 import os, torch
 torch.set_num_threads(os.cpu_count() or 2)
 
@@ -36,6 +53,11 @@ MAX_TEXT_CHARS = 20_000
 PARAKEET_MODEL_ID = "moondream/parakeet-redux"
 DEFAULT_VOICE = os.environ.get("JOE_TTS_DEFAULT_VOICE") or None
 USE_DRIVE_MODELS = os.environ.get("JOE_TTS_USE_DRIVE_MODELS") == "1"
+DIRECT_DRIVE_ASSETS = os.environ.get("JOE_TTS_DIRECT_DRIVE") == "1"
+DRIVE_ASSETS_ROOT = Path(os.environ.get("JOE_TTS_DRIVE_ROOT", "/content/drive/MyDrive/JOE_TTS")).expanduser()
+ASSET_UPLOAD_CHUNK_BYTES = 8 * 1024 * 1024
+MAX_MODEL_ASSET_BYTES = 4_000_000_000
+MAX_VOICE_ASSET_BYTES = 80 * 1024 * 1024
 
 app = FastAPI(
     title="Joe Colab Inference API",
