@@ -23,7 +23,7 @@ from PySide6.QtCore import (
     QTime, QTimer, QUrl, Qt, Signal,
 )
 from PySide6.QtGui import (
-    QAction, QDesktopServices, QIcon, QPalette, QPainter, QTextDocument, QTextOption,
+    QAction, QDesktopServices, QFont, QIcon, QPalette, QPainter, QTextDocument, QTextOption,
 )
 from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
 from PySide6.QtWidgets import (
@@ -37,6 +37,7 @@ from PySide6.QtWidgets import (
     QHeaderView,
     QInputDialog,
     QFormLayout,
+    QFontComboBox,
     QFrame,
     QGridLayout,
     QGroupBox,
@@ -68,7 +69,10 @@ from joe.generation_queue import GenerationQueue, GenerationTask
 from joe.system_monitor import read_hardware_metrics
 from joe.tts_profiles import build_generation_settings, performance_profile_settings
 from joe.ui.audio_history import AudioHistoryPanel
-from joe.ui.clipboard_audio_dialog import ClipboardAudioDialog
+from joe.ui.clipboard_audio_dialog import (
+    ClipboardAudioDialog,
+    DEFAULT_CLIPBOARD_DIALOG_APPEARANCE,
+)
 from joe.ui.advanced_player import AdvancedAudioPlayer
 from joe.ui.error_dialog import ErrorDetailsDialog
 from joe.audio_performance import (
@@ -1375,8 +1379,12 @@ class JoeWindow(QMainWindow):
         tabs.addTab(self._build_colab_tab(), "Google Colab / API")
         # Add after Colab so the persisted tab index 2 keeps its previous meaning.
         tabs.addTab(self._build_history_tab(), "Histórico")
-        # The new player is appended so saved indices of existing tabs stay stable.
+        # The player and shortcut preferences are appended to preserve saved tab indices.
         tabs.addTab(self._build_player_tab(), "Player avançado")
+        tabs.addTab(
+            self._build_clipboard_dialog_settings_tab(),
+            "Janela de atalho",
+        )
         tabs.setCurrentIndex(self.app_settings.value("last_tab", 0, type=int))
         tabs.currentChanged.connect(self._on_main_tab_changed)
         self.setCentralWidget(tabs)
@@ -1406,6 +1414,261 @@ class JoeWindow(QMainWindow):
         about_action = QAction("Sobre o Joe", self)
         about_action.triggered.connect(self._show_about)
         help_menu.addAction(about_action)
+
+    def _build_clipboard_dialog_settings_tab(self) -> QWidget:
+        """Visual preferences for the separate keyboard-shortcut audio window."""
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(24, 22, 24, 22)
+        layout.setSpacing(14)
+
+        title = QLabel("Personalize a janela de atalho")
+        title.setObjectName("pageTitle")
+        description = QLabel(
+            "Altere a tipografia, o espaçamento e a cor de destaque da janela "
+            "que aparece ao usar Ctrl+Shift+Espaço. As opções são salvas automaticamente "
+            "e também atualizam uma janela de atalho que já esteja aberta."
+        )
+        description.setObjectName("muted")
+        description.setWordWrap(True)
+        layout.addWidget(title)
+        layout.addWidget(description)
+
+        appearance = DEFAULT_CLIPBOARD_DIALOG_APPEARANCE
+        self.clipboard_font_family = QFontComboBox()
+        saved_family = str(self.app_settings.value(
+            "clipboard_dialog/font_family", appearance["font_family"]
+        ))
+        self.clipboard_font_family.setCurrentFont(QFont(saved_family))
+        self.clipboard_font_family.setToolTip(
+            "Escolha a família tipográfica usada nas frases e nos textos da janela."
+        )
+
+        self.clipboard_phrase_font_size = QSpinBox()
+        self.clipboard_phrase_font_size.setRange(11, 22)
+        self.clipboard_phrase_font_size.setSuffix(" px")
+        self.clipboard_phrase_font_size.setValue(self.app_settings.value(
+            "clipboard_dialog/phrase_font_size",
+            int(appearance["phrase_font_size"]),
+            type=int,
+        ))
+
+        self.clipboard_aux_font_size = QSpinBox()
+        self.clipboard_aux_font_size.setRange(10, 18)
+        self.clipboard_aux_font_size.setSuffix(" px")
+        self.clipboard_aux_font_size.setValue(self.app_settings.value(
+            "clipboard_dialog/auxiliary_font_size",
+            int(appearance["auxiliary_font_size"]),
+            type=int,
+        ))
+
+        self.clipboard_title_font_size = QSpinBox()
+        self.clipboard_title_font_size.setRange(13, 24)
+        self.clipboard_title_font_size.setSuffix(" px")
+        self.clipboard_title_font_size.setValue(self.app_settings.value(
+            "clipboard_dialog/title_font_size",
+            int(appearance["title_font_size"]),
+            type=int,
+        ))
+
+        self.clipboard_row_spacing = QSpinBox()
+        self.clipboard_row_spacing.setRange(0, 12)
+        self.clipboard_row_spacing.setSuffix(" px")
+        self.clipboard_row_spacing.setValue(self.app_settings.value(
+            "clipboard_dialog/row_spacing",
+            int(appearance["row_spacing"]),
+            type=int,
+        ))
+        self.clipboard_row_spacing.setToolTip(
+            "Aumenta ou reduz o espaço vertical entre as linhas das frases."
+        )
+
+        self.clipboard_window_padding = QSpinBox()
+        self.clipboard_window_padding.setRange(10, 30)
+        self.clipboard_window_padding.setSuffix(" px")
+        self.clipboard_window_padding.setValue(self.app_settings.value(
+            "clipboard_dialog/window_padding",
+            int(appearance["window_padding"]),
+            type=int,
+        ))
+
+        self.clipboard_accent = QComboBox()
+        self.clipboard_accent.addItem("Azul", "blue")
+        self.clipboard_accent.addItem("Violeta", "violet")
+        self.clipboard_accent.addItem("Verde-água", "teal")
+        saved_accent = str(self.app_settings.value(
+            "clipboard_dialog/accent", appearance["accent"]
+        ))
+        accent_index = self.clipboard_accent.findData(saved_accent)
+        self.clipboard_accent.setCurrentIndex(max(0, accent_index))
+
+        appearance_group = QGroupBox("Tipografia e aparência")
+        appearance_form = QFormLayout(appearance_group)
+        appearance_form.addRow("Família da fonte", self.clipboard_font_family)
+        appearance_form.addRow("Texto das frases", self.clipboard_phrase_font_size)
+        appearance_form.addRow("Textos auxiliares", self.clipboard_aux_font_size)
+        appearance_form.addRow("Título", self.clipboard_title_font_size)
+        appearance_form.addRow("Espaçamento entre frases", self.clipboard_row_spacing)
+        appearance_form.addRow("Margem interna da janela", self.clipboard_window_padding)
+        appearance_form.addRow("Cor de destaque", self.clipboard_accent)
+        layout.addWidget(appearance_group)
+
+        preview_group = QGroupBox("Prévia")
+        preview_layout = QVBoxLayout(preview_group)
+        preview_layout.setSpacing(8)
+        self.clipboard_appearance_preview_title = QLabel("JOE  ·  Áudio do atalho")
+        self.clipboard_appearance_preview_phrase = QLabel(
+            "001    ✓    Esta é uma frase de exemplo da janela de atalho."
+        )
+        self.clipboard_appearance_preview_phrase.setWordWrap(True)
+        self.clipboard_appearance_preview_aux = QLabel(
+            "43,4 s de áudio · gerado em 3:05 · 17 frases"
+        )
+        self.clipboard_appearance_preview_aux.setObjectName("muted")
+        preview_layout.addWidget(self.clipboard_appearance_preview_title)
+        preview_layout.addWidget(self.clipboard_appearance_preview_phrase)
+        preview_layout.addWidget(self.clipboard_appearance_preview_aux)
+        layout.addWidget(preview_group)
+
+        actions = QHBoxLayout()
+        self.clipboard_appearance_status = QLabel(
+            "As alterações são aplicadas automaticamente."
+        )
+        self.clipboard_appearance_status.setObjectName("muted")
+        reset_button = QPushButton("Restaurar padrão")
+        reset_button.clicked.connect(self._reset_clipboard_dialog_appearance)
+        actions.addWidget(self.clipboard_appearance_status, 1)
+        actions.addWidget(reset_button)
+        layout.addLayout(actions)
+        layout.addStretch(1)
+
+        self.clipboard_font_family.currentFontChanged.connect(
+            self._save_clipboard_dialog_appearance
+        )
+        for control in (
+            self.clipboard_phrase_font_size,
+            self.clipboard_aux_font_size,
+            self.clipboard_title_font_size,
+            self.clipboard_row_spacing,
+            self.clipboard_window_padding,
+        ):
+            control.valueChanged.connect(self._save_clipboard_dialog_appearance)
+        self.clipboard_accent.currentIndexChanged.connect(
+            self._save_clipboard_dialog_appearance
+        )
+        self._refresh_clipboard_appearance_preview()
+        return page
+
+    def _refresh_clipboard_appearance_preview(self) -> None:
+        if not hasattr(self, "clipboard_appearance_preview_phrase"):
+            return
+        family = self.clipboard_font_family.currentFont().family()
+        phrase_font = QFont(family)
+        phrase_font.setPixelSize(self.clipboard_phrase_font_size.value())
+        auxiliary_font = QFont(family)
+        auxiliary_font.setPixelSize(self.clipboard_aux_font_size.value())
+        title_font = QFont(family)
+        title_font.setPixelSize(self.clipboard_title_font_size.value())
+        title_font.setBold(True)
+
+        self.clipboard_appearance_preview_title.setFont(title_font)
+        self.clipboard_appearance_preview_phrase.setFont(phrase_font)
+        self.clipboard_appearance_preview_aux.setFont(auxiliary_font)
+
+        accent_colors = {
+            "blue": "#368de0",
+            "violet": "#9a83e8",
+            "teal": "#36b9ad",
+        }
+        accent = accent_colors.get(
+            str(self.clipboard_accent.currentData()), accent_colors["blue"]
+        )
+        self.clipboard_appearance_preview_title.setStyleSheet(
+            f"background: transparent; color: {accent};"
+        )
+        self.clipboard_appearance_preview_phrase.setStyleSheet(
+            "background: transparent; color: #edf3fb;"
+        )
+        self.clipboard_appearance_preview_aux.setStyleSheet(
+            "background: transparent; color: #c0cede;"
+        )
+
+    def _save_clipboard_dialog_appearance(self, *_args) -> None:
+        if not hasattr(self, "clipboard_font_family"):
+            return
+        self.app_settings.setValue(
+            "clipboard_dialog/font_family",
+            self.clipboard_font_family.currentFont().family(),
+        )
+        self.app_settings.setValue(
+            "clipboard_dialog/phrase_font_size",
+            self.clipboard_phrase_font_size.value(),
+        )
+        self.app_settings.setValue(
+            "clipboard_dialog/auxiliary_font_size",
+            self.clipboard_aux_font_size.value(),
+        )
+        self.app_settings.setValue(
+            "clipboard_dialog/title_font_size",
+            self.clipboard_title_font_size.value(),
+        )
+        self.app_settings.setValue(
+            "clipboard_dialog/row_spacing",
+            self.clipboard_row_spacing.value(),
+        )
+        self.app_settings.setValue(
+            "clipboard_dialog/window_padding",
+            self.clipboard_window_padding.value(),
+        )
+        self.app_settings.setValue(
+            "clipboard_dialog/accent",
+            self.clipboard_accent.currentData(),
+        )
+        self.app_settings.sync()
+        self._refresh_clipboard_appearance_preview()
+
+        dialog = self.clipboard_audio_window
+        if dialog is not None:
+            try:
+                dialog.apply_appearance_settings()
+            except RuntimeError:
+                self.clipboard_audio_window = None
+        self.clipboard_appearance_status.setText(
+            "Preferências salvas e aplicadas."
+        )
+
+    def _reset_clipboard_dialog_appearance(self) -> None:
+        defaults = DEFAULT_CLIPBOARD_DIALOG_APPEARANCE
+        controls = (
+            self.clipboard_font_family,
+            self.clipboard_phrase_font_size,
+            self.clipboard_aux_font_size,
+            self.clipboard_title_font_size,
+            self.clipboard_row_spacing,
+            self.clipboard_window_padding,
+            self.clipboard_accent,
+        )
+        for control in controls:
+            control.blockSignals(True)
+        self.clipboard_font_family.setCurrentFont(
+            QFont(str(defaults["font_family"]))
+        )
+        self.clipboard_phrase_font_size.setValue(
+            int(defaults["phrase_font_size"])
+        )
+        self.clipboard_aux_font_size.setValue(
+            int(defaults["auxiliary_font_size"])
+        )
+        self.clipboard_title_font_size.setValue(
+            int(defaults["title_font_size"])
+        )
+        self.clipboard_row_spacing.setValue(int(defaults["row_spacing"]))
+        self.clipboard_window_padding.setValue(int(defaults["window_padding"]))
+        accent_index = self.clipboard_accent.findData(defaults["accent"])
+        self.clipboard_accent.setCurrentIndex(max(0, accent_index))
+        for control in controls:
+            control.blockSignals(False)
+        self._save_clipboard_dialog_appearance()
 
     def _build_colab_tab(self) -> QWidget:
         page = QWidget()
