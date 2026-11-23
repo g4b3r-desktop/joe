@@ -42,6 +42,7 @@ from drive_assets import (
     safe_asset_name,
     sha256_file,
     validate_model_files,
+    voice_state_for_safetensors_export,
 )
 from tts_runtime import (
     configure_torch_threads,
@@ -842,9 +843,18 @@ def commit_asset_upload(upload_id: str) -> dict[str, Any]:
             }
             atomic_write_json(staging / "metadata.json", voice_metadata)
             replace_directory_atomically(staging, destination)
-        except Exception:
+        except HTTPException:
             shutil.rmtree(staging, ignore_errors=True)
             raise
+        except Exception as exc:
+            shutil.rmtree(staging, ignore_errors=True)
+            raise HTTPException(
+                status_code=500,
+                detail=(
+                    "Falha ao preparar a voz no Google Drive "
+                    f"({type(exc).__name__}: {exc}). Confira a saída da API no Colab."
+                ),
+            ) from exc
         finally:
             shutil.rmtree(session_dir, ignore_errors=True)
         return {
