@@ -37,7 +37,7 @@ from joe.audio_performance import format_duration
 
 
 class _HistoryLoadSignals(QObject):
-    completed = Signal(int, object, object, int, int)
+    completed = Signal(int, object, object, int, int, object)
     failed = Signal(int, str)
 
 
@@ -71,8 +71,11 @@ class _HistoryLoadWorker(QRunnable):
             total = self.store.count_entries(**self.filters)
             voices = self.store.available_voices()
             text_count = self.store.count_text_entries()
+            missing_ids = {
+                entry.id for entry in entries if not Path(entry.audio_path).is_file()
+            }
             self.signals.completed.emit(
-                self.request_id, entries, voices, total, text_count
+                self.request_id, entries, voices, total, text_count, missing_ids
             )
         except Exception as exc:  # noqa: BLE001
             self.signals.failed.emit(self.request_id, str(exc))
@@ -385,6 +388,7 @@ class AudioHistoryPanel(QWidget):
         voices: list,
         total: int,
         text_count: int,
+        missing_ids: set[int],
     ) -> None:
         self._active_workers.pop(request_id, None)
         if request_id != self._load_request_id:
@@ -430,8 +434,12 @@ class AudioHistoryPanel(QWidget):
             except ValueError:
                 date_label = entry.created_at
             speed = f"{entry.realtime_speed:.2f}×".replace(".", ",")
+            display_name = (
+                f"{entry.file_name} (arquivo ausente)"
+                if entry.id in missing_ids else entry.file_name
+            )
             values = (
-                entry.file_name,
+                display_name,
                 date_label,
                 format_duration(entry.duration_seconds),
                 self._format_size(entry.size_bytes),
@@ -474,7 +482,11 @@ class AudioHistoryPanel(QWidget):
         self.page_info_label.setText(
             f"Página {current_page}/{page_count} · {first_item}–{last_item} de {total}"
         )
-        self.summary.setText(f"{total} áudio(s) no histórico. Exibindo até {self.page_size} por página.")
+        missing_count = len(missing_ids)
+        suffix = f" {missing_count} arquivo(s) não encontrado(s) nesta página." if missing_count else ""
+        self.summary.setText(
+            f"{total} áudio(s) no histórico. Exibindo até {self.page_size} por página.{suffix}"
+        )
         self.previous_page_button.setEnabled(self.page_offset > 0)
         self.next_page_button.setEnabled(self.page_offset + self.page_size < total)
         self.refresh_button.setEnabled(True)
