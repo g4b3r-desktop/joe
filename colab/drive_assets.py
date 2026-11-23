@@ -1,0 +1,150 @@
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+import re
+import shutil
+from pathlib import Path
+from typing import Any
+
+VOICE_AUDIO_SUFFIXES = {".wav", ".flac", ".mp3", ".ogg", ".m4a", ".aac"}
+
+
+def safe_asset_name(value: str, *, fallback: str = "voice") -> str:
+    """Create a portable single path component from a user-supplied asset name."""
+    raw = Path(str(value or "")).stem.strip().casefold()
+    slug = re.sub(r"[^a-z0-9_-]+", "-", raw).strip("-_")
+    return (slug or fallback)[:64]
+
+
+def sha256_file(path: str | Path) -> str:
+    digest = hashlib.sha256()
+    with Path(path).open("rb") as stream:
+        for chunk in iter(lambda: stream.read(8 * 1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def atomic_write_json(path: str | Path, payload: dict[str, Any]) -> None:
+    destination = Path(path)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    temporary = destination.with_name(destination.name + ".tmp")
+    temporary.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True),
+        encoding="utf-8",
+    )
+    os.replace(temporary, destination)
+
+
+def load_model_manifest(drive_root: str | Path, model_variant: str) -> dict[str, Any]:
+    manifest_path = Path(drive_root) / "models" / model_variant / "manifest.json"
+    if not manifest_path.is_file():
+        raise FileNotFoundError(
+            f"Modelo {model_variant!r} não instalado no Google Drive. "
+            "Envie a pasta do modelo pelo Joe antes de gerar áudio."
+        )
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    if manifest.get("model_variant") != model_variant:
+        raise ValueError("O manifesto do modelo não corresponde à variante solicitada.")
+    return manifest
+
+
+def model_fingerprint(manifest: dict[str, Any]) -> str:
+    """Fingerprint the exact checkpoint, tokenizer and runtime version used by a voice."""
+    fields = {
+        "model_variant": manifest.get("model_variant"),
+        "checkpoint_sha256": manifest.get("checkpoint_sha256"),
+        "tokenizer_sha256": manifest.get("tokenizer_sha256"),
+        "pocket_tts_version": manifest.get("pocket_tts_version"),
+    }
+    raw = json.dumps(fields, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(raw).hexdigest()
+
+
+def resolve_voice_state(
+    drive_root: str | Path,
+    model_variant: str,
+    voice_id: str,
+    expected_fingerprint: str,
+) -> tuple[Path, dict[str, Any]]:
+    if not voice_id or not re.fullmatch(r"[a-z0-9_-]{1,96}", voice_id):
+        raise ValueError("Identificador de voz inválido.")
+    voice_dir = Path(drive_root) / "voices" / model_variant / voice_id
+    metadata_path = voice_dir / "metadata.json"
+    state_path = voice_dir / "voice_state.safetensors"
+    if not metadata_path.is_file() or not state_path.is_file():
+        raise FileNotFoundError(f"Voz {voice_id!r} não encontrada no Google Drive.")
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    if metadata.get("model_variant") != model_variant:
+        raise ValueError("A voz foi preparada para outra variante de modelo.")
+    if metadata.get("model_fingerprint") != expected_fingerprint:
+        raise ValueError(
+            "A voz foi preparada com outros pesos/tokenizer. Reenvie o áudio original "
+            "para prepará-la novamente com o modelo atual do Google Drive."
+        )
+    return state_path, metadata
+
+
+def config_for_uploaded_model(
+    model_variant: str, model_dir: str | Path, config_dir: str | Path
+) -> dict[str, Any]:
+    """Build a runtime YAML from the installed Pocket TTS template and Drive files."""
+    import yaml
+
+    model_root = Path(model_dir).resolve()
+    template = Path(config_dir) / f"{model_variant}.yaml"
+    if not template.is_file():
+        raise FileNotFoundError(
+            f"O Pocket TTS instalado não contém o YAML da variante {model_variant!r}."
+        )
+    data = yaml.safe_load(template.read_text(encoding="utf-8"))
+    if not isinstance(data, dict):
+        raise ValueError(f"YAML-base inválido para {model_variant!r}.")
+    flow_lm = data.get("flow_lm")
+    lookup = flow_lm.get("lookup_table") if isinstance(flow_lm, dict) else None
+    if not isinstance(lookup, dict):
+        raise ValueError("O YAML-base não define flow_lm.lookup_table.")
+    data["weights_path"] = str((model_root / "model.safetensors").resolve())
+    data["weights_path_without_voice_cloning"] = None
+    lookup["tokenizer_path"] = str((model_root / "tokenizer.json").resolve())
+    return data
+
+
+def validate_model_files(model_file: str | Path, tokenizer_file: str | Path) -> dict[str, Any]:
+    """Validate structural formats before an uploaded bundle can replace the Drive copy."""
+    from safetensors_validation import validate_safetensors_file
+
+    checkpoint = Path(model_file)
+    tokenizer = Path(tokenizer_file)
+    checkpoint_info = validate_safetensors_file(checkpoint)
+    parsed = json.loads(tokenizer.read_text(encoding="utf-8"))
+    if not isinstance(parsed, dict) or not parsed:
+        raise ValueError("O tokenizer JSON está vazio ou inválido.")
+    return {
+        "checkpoint_size": checkpoint.stat().st_size,
+        "tokenizer_size": tokenizer.stat().st_size,
+        "tensor_count": checkpoint_info["tensor_count"],
+    }
+
+
+def replace_directory_atomically(staged: Path, destination: Path) -> None:
+    """Replace a model/voice directory with rollback if the final rename fails."""
+    staged = Path(staged)
+    destination = Path(destination)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    backup = destination.with_name(destination.name + ".previous")
+    if backup.exists():
+        shutil.rmtree(backup)
+    had_previous = destination.exists()
+    if had_previous:
+        os.replace(destination, backup)
+    try:
+        os.replace(staged, destination)
+    except BaseException:
+        if had_previous and backup.exists():
+            os.replace(backup, destination)
+        raise
+    else:
+        if backup.exists():
+            shutil.rmtree(backup)
