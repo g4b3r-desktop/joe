@@ -91,6 +91,33 @@ def resolve_voice_state(
     return state_path, metadata
 
 
+def voice_state_for_safetensors_export(
+    voice_state: dict[str, dict[str, Any]],
+) -> dict[str, dict[str, Any]]:
+    """Copy Pocket TTS voice-cache tensors to CPU for Safetensors serialization."""
+    import torch
+
+    if not isinstance(voice_state, dict) or not voice_state:
+        raise ValueError("O Pocket TTS retornou um estado de voz vazio ou inválido.")
+
+    cpu_state: dict[str, dict[str, Any]] = {}
+    for module_name, module_state in voice_state.items():
+        if not isinstance(module_state, dict):
+            raise TypeError(
+                f"O estado do módulo {module_name!r} não é um dicionário de tensores."
+            )
+        cpu_module: dict[str, Any] = {}
+        for tensor_name, tensor in module_state.items():
+            if not isinstance(tensor, torch.Tensor):
+                raise TypeError(
+                    f"O estado {module_name}/{tensor_name} não contém um tensor PyTorch."
+                )
+            cpu_module[tensor_name] = tensor.detach().to(device="cpu").contiguous()
+        cpu_state[module_name] = cpu_module
+
+    return cpu_state
+
+
 def config_for_uploaded_model(
     model_variant: str, model_dir: str | Path, config_dir: str | Path
 ) -> dict[str, Any]:
