@@ -243,7 +243,7 @@ class ColabAPIClient:
             raise FileNotFoundError(f"Áudio de referência não encontrado: {path}")
         if path.suffix.lower() == ".safetensors":
             raise ValueError(
-                "No armazenamento direto, selecione o WAV/FLAC/MP3/OGG original. "
+                "No armazenamento direto, selecione o áudio original (WAV/FLAC/MP3/OGG). "
                 "O estado Safetensors será preparado pelo próprio Colab."
             )
         file_info = self._asset_file_info(path)
