@@ -12,7 +12,7 @@ sys.path.insert(0, str(COLAB_DIR))
 from safetensors_validation import validate_safetensors_file
 
 
-def _write_safetensors(path: Path, *, payload: bytes = b"\\x00" * 4) -> Path:
+def _write_safetensors(path: Path, *, payload: bytes = b"\x00" * 4) -> Path:
     header = json.dumps(
         {
             "weight": {
@@ -46,7 +46,7 @@ def test_wav_renamed_as_safetensors_is_identified(tmp_path):
 
 def test_zip_named_safetensors_is_identified(tmp_path):
     source = tmp_path / "voice.safetensors"
-    source.write_bytes(b"PK\\x03\\x04" + b"\\x00" * 32)
+    source.write_bytes(b"PK\x03\x04" + b"\x00" * 32)
 
     with pytest.raises(ValueError, match="cabeçalho ZIP"):
         validate_safetensors_file(source)
@@ -88,7 +88,7 @@ def test_tensor_offsets_must_fit_inside_file(tmp_path):
             }
         }
     ).encode("utf-8")
-    source.write_bytes(len(header).to_bytes(8, "little") + header + b"\\x00" * 4)
+    source.write_bytes(len(header).to_bytes(8, "little") + header + b"\x00" * 4)
 
     with pytest.raises(ValueError, match="intervalo de dados inválido"):
         validate_safetensors_file(source)
