@@ -429,7 +429,7 @@ async def submit_tts_job(
             detail="A versão selecionada não está disponível para o idioma informado.",
         )
     voice_data = await _read_upload(voice) if voice is not None else None
-    suffix = safe_upload_suffix(voice.filename) if voice is not None else ".wav"
+    suffix = safe_upload_suffix(voice.filename, allow_safetensors=True) if voice is not None else ".wav"
     voice_filename = (
         (voice.filename or f"voice{suffix}").replace("\\", "/").rsplit("/", 1)[-1]
         if voice is not None else None
