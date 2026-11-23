@@ -273,6 +273,23 @@ class TTSGenerationWorker(QRunnable):
                 if self.task.remote
                 else None
             )
+            remote_voice_id = None
+            if remote is not None and self.task.voice_path:
+                self.signals.progress.emit(
+                    self.task.task_id,
+                    "Enviando áudio de referência e preparando a voz no Google Drive…",
+                )
+                prepared_voice = remote.prepare_voice(
+                    self.task.voice_path,
+                    self.task.language,
+                    self.task.model_variant,
+                    name=self.task.voice_alias,
+                )
+                remote_voice_id = str(prepared_voice.get("voice_id") or "")
+                if not remote_voice_id:
+                    raise ColabAPIError(
+                        "O Colab não retornou o identificador da voz preparada no Drive."
+                    )
             with tempfile.TemporaryDirectory(prefix="joe-tts-queue-") as temp_dir:
                 temporary_root = Path(temp_dir)
                 generated: list[Path] = []
@@ -303,6 +320,7 @@ class TTSGenerationWorker(QRunnable):
                                     self.task.voice_path,
                                     cancel_event=self.cancel_event,
                                     model_variant=self.task.model_variant,
+                                    voice_id=remote_voice_id,
                                 )
                                 if self.cancel_event.is_set():
                                     self.signals.cancelled.emit(self.task.task_id)
