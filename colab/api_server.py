@@ -68,6 +68,16 @@ MAX_VOICE_ASSET_BYTES = 80 * 1024 * 1024
 # Pocket TTS remains CPU-first, but this Colab worker can explicitly move the
 # nn.Module to CUDA. Auto prefers CUDA when available and safely falls back.
 TTS_DEVICE_MODE = os.environ.get("JOE_TTS_DEVICE", "auto").strip().lower()
+TTS_SAMPLER_ERROR: str | None = None
+try:
+    TTS_SAMPLER_DECODE_STEPS = int(
+        os.environ.get("JOE_TTS_SAMPLER_DECODE_STEPS", "5")
+    )
+    if not 1 <= TTS_SAMPLER_DECODE_STEPS <= 16:
+        raise ValueError("O número de passos do sampler deve ficar entre 1 e 16.")
+except ValueError as exc:
+    TTS_SAMPLER_ERROR = str(exc)
+    TTS_SAMPLER_DECODE_STEPS = 5
 TTS_DEVICE_ERROR: str | None = None
 TTS_VERSION_ERROR: str | None = None
 TTS_THREADS_ERROR: str | None = None
@@ -139,6 +149,8 @@ def _load_tts_model_for_inference(loader: Any, model_variant: str) -> Any:
 
     if TTS_VERSION_ERROR:
         raise RuntimeError(TTS_VERSION_ERROR)
+    if TTS_SAMPLER_ERROR:
+        raise RuntimeError(TTS_SAMPLER_ERROR)
     if TTS_THREADS_ERROR:
         raise RuntimeError(TTS_THREADS_ERROR)
     if TTS_DEVICE_ERROR:
@@ -195,7 +207,9 @@ def _get_tts_model(language: str, model_variant: str) -> Any:
                     "Use 'Enviar modelo local ao Google Drive' na aba Colab do Joe."
                 )
             loader = lambda: TTSModel.load_model(
-                config=str(drive_config), quantize=False
+                config=str(drive_config),
+                quantize=False,
+                sampler_decode_steps=TTS_SAMPLER_DECODE_STEPS,
             )
         else:
             local_config = os.environ.get("JOE_TTS_CONFIG_PATH")
@@ -227,11 +241,17 @@ def _get_tts_model(language: str, model_variant: str) -> Any:
             if selected_local_config:
                 config_path = Path(selected_local_config).expanduser()
                 loader = lambda: TTSModel.load_model(
-                    config=str(config_path), quantize=False
+                    config=str(config_path),
+                    quantize=False,
+                    sampler_decode_steps=TTS_SAMPLER_DECODE_STEPS,
                 )
             else:
                 loader = lambda: load_tts_model(
-                    TTSModel, language, model_variant, quantize=False
+                    TTSModel,
+                    language,
+                    model_variant,
+                    quantize=False,
+                    sampler_decode_steps=TTS_SAMPLER_DECODE_STEPS,
                 )
 
         model = _load_tts_model_for_inference(loader, model_variant)
@@ -334,8 +354,8 @@ def _generate_tts(
             torch.cuda.synchronize()
         generation_started = time.perf_counter()
         try:
-            with torch.inference_mode():
-                audio = model.generate_audio(voice_state, text)
+            # generate_audio() already uses torch.no_grad() in Pocket TTS.
+            audio = model.generate_audio(voice_state, text)
             if effective_device == "cuda":
                 torch.cuda.synchronize()
         except Exception as exc:
@@ -678,7 +698,9 @@ def commit_asset_upload(upload_id: str) -> dict[str, Any]:
                 encoding="utf-8",
             )
             validation_model = TTSModel.load_model(
-                config=str(validation_config), quantize=False
+                config=str(validation_config),
+                quantize=False,
+                sampler_decode_steps=TTS_SAMPLER_DECODE_STEPS,
             )
             if not getattr(validation_model, "has_voice_cloning", True):
                 raise ValueError(
@@ -873,6 +895,8 @@ def health(_: None = Depends(require_token)) -> dict[str, Any]:
         "tts_device_selected": TTS_DEVICE_SELECTED,
         "tts_loaded_devices": dict(_tts_loaded_devices),
         "tts_cpu_threads": TTS_CPU_THREADS,
+        "tts_sampler_decode_steps": TTS_SAMPLER_DECODE_STEPS,
+        "tts_sampler_error": TTS_SAMPLER_ERROR,
         "tts_device_error": TTS_DEVICE_ERROR,
         "tts_runtime_version_error": TTS_VERSION_ERROR,
         "tts_threads_error": TTS_THREADS_ERROR,
