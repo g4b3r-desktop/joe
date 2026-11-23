@@ -38,10 +38,10 @@ def test_clipboard_shortcut_focuses_existing_dialog_while_generation_is_active()
     ) == "focus"
 
 
-def test_clipboard_shortcut_keeps_completed_dialog_open():
+def test_clipboard_shortcut_replaces_completed_dialog_with_new_clipboard_text():
     assert decide_clipboard_shortcut_action(
         dialog_open=True, generation_active=False
-    ) == "focus"
+    ) == "replace"
 
 
 def test_clipboard_shortcut_starts_a_new_dialog_when_none_is_open():
