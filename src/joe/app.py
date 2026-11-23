@@ -1312,17 +1312,12 @@ class ClipboardAudioDialog(QDialog):
         self._pending_segment_start_ms: int | None = None
         self.is_closing = False
         self.failure_details = ""
-        self.generation_started_at: float | None = None
-        self.performance_timer = QTimer(self)
-        self.performance_timer.setInterval(500)
-        self.performance_timer.timeout.connect(self._update_performance_elapsed)
-
-        self.setWindowTitle("Joe — Áudio do atalho")
+        self.setWindowTitle("Joe")
         self.setWindowFlags(Qt.WindowType.Window)
         self.setWindowIcon(QApplication.windowIcon())
         self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
-        self.setMinimumSize(760, 620)
-        self.resize(1040, 800)
+        self.setMinimumSize(600, 420)
+        self.resize(720, 560)
 
         self.setStyleSheet("""
             QDialog {
@@ -1471,30 +1466,8 @@ class ClipboardAudioDialog(QDialog):
         """)
 
         root_layout = QVBoxLayout(self)
-        root_layout.setContentsMargins(20, 18, 20, 18)
-        root_layout.setSpacing(12)
-
-        # Identidade visual e título da janela.
-        header = QFrame(self)
-        header.setObjectName("appHeader")
-        header_layout = QHBoxLayout(header)
-        header_layout.setContentsMargins(16, 13, 18, 13)
-        header_layout.setSpacing(13)
-        brand = QLabel("JOE")
-        brand.setObjectName("brandMark")
-        brand.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        header_layout.addWidget(brand, 0, Qt.AlignmentFlag.AlignVCenter)
-        title_column = QVBoxLayout()
-        title_column.setSpacing(2)
-        title = QLabel("Texto convertido em áudio")
-        title.setObjectName("windowTitle")
-        subtitle = QLabel("Ouça o resultado completo ou selecione frases individuais.")
-        subtitle.setObjectName("windowSubtitle")
-        subtitle.setWordWrap(True)
-        title_column.addWidget(title)
-        title_column.addWidget(subtitle)
-        header_layout.addLayout(title_column, 1)
-        root_layout.addWidget(header)
+        root_layout.setContentsMargins(12, 10, 12, 10)
+        root_layout.setSpacing(8)
 
         # O conteúdo principal rola verticalmente; os comandos do player ficam fixos.
         scroll_area = QScrollArea(self)
@@ -1516,9 +1489,10 @@ class ClipboardAudioDialog(QDialog):
         )
         layout.addWidget(self.status_label)
 
-        preview_group = QGroupBox("Texto recebido pelo atalho")
-        preview_layout = QVBoxLayout(preview_group)
-        preview_layout.setContentsMargins(10, 11, 10, 9)
+        self.preview_toggle = QCheckBox("Mostrar texto recebido")
+        self.preview_group = QGroupBox("Texto recebido")
+        preview_layout = QVBoxLayout(self.preview_group)
+        preview_layout.setContentsMargins(10, 9, 10, 8)
         self.preview_label = QTextEdit()
         self.preview_label.setReadOnly(True)
         self.preview_label.setAcceptRichText(False)
@@ -1529,58 +1503,24 @@ class ClipboardAudioDialog(QDialog):
         self.preview_label.setVerticalScrollBarPolicy(
             Qt.ScrollBarPolicy.ScrollBarAsNeeded
         )
-        self.preview_label.setMinimumHeight(100)
-        self.preview_label.setMaximumHeight(210)
+        self.preview_label.setMinimumHeight(72)
+        self.preview_label.setMaximumHeight(150)
         self.preview_label.setPlaceholderText("O texto copiado aparecerá aqui.")
         preview_layout.addWidget(self.preview_label)
-        layout.addWidget(preview_group)
 
-        metrics_group = QGroupBox("Desempenho da geração")
-        metrics_layout = QVBoxLayout(metrics_group)
-        metrics_layout.setContentsMargins(10, 11, 10, 9)
-        metrics_grid = QGridLayout()
-        metrics_grid.setHorizontalSpacing(9)
-        metrics_grid.setVerticalSpacing(9)
-        self.metric_values: dict[str, QLabel] = {}
-        metric_specs = (
-            ("elapsed", "TEMPO DE GERAÇÃO", "—"),
-            ("duration", "DURAÇÃO DO ÁUDIO", "—"),
-            ("speed", "VELOCIDADE EFETIVA", "—"),
-            ("rate", "TEXTO POR SEGUNDO", "—"),
+        show_preview = QSettings().value(
+            "clipboard_dialog/show_text_preview", False, type=bool
         )
-        for index, (key, caption, initial) in enumerate(metric_specs):
-            tile = QFrame()
-            tile.setObjectName("metricTile")
-            tile_layout = QVBoxLayout(tile)
-            tile_layout.setContentsMargins(12, 9, 12, 10)
-            tile_layout.setSpacing(3)
-            caption_label = QLabel(caption)
-            caption_label.setObjectName("metricCaption")
-            caption_label.setWordWrap(True)
-            value_label = QLabel(initial)
-            value_label.setObjectName("metricValue")
-            value_label.setWordWrap(True)
-            value_label.setTextInteractionFlags(
-                Qt.TextInteractionFlag.TextSelectableByMouse
+        self.preview_toggle.setChecked(show_preview)
+        self.preview_group.setVisible(show_preview)
+        self.preview_toggle.toggled.connect(self.preview_group.setVisible)
+        self.preview_toggle.toggled.connect(
+            lambda checked: QSettings().setValue(
+                "clipboard_dialog/show_text_preview", checked
             )
-            tile_layout.addWidget(caption_label)
-            tile_layout.addWidget(value_label)
-            metrics_grid.addWidget(tile, index // 2, index % 2)
-            self.metric_values[key] = value_label
-        metrics_grid.setColumnStretch(0, 1)
-        metrics_grid.setColumnStretch(1, 1)
-        metrics_layout.addLayout(metrics_grid)
-        self.performance_label = QLabel(
-            "O Joe mede o tempo neste computador, inclusive a espera do serviço remoto quando usado."
         )
-        self.performance_label.setObjectName("metricsText")
-        self.performance_label.setWordWrap(True)
-        self.performance_label.setTextFormat(Qt.TextFormat.PlainText)
-        self.performance_label.setTextInteractionFlags(
-            Qt.TextInteractionFlag.TextSelectableByMouse
-        )
-        metrics_layout.addWidget(self.performance_label)
-        layout.addWidget(metrics_group)
+        layout.addWidget(self.preview_toggle)
+        layout.addWidget(self.preview_group)
 
         phrases_group = QGroupBox(
             f"Frases geradas ({len(self.phrase_texts)})"
@@ -1603,8 +1543,8 @@ class ClipboardAudioDialog(QDialog):
         )
         self.phrase_list.setSpacing(4)
         self.phrase_list.setUniformItemSizes(False)
-        self.phrase_list.setMinimumHeight(145)
-        self.phrase_list.setMaximumHeight(430)
+        self.phrase_list.setMinimumHeight(100)
+        self.phrase_list.setMaximumHeight(280)
         self.phrase_list.itemClicked.connect(self._play_phrase_item)
         for index, phrase in enumerate(self.phrase_texts, start=1):
             item = QListWidgetItem(f"◷  {index:03d}   {phrase}")
@@ -1644,8 +1584,8 @@ class ClipboardAudioDialog(QDialog):
         )
         self.recognition_list.setSpacing(4)
         self.recognition_list.setUniformItemSizes(False)
-        self.recognition_list.setMinimumHeight(110)
-        self.recognition_list.setMaximumHeight(310)
+        self.recognition_list.setMinimumHeight(88)
+        self.recognition_list.setMaximumHeight(220)
         self.recognition_list.setEnabled(False)
         self.recognition_list.itemClicked.connect(self._play_recognized_segment)
         self.recognition_text_label = QLabel("")
@@ -1705,31 +1645,8 @@ class ClipboardAudioDialog(QDialog):
         self.player.positionChanged.connect(self._stop_timed_segment)
 
     def set_text_preview(self, text: str) -> None:
-        # Preserva o texto integral; a caixa possui rolagem quando o conteúdo é longo.
+        # O texto é preservado integralmente, mas fica oculto por padrão.
         self.preview_label.setPlainText(text.strip())
-
-    def start_measurement(self, remote: bool = False) -> None:
-        self.generation_started_at = time.perf_counter()
-        self.metric_values["elapsed"].setText(format_duration(0))
-        self.metric_values["duration"].setText("Aguardando")
-        self.metric_values["speed"].setText("Calculando")
-        self.metric_values["rate"].setText("Calculando")
-        self.performance_label.setText(
-            "Cronômetro iniciado pelo Joe. "
-            + (
-                "A medição inclui o envio, a fila e a resposta do Google Colab."
-                if remote
-                else "A medição pode incluir o carregamento do modelo local."
-            )
-        )
-        self.performance_timer.start()
-
-    def _update_performance_elapsed(self) -> None:
-        if self.generation_started_at is None:
-            self.performance_timer.stop()
-            return
-        elapsed = time.perf_counter() - self.generation_started_at
-        self.metric_values["elapsed"].setText(format_duration(elapsed))
 
     def set_progress(self, message: str) -> None:
         if self.is_closing or (
@@ -1766,44 +1683,12 @@ class ClipboardAudioDialog(QDialog):
             self._play_next_chunk()
 
     def set_ready(self, result: dict) -> None:
-        self.performance_timer.stop()
-        self.generation_started_at = None
         self.audio_path = Path(result["path"])
         self.generation_finished = True
         performance = result.get("performance")
+        # As métricas continuam disponíveis para o histórico, mas não ocupam
+        # espaço na janela de atalho.
         self.performance = performance if isinstance(performance, AudioPerformance) else None
-        if isinstance(performance, AudioPerformance):
-            elapsed = max(0.0, performance.elapsed_seconds)
-            duration = max(0.0, performance.audio_duration_seconds)
-            speed = duration / elapsed if elapsed > 0 else 0.0
-            character_rate = (
-                performance.character_count / elapsed if elapsed > 0 else 0.0
-            )
-            self.metric_values["elapsed"].setText(format_duration(elapsed))
-            self.metric_values["duration"].setText(format_duration(duration))
-            self.metric_values["speed"].setText(
-                f"{speed:.2f}×".replace(".", ",") if speed else "—"
-            )
-            self.metric_values["rate"].setText(
-                f"{character_rate:.1f} car/s".replace(".", ",")
-                if character_rate
-                else "—"
-            )
-            self.performance_label.setText(
-                "Medição realizada pelo Joe neste computador. "
-                + (
-                    "No modo remoto, o tempo inclui envio, fila e espera pela API."
-                    if performance.remote
-                    else "No modo local, o tempo inclui o carregamento do modelo quando necessário."
-                )
-            )
-        else:
-            self.metric_values["duration"].setText("Indisponível")
-            self.metric_values["speed"].setText("—")
-            self.metric_values["rate"].setText("—")
-            self.performance_label.setText(
-                "Áudio pronto, mas não foi possível calcular todas as métricas."
-            )
         self.play_button.setEnabled(bool(self.chunk_paths))
         self.save_button.setEnabled(True)
         if (
@@ -1822,14 +1707,6 @@ class ClipboardAudioDialog(QDialog):
     def set_failed(self, message: str, details: str = "") -> None:
         self.failure_details = details.strip()
         self.details_button.setVisible(bool(self.failure_details))
-        self.performance_timer.stop()
-        self.generation_started_at = None
-        self.metric_values["duration"].setText("Não concluído")
-        self.metric_values["speed"].setText("—")
-        self.metric_values["rate"].setText("—")
-        self.performance_label.setText(
-            "Medição interrompida porque a geração não foi concluída."
-        )
         self.generation_finished = True
         self.status_label.setText(
             f"Falha ao gerar o áudio completo: {message}. "
@@ -2129,8 +2006,6 @@ class ClipboardAudioDialog(QDialog):
 
     def closeEvent(self, event) -> None:
         self.is_closing = True
-        self.performance_timer.stop()
-        self.generation_started_at = None
         self.play_requested = False
         self._active_segment_end_ms = None
         self._pending_segment_start_ms = None
@@ -4962,7 +4837,6 @@ class JoeWindow(QMainWindow):
         )
         dialog.temp_dir = temp_dir
         dialog.set_text_preview(copied_text)
-        dialog.start_measurement(remote=remote is not None)
         dialog_state = {"closed": False}
         dialog.closed.connect(lambda: self._clipboard_dialog_closed(dialog))
         dialog.closed.connect(lambda: dialog_state.__setitem__("closed", True))
