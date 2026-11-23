@@ -13,7 +13,7 @@ O instalador não substitui um comando existente em `Ctrl+Shift+Espaço`. Para r
 ## Modelos
 
 - **TTS — [Kyutai Pocket TTS](https://github.com/kyutai-labs/pocket-tts):** gera WAV localmente, roda na CPU e inclui suporte nativo a português, inglês, espanhol, francês, italiano, alemão e neerlandês. O japonês está disponível como opção **experimental**, por meio do modelo comunitário compacto de 6 camadas [takuma104/pocket-tts-ja-cc](https://huggingface.co/takuma104/pocket-tts-ja-cc), com aproximadamente 219 MB de pesos. O Joe baixa configuração, pesos e voz de referência japonesa no primeiro uso, armazenando o cache em `.models/huggingface/`. A versão japonesa de 24 camadas não aparece no seletor. O modelo exige Pocket TTS 3.3.0 ou superior e usa licença CC BY 4.0; atribuição: takuma104, Pocket TTS Japanese (CC BY 4.0), baseado em Kyutai Pocket TTS.
-- **STT — [Moondream Parakeet Redux](https://huggingface.co/moondream/parakeet-redux):** transcrição local em 25 idiomas, com pesos compactados de aproximadamente 178 MB. Quando a implementação Photon compatível está disponível, ela é usada. Em CPUs sem AVX-512 VNNI, o app usa a implementação de referência Transformers; em FP32 ela pode expandir o uso de memória para cerca de 2,5 GB.
+- **STT — [Moondream Parakeet Redux](https://huggingface.co/moondream/parakeet-redux):** transcrição local em 25 idiomas, com pesos compactados de aproximadamente 178 MB. Com `moondream>=2.6.1`, o Joe usa Photon CUDA quando NVIDIA CUDA é selecionada; na CPU, usa Photon quando há suporte a AVX-512 VNNI (x86) ou NEON (ARM). Em CPUs sem essas instruções, usa a implementação de referência Transformers de uma revisão compatível fixada no código, que é mais lenta e pode usar mais memória.
 
 No modo Local, o processamento ocorre no próprio computador. No modo Colab, texto e arquivos de áudio selecionados são enviados pela conexão HTTPS ao runtime temporário do Google Colab para inferência. Os pesos são baixados no ambiente em que o modelo estiver sendo executado e permanecem no cache daquele runtime enquanto ele existir.
 
@@ -62,9 +62,9 @@ Consulte [as limitações oficiais do Colab](https://research.google.com/colabor
 
 O aplicativo foi pensado para Linux desktop e também pode ser executado em Windows/macOS com Python compatível.
 
-**Perfil de referência: Linux Mint, Core i5-2400, 16 GB RAM e RTX 3060.** O Pocket TTS permite escolher CPU ou NVIDIA GPU (CUDA) nas configurações de Texto → Áudio. Na CPU, o usuário pode ativar ou desativar a quantização dinâmica INT8; ela vem ativada por padrão para preservar memória, mas pode ser desligada para carregar pesos sem quantização. Na CUDA, a quantização INT8 fica indisponível e é automaticamente ignorada, pois o Pocket TTS só oferece esse caminho de quantização na CPU. A preferência da CPU é preservada ao alternar entre dispositivos. Também é possível ajustar a quantidade de threads usadas pelo PyTorch na CPU. A comparação **Comparar CPU × CUDA** executa o mesmo texto, modelo e voz nos dois dispositivos e mostra separadamente o carregamento do modelo, preparação da voz, tempo médio de geração, velocidade em tempo real e pico de VRAM. Também existem perfis **Econômico** (CPU + INT8 + uma thread), **Equilibrado** (CPU + INT8 + aproximadamente metade das threads) e **Desempenho** (prioriza CUDA; sem CUDA usa CPU sem INT8 e todas as threads). Qualquer opção pode ser ajustada manualmente depois de aplicar um perfil. O painel de monitoramento atualiza CPU, RAM, utilização da GPU, VRAM e temperatura NVIDIA a cada 2,5 segundos, quando a ferramenta `nvidia-smi` estiver disponível. O histórico registra dispositivo, threads, quantização e perfil usados, sem salvar texto adicional por causa desse recurso. O resultado depende do modelo e do hardware; CUDA não é necessariamente mais rápida em todos os computadores. Para ASR, o Joe oferece seleção independente entre CPU e NVIDIA GPU. No modo CPU, usa Photon se o processador for compatível; caso contrário, usa Transformers. No modo CUDA, usa a implementação de referência Transformers em FP16 quando a build CUDA do PyTorch está instalada.
+**Perfil de referência: Linux Mint, Core i5-2400, 16 GB RAM e RTX 3060.** O Pocket TTS permite escolher CPU ou NVIDIA GPU (CUDA) nas configurações de Texto → Áudio. Na CPU, o usuário pode ativar ou desativar a quantização dinâmica INT8; ela vem ativada por padrão para preservar memória, mas pode ser desligada para carregar pesos sem quantização. Na CUDA, a quantização INT8 fica indisponível e é automaticamente ignorada, pois o Pocket TTS só oferece esse caminho de quantização na CPU. A preferência da CPU é preservada ao alternar entre dispositivos. Também é possível ajustar a quantidade de threads usadas pelo PyTorch na CPU. A comparação **Comparar CPU × CUDA** executa o mesmo texto, modelo e voz nos dois dispositivos e mostra separadamente o carregamento do modelo, preparação da voz, tempo médio de geração, velocidade em tempo real e pico de VRAM. Também existem perfis **Econômico** (CPU + INT8 + uma thread), **Equilibrado** (CPU + INT8 + aproximadamente metade das threads) e **Desempenho** (prioriza CUDA; sem CUDA usa CPU sem INT8 e todas as threads). Qualquer opção pode ser ajustada manualmente depois de aplicar um perfil. O painel de monitoramento atualiza CPU, RAM, utilização da GPU, VRAM e temperatura NVIDIA a cada 2,5 segundos, quando a ferramenta `nvidia-smi` estiver disponível. O histórico registra dispositivo, threads, quantização e perfil usados, sem salvar texto adicional por causa desse recurso. O resultado depende do modelo e do hardware; CUDA não é necessariamente mais rápida em todos os computadores. Para ASR, o Joe oferece seleção independente entre CPU e NVIDIA GPU. No modo CPU, usa Photon se o processador for compatível; caso contrário, usa a implementação de referência Transformers com uma revisão antiga e compatível do Parakeet Redux. No modo CUDA, usa Photon com Parakeet Redux e o SDK Moondream 2.6.1 ou superior; se Photon falhar, tenta o fallback Transformers em FP16 quando CUDA estiver disponível.
 
-A implementação Photon do Parakeet Redux usa kernels AVX-512 VNNI em x86. O i5-2400 oferece AVX, mas não AVX-512; por isso, selecione NVIDIA GPU (CUDA) para usar a RTX 3060. O modelo também documenta execução em CUDA com FP16. O modo CPU é útil quando outros modelos já estão ocupando VRAM.
+A implementação Photon do Parakeet Redux usa AVX-512 VNNI em CPUs x86 compatíveis; o i5-2400 não possui essa instrução e, portanto, usa o fallback Transformers em CPU. Na RTX 3060, selecione NVIDIA GPU (CUDA): o SDK Moondream 2.6.1 ou superior executa o Redux pelo Photon CUDA, sem passar pelo `AutoProcessor` do Transformers. O modo CPU preserva a VRAM, mas pode ser consideravelmente mais lento.
 
 ## Instalação no Linux Mint / Ubuntu
 
@@ -91,7 +91,7 @@ Para também criar um ícone `joe.desktop` na área de trabalho:
 bash scripts/install-linux.sh --desktop
 ~~~
 
-Para usar a RTX 3060 na transcrição Parakeet (PyTorch CUDA 13.2), use:
+Para usar a RTX 3060 no Pocket TTS e manter CUDA disponível para o fallback Transformers de ASR, use:
 
 ~~~bash
 bash scripts/install-linux.sh cuda
@@ -129,7 +129,7 @@ python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
 python -m pip install -e ".[asr-fallback]"
 python -m joe
 
-# Para usar CUDA 13.2 no Parakeet, substitua a instalação do torch por:
+# Para usar CUDA 13.2 no Pocket TTS e no fallback Transformers de ASR, substitua a instalação do torch por:
 python -m pip install torch --index-url https://download.pytorch.org/whl/cu132
 ~~~
 
