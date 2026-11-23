@@ -3,7 +3,11 @@ from __future__ import annotations
 import numpy as np
 import soundfile as sf
 
-from joe.audio_chunks import merge_wav_files, split_text_into_chunks
+from joe.audio_chunks import (
+    merge_wav_files,
+    split_text_into_chunks,
+    split_text_into_phrases,
+)
 
 
 def test_split_text_prefers_sentence_boundaries_and_respects_limit():
@@ -71,8 +75,8 @@ def test_merge_resamples_and_normalizes_mono_stereo(tmp_path):
     assert info.channels == 1
     assert info.frames == 800 + 800
 
-    from joe.audio_chunks import split_text_into_phrases
 
+def test_split_text_into_phrases_preserves_sentence_boundaries_and_punctuation():
     text = "Primeira frase. Segunda frase! Terceira frase?"
     phrases = split_text_into_phrases(text, max_chars=80)
 
@@ -81,8 +85,6 @@ def test_merge_resamples_and_normalizes_mono_stereo(tmp_path):
 
 
 def test_split_text_into_phrases_keeps_long_sentences_word_safe():
-    from joe.audio_chunks import split_text_into_phrases
-
     text = "uma palavra " * 20 + ". Outra frase."
     phrases = split_text_into_phrases(text, max_chars=48)
 
@@ -92,8 +94,6 @@ def test_split_text_into_phrases_keeps_long_sentences_word_safe():
 
 
 def test_split_text_into_phrases_handles_newlines_and_empty_text():
-    from joe.audio_chunks import split_text_into_phrases
-
     assert split_text_into_phrases("  ") == []
     assert split_text_into_phrases("Linha um\nLinha dois.") == [
         "Linha um", "Linha dois."
@@ -101,8 +101,6 @@ def test_split_text_into_phrases_handles_newlines_and_empty_text():
 
 
 def test_split_text_into_phrases_rejects_small_limit():
-    from joe.audio_chunks import split_text_into_phrases
-
     try:
         split_text_into_phrases("texto", max_chars=20)
     except ValueError as exc:
