@@ -5,7 +5,7 @@ import sqlite3
 from datetime import datetime
 from pathlib import Path
 
-from PySide6.QtCore import QDate, QUrl, Qt, Signal
+from PySide6.QtCore import QDate, QObject, QRunnable, QThreadPool, QTimer, QUrl, Qt, Signal
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtMultimedia import QMediaPlayer
 from PySide6.QtWidgets import (
@@ -36,6 +36,49 @@ from joe.audio_history import AudioHistoryStore
 from joe.audio_performance import format_duration
 
 
+class _HistoryLoadSignals(QObject):
+    completed = Signal(int, object, object, int, int)
+    failed = Signal(int, str)
+
+
+class _HistoryLoadWorker(QRunnable):
+    """Read one history page and its filter metadata outside the GUI thread."""
+
+    def __init__(
+        self,
+        request_id: int,
+        store: AudioHistoryStore,
+        filters: dict[str, object],
+        *,
+        limit: int,
+        offset: int,
+    ) -> None:
+        super().__init__()
+        self.request_id = request_id
+        self.store = store
+        self.filters = filters
+        self.limit = limit
+        self.offset = offset
+        self.signals = _HistoryLoadSignals()
+
+    def run(self) -> None:
+        try:
+            entries = self.store.list_entries(
+                **self.filters,
+                limit=self.limit,
+                offset=self.offset,
+            )
+            total = self.store.count_entries(**self.filters)
+            voices = self.store.available_voices()
+            text_count = self.store.count_text_entries()
+            self.signals.completed.emit(
+                self.request_id, entries, voices, total, text_count
+            )
+        except Exception as exc:  # noqa: BLE001
+            self.signals.failed.emit(self.request_id, str(exc))
+
+
+
 class AudioHistoryPanel(QWidget):
     """Search, play and manage generated WAV files without moving them on import."""
 
@@ -50,6 +93,18 @@ class AudioHistoryPanel(QWidget):
         super().__init__(parent)
         self.store = store
         self.player = player
+        self.page_size = 100
+        self.page_offset = 0
+        self.total_entries = 0
+        self._load_request_id = 0
+        self._active_workers: dict[int, _HistoryLoadWorker] = {}
+        self._entries_by_id: dict[int, object] = {}
+        self._text_entries_count = 0
+        self._loading_table = False
+        self._search_timer = QTimer(self)
+        self._search_timer.setSingleShot(True)
+        self._search_timer.setInterval(250)
+        self._search_timer.timeout.connect(self.refresh)
         self._build_ui()
 
     def _build_ui(self) -> None:
@@ -71,12 +126,12 @@ class AudioHistoryPanel(QWidget):
         filters = QHBoxLayout()
         self.search = QLineEdit()
         self.search.setPlaceholderText("Pesquisar arquivo, voz ou texto salvo…")
-        self.search.textChanged.connect(self.refresh)
+        self.search.textChanged.connect(self._filters_changed)
         filters.addWidget(self.search, 2)
 
         self.voice_filter = QComboBox()
         self.voice_filter.addItem("Todas as vozes", "")
-        self.voice_filter.currentIndexChanged.connect(self.refresh)
+        self.voice_filter.currentIndexChanged.connect(self._filters_changed)
         filters.addWidget(self.voice_filter, 1)
         layout.addLayout(filters)
 
@@ -87,8 +142,8 @@ class AudioHistoryPanel(QWidget):
         self.from_date.setDisplayFormat("dd/MM/yyyy")
         self.from_date.setEnabled(False)
         self.from_enabled.toggled.connect(self.from_date.setEnabled)
-        self.from_enabled.toggled.connect(self.refresh)
-        self.from_date.dateChanged.connect(self.refresh)
+        self.from_enabled.toggled.connect(self._filters_changed)
+        self.from_date.dateChanged.connect(self._filters_changed)
 
         self.to_enabled = QCheckBox("Até:")
         self.to_date = QDateEdit(QDate.currentDate())
@@ -96,8 +151,8 @@ class AudioHistoryPanel(QWidget):
         self.to_date.setDisplayFormat("dd/MM/yyyy")
         self.to_date.setEnabled(False)
         self.to_enabled.toggled.connect(self.to_date.setEnabled)
-        self.to_enabled.toggled.connect(self.refresh)
-        self.to_date.dateChanged.connect(self.refresh)
+        self.to_enabled.toggled.connect(self._filters_changed)
+        self.to_date.dateChanged.connect(self._filters_changed)
 
         self.min_duration = QDoubleSpinBox()
         self.min_duration.setRange(0, 999999)
@@ -105,7 +160,7 @@ class AudioHistoryPanel(QWidget):
         self.min_duration.setSuffix(" s")
         self.min_duration.setPrefix("Mín. ")
         self.min_duration.setSpecialValueText("Mín. qualquer")
-        self.min_duration.valueChanged.connect(self.refresh)
+        self.min_duration.valueChanged.connect(self._filters_changed)
 
         self.max_duration = QDoubleSpinBox()
         self.max_duration.setRange(0, 999999)
@@ -113,7 +168,7 @@ class AudioHistoryPanel(QWidget):
         self.max_duration.setSuffix(" s")
         self.max_duration.setPrefix("Máx. ")
         self.max_duration.setSpecialValueText("Máx. qualquer")
-        self.max_duration.valueChanged.connect(self.refresh)
+        self.max_duration.valueChanged.connect(self._filters_changed)
 
         for widget in (
             self.from_enabled,
@@ -137,13 +192,31 @@ class AudioHistoryPanel(QWidget):
         self.table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.table.verticalHeader().setVisible(False)
-        self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
-        for column in range(1, 10):
-            self.table.horizontalHeader().setSectionResizeMode(
-                column, QHeaderView.ResizeMode.ResizeToContents
-            )
+        header = self.table.horizontalHeader()
+        header.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
+        header.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        column_widths = (0, 130, 75, 85, 130, 130, 115, 75, 150, 95)
+        for column, width in enumerate(column_widths):
+            if column:
+                self.table.setColumnWidth(column, width)
         self.table.itemDoubleClicked.connect(lambda _item: self.play_selected())
         layout.addWidget(self.table, 1)
+
+        pagination = QHBoxLayout()
+        self.previous_page_button = QPushButton("← Anterior")
+        self.page_info_label = QLabel("Histórico ainda não carregado")
+        self.page_info_label.setObjectName("muted")
+        self.next_page_button = QPushButton("Próxima →")
+        self.previous_page_button.clicked.connect(self._previous_page)
+        self.next_page_button.clicked.connect(self._next_page)
+        self.previous_page_button.setEnabled(False)
+        self.next_page_button.setEnabled(False)
+        pagination.addWidget(self.previous_page_button)
+        pagination.addStretch(1)
+        pagination.addWidget(self.page_info_label)
+        pagination.addStretch(1)
+        pagination.addWidget(self.next_page_button)
+        layout.addLayout(pagination)
 
         actions = QHBoxLayout()
         self.play_button = QPushButton("Reproduzir")
@@ -185,7 +258,6 @@ class AudioHistoryPanel(QWidget):
         layout.addWidget(self.summary)
 
         self.table.itemSelectionChanged.connect(self._update_action_state)
-        self.refresh()
 
     @staticmethod
     def _format_generation_settings(settings_json: str) -> str:
@@ -230,6 +302,8 @@ class AudioHistoryPanel(QWidget):
         return f"{value} B"
 
     def _selected_entry(self):
+        if self._loading_table:
+            return None
         row = self.table.currentRow()
         if row < 0:
             return None
@@ -240,9 +314,11 @@ class AudioHistoryPanel(QWidget):
             entry_id = int(item.data(Qt.ItemDataRole.UserRole))
         except (TypeError, ValueError):
             return None
-        return self.store.get(entry_id)
+        return self._entries_by_id.get(entry_id)
 
     def _update_action_state(self) -> None:
+        if self._loading_table:
+            return
         entry = self._selected_entry()
         exists = bool(entry and Path(entry.audio_path).is_file())
         self.play_button.setEnabled(exists)
@@ -251,42 +327,97 @@ class AudioHistoryPanel(QWidget):
         self.export_button.setEnabled(exists)
         self.delete_button.setEnabled(bool(entry))
         self.show_text_button.setEnabled(bool(entry and entry.text_content))
-        self.clear_text_button.setEnabled(self.store.count_text_entries() > 0)
+        self.clear_text_button.setEnabled(self._text_entries_count > 0)
+
+    def _current_filters(self) -> dict[str, object]:
+        return {
+            "search": self.search.text(),
+            "voice": str(self.voice_filter.currentData() or ""),
+            "date_from": (
+                self.from_date.date().toString("yyyy-MM-dd")
+                if self.from_enabled.isChecked() else ""
+            ),
+            "date_to": (
+                self.to_date.date().toString("yyyy-MM-dd")
+                if self.to_enabled.isChecked() else ""
+            ),
+            "min_duration": self.min_duration.value(),
+            "max_duration": self.max_duration.value(),
+        }
+
+    def _filters_changed(self, *_args) -> None:
+        self.page_offset = 0
+        self._search_timer.start()
+
+    def _previous_page(self) -> None:
+        if self.page_offset > 0:
+            self.page_offset = max(0, self.page_offset - self.page_size)
+            self.refresh()
+
+    def _next_page(self) -> None:
+        if self.page_offset + self.page_size < self.total_entries:
+            self.page_offset += self.page_size
+            self.refresh()
 
     def refresh(self, *_args) -> None:
-        selected = self._selected_entry()
-        selected_id = selected.id if selected is not None else None
+        self._search_timer.stop()
+        self._load_request_id += 1
+        request_id = self._load_request_id
+        worker = _HistoryLoadWorker(
+            request_id,
+            self.store,
+            self._current_filters(),
+            limit=self.page_size,
+            offset=self.page_offset,
+        )
+        worker.signals.completed.connect(self._on_history_loaded)
+        worker.signals.failed.connect(self._on_history_load_failed)
+        self._active_workers[request_id] = worker
+        self.summary.setText("Carregando histórico…")
+        self.page_info_label.setText("Consultando banco de dados…")
+        self.refresh_button.setEnabled(False)
+        QThreadPool.globalInstance().start(worker)
+
+    def _on_history_loaded(
+        self,
+        request_id: int,
+        entries: list,
+        voices: list,
+        total: int,
+        text_count: int,
+    ) -> None:
+        self._active_workers.pop(request_id, None)
+        if request_id != self._load_request_id:
+            return
+
+        self.total_entries = total
+        if self.page_offset and self.page_offset >= total:
+            self.page_offset = max(0, ((max(total, 1) - 1) // self.page_size) * self.page_size)
+            self.refresh()
+            return
 
         current_voice = self.voice_filter.currentData()
         self.voice_filter.blockSignals(True)
         self.voice_filter.clear()
         self.voice_filter.addItem("Todas as vozes", "")
-        for voice in self.store.available_voices():
+        for voice in voices:
             self.voice_filter.addItem(voice, voice)
-        index = self.voice_filter.findData(current_voice)
-        self.voice_filter.setCurrentIndex(max(0, index))
+        voice_index = self.voice_filter.findData(current_voice)
+        self.voice_filter.setCurrentIndex(max(0, voice_index))
         self.voice_filter.blockSignals(False)
 
-        date_from = (
-            self.from_date.date().toString("yyyy-MM-dd")
-            if self.from_enabled.isChecked() else ""
-        )
-        date_to = (
-            self.to_date.date().toString("yyyy-MM-dd")
-            if self.to_enabled.isChecked() else ""
-        )
-        entries = self.store.list_entries(
-            search=self.search.text(),
-            voice=str(self.voice_filter.currentData() or ""),
-            date_from=date_from,
-            date_to=date_to,
-            min_duration=self.min_duration.value(),
-            max_duration=self.max_duration.value(),
-        )
+        self._entries_by_id = {entry.id: entry for entry in entries}
+        self._text_entries_count = text_count
+        selected = self._selected_entry()
+        selected_id = selected.id if selected is not None else None
 
+        self._loading_table = True
+        self.table.setUpdatesEnabled(False)
+        self.table.setSortingEnabled(False)
+        self.table.blockSignals(True)
         self.table.setRowCount(len(entries))
         selected_row = -1
-        missing_count = 0
+
         for row, entry in enumerate(entries):
             try:
                 date_label = datetime.fromisoformat(entry.created_at).astimezone().strftime(
@@ -321,17 +452,40 @@ class AudioHistoryPanel(QWidget):
                     except (TypeError, ValueError):
                         item.setToolTip(entry.generation_settings_json)
                 self.table.setItem(row, column, item)
-            if not Path(entry.audio_path).is_file():
-                self.table.item(row, 0).setText(f"{entry.file_name} (arquivo ausente)")
-                missing_count += 1
             if entry.id == selected_id:
                 selected_row = row
 
+        self.table.blockSignals(False)
+        self.table.setSortingEnabled(True)
+        self.table.setUpdatesEnabled(True)
+        self._loading_table = False
+
         if selected_row >= 0:
             self.table.selectRow(selected_row)
-        suffix = f" {missing_count} arquivo(s) não encontrado(s)." if missing_count else ""
-        self.summary.setText(f"{len(entries)} áudio(s) neste filtro.{suffix}")
+
+        current_page = (self.page_offset // self.page_size) + 1
+        page_count = max(1, (total + self.page_size - 1) // self.page_size)
+        first_item = self.page_offset + 1 if total else 0
+        last_item = min(self.page_offset + len(entries), total)
+        self.page_info_label.setText(
+            f"Página {current_page}/{page_count} · {first_item}–{last_item} de {total}"
+        )
+        self.summary.setText(f"{total} áudio(s) no histórico. Exibindo até {self.page_size} por página.")
+        self.previous_page_button.setEnabled(self.page_offset > 0)
+        self.next_page_button.setEnabled(self.page_offset + self.page_size < total)
+        self.refresh_button.setEnabled(True)
         self._update_action_state()
+
+    def _on_history_load_failed(self, request_id: int, error: str) -> None:
+        self._active_workers.pop(request_id, None)
+        if request_id != self._load_request_id:
+            return
+        self.summary.setText(f"Não foi possível carregar o histórico: {error}")
+        self.page_info_label.setText("Falha ao carregar")
+        self.refresh_button.setEnabled(True)
+        self.previous_page_button.setEnabled(self.page_offset > 0)
+        self.next_page_button.setEnabled(self.page_offset + self.page_size < self.total_entries)
+        self.status_message.emit(f"Falha ao carregar histórico: {error}")
 
     def play_selected(self) -> None:
         entry = self._selected_entry()
@@ -432,7 +586,7 @@ class AudioHistoryPanel(QWidget):
         dialog.exec()
 
     def clear_stored_texts(self) -> None:
-        count = self.store.count_text_entries()
+        count = self._text_entries_count
         if count <= 0:
             self.status_message.emit("Não há textos salvos no histórico.")
             return
