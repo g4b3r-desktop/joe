@@ -67,7 +67,15 @@ def _is_valid_member(
         with archive.open(member_name, "r") as stream:
             _validate_stream(stream, kind, member_name)
         return True
-    except (KeyError, OSError, RuntimeError, ValueError, json.JSONDecodeError):
+    except (
+        KeyError,
+        OSError,
+        EOFError,
+        RuntimeError,
+        ValueError,
+        zipfile.BadZipFile,
+        json.JSONDecodeError,
+    ):
         return False
 
 
@@ -116,6 +124,9 @@ def ensure_portuguese_model_in_zip(
     destination = Path(zip_path).expanduser()
     if max_archive_bytes <= 0:
         raise ValueError("O limite do ZIP deve ser maior que zero.")
+
+    if destination.exists() and not destination.is_file():
+        raise ValueError(f"O caminho do ZIP não é um arquivo: {destination}")
 
     archive_exists = destination.is_file()
     if archive_exists and destination.stat().st_size > max_archive_bytes:
