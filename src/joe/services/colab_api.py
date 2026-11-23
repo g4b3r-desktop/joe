@@ -313,7 +313,10 @@ class ColabAPIClient:
         files: list[Any] = []
         opened = None
         try:
-            if voice_path:
+            # A Drive-prepared voice is identified by voice_id. Do not also
+            # attach the original local file: the API intentionally rejects
+            # multipart voice uploads in direct-Drive mode.
+            if voice_path and not voice_id:
                 path = Path(voice_path).expanduser()
                 if not path.is_file():
                     raise FileNotFoundError(f"Arquivo de voz não encontrado: {path}")
