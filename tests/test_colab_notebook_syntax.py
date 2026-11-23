@@ -18,8 +18,7 @@ def test_colab_notebook_json_and_python_cells_are_valid():
 
         source = "".join(cell.get("source", []))
         # Remove IPython line magics (for example, %pip); remaining code must parse.
-        python_source = "
-".join(
+        python_source = "\n".join(
             line
             for line in source.splitlines()
             if not line.lstrip().startswith(("%", "!"))
