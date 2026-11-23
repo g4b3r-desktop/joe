@@ -1303,6 +1303,7 @@ class JoeWindow(QMainWindow):
         self.clipboard_recognition_worker: FunctionWorker | None = None
         self.clipboard_audio_window: ClipboardAudioDialog | None = None
         self.clipboard_temp_dir: Path | None = None
+        self._replacing_clipboard_dialog = False
         self.hotkey_listener = None
         self.local_command_server: LocalCommandServer | None = None
         self.clipboard_only_mode = False
@@ -4138,6 +4139,7 @@ class JoeWindow(QMainWindow):
             dialog.temp_dir = None
         if (
             self.clipboard_only_mode
+            and not self._replacing_clipboard_dialog
             and generation_worker is None
             and self.clipboard_recognition_worker is None
         ):
@@ -4210,6 +4212,7 @@ class JoeWindow(QMainWindow):
             generation_active=(
                 self.clipboard_generation_worker is not None
                 or self.clipboard_recognition_worker is not None
+                or self.active_worker is not None
             ),
         )
         if shortcut_action == "focus":
@@ -4221,34 +4224,40 @@ class JoeWindow(QMainWindow):
                     dialog.show()
                 dialog.raise_()
                 dialog.activateWindow()
-            message = (
-                "A geração ou o reconhecimento do texto copiado já está em andamento."
-                if (
-                    self.clipboard_generation_worker is not None
-                    or self.clipboard_recognition_worker is not None
-                )
-                else "A janela de áudio rápido já está aberta. "
-                "Use-a para reproduzir ou salvar o áudio gerado."
+            self.statusBar().showMessage(
+                "Já existe uma tarefa em andamento. Aguarde a conclusão antes de iniciar outro áudio.",
+                5000,
             )
-            self.statusBar().showMessage(message, 5000)
             return
 
         if shortcut_action == "replace":
-            # The previous generation is idle. Close its dialog so the close
-            # handler releases its temporary audio and player state, then let
-            # this same shortcut invocation continue with the current clipboard.
+            # The previous generation is idle. Closing it runs its normal
+            # cleanup, then this invocation continues with the latest clipboard.
             dialog = self.clipboard_audio_window
             if dialog is not None:
+                self._replacing_clipboard_dialog = True
                 try:
-                    dialog.close()
+                    closed = dialog.close()
                 except RuntimeError:
-                    # The Qt object may already have been destroyed; discard
-                    # the stale Python reference and continue with a new dialog.
+                    # The Qt object may already have been destroyed.
+                    closed = True
+                    if self.clipboard_audio_window is dialog:
+                        self.clipboard_audio_window = None
+                finally:
+                    self._replacing_clipboard_dialog = False
+                if not closed:
+                    self.statusBar().showMessage(
+                        "Não foi possível substituir a janela de atalho aberta.",
+                        5000,
+                    )
+                    return
+                if self.clipboard_audio_window is dialog:
                     self.clipboard_audio_window = None
 
         if shortcut_action == "busy":
             self.statusBar().showMessage(
-                "A geração ou o reconhecimento do texto copiado já está em andamento.", 4000
+                "Já existe uma tarefa em andamento. Aguarde a conclusão antes de iniciar outro áudio.",
+                4000,
             )
             return
 
