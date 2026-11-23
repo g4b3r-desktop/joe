@@ -137,6 +137,121 @@ class ColabAPIClient:
             "e tente novamente com um arquivo menor."
         )
 
+    @staticmethod
+    def _asset_file_info(path: Path) -> dict[str, Any]:
+        digest = hashlib.sha256()
+        size = 0
+        with path.open("rb") as stream:
+            while True:
+                chunk = stream.read(8 * 1024 * 1024)
+                if not chunk:
+                    break
+                digest.update(chunk)
+                size += len(chunk)
+        if size <= 0:
+            raise ValueError(f"Arquivo vazio não pode ser enviado: {path}")
+        return {"name": path.name, "size": size, "sha256": digest.hexdigest()}
+
+    def _send_asset_chunks(self, upload_id: str, asset_key: str, path: Path) -> None:
+        chunk_size = 8 * 1024 * 1024
+        with path.open("rb") as stream:
+            index = 0
+            while True:
+                data = stream.read(chunk_size)
+                if not data:
+                    break
+                response = self._request(
+                    "PUT",
+                    f"/v1/assets/uploads/{upload_id}/{asset_key}/{index}",
+                    files={
+                        "chunk": (
+                            f"{asset_key}-{index:06d}.part",
+                            __import__("io").BytesIO(data),
+                            "application/octet-stream",
+                        )
+                    },
+                )
+                result = response.json()
+                if result.get("chunk_index") != index:
+                    raise ColabAPIError(
+                        f"O Colab confirmou um bloco inesperado do arquivo {asset_key}."
+                    )
+                index += 1
+
+    def upload_model_bundle(
+        self,
+        model_directory: str | Path,
+        language: str,
+        model_variant: str,
+    ) -> dict[str, Any]:
+        """Upload checkpoint + tokenizer individually in resumable-sized chunks."""
+        root = Path(model_directory).expanduser()
+        if not root.is_dir():
+            raise NotADirectoryError(f"Pasta do modelo não encontrada: {root}")
+        checkpoint = root / "model.safetensors"
+        tokenizer = root / "tokenizer.json"
+        for file_path in (checkpoint, tokenizer):
+            if not file_path.is_file():
+                raise FileNotFoundError(
+                    "A pasta do modelo precisa conter model.safetensors e tokenizer.json "
+                    f"no nível principal. Arquivo ausente: {file_path}"
+                )
+        payload = {
+            "kind": "model",
+            "language": language,
+            "model_variant": model_variant,
+            "files": {
+                "checkpoint": self._asset_file_info(checkpoint),
+                "tokenizer": self._asset_file_info(tokenizer),
+            },
+        }
+        upload = self._request("POST", "/v1/assets/uploads", json=payload).json()
+        upload_id = str(upload.get("upload_id", ""))
+        if not upload_id:
+            raise ColabAPIError("O Colab não retornou o identificador de upload do modelo.")
+        self._send_asset_chunks(upload_id, "checkpoint", checkpoint)
+        self._send_asset_chunks(upload_id, "tokenizer", tokenizer)
+        result = self._request(
+            "POST", f"/v1/assets/uploads/{upload_id}/commit"
+        ).json()
+        return result
+
+    def prepare_voice(
+        self,
+        audio_path: str | Path,
+        language: str,
+        model_variant: str,
+        name: str | None = None,
+    ) -> dict[str, Any]:
+        """Upload original reference audio and prepare/cache its voice state on Colab."""
+        path = Path(audio_path).expanduser()
+        if not path.is_file():
+            raise FileNotFoundError(f"Áudio de referência não encontrado: {path}")
+        if path.suffix.lower() == ".safetensors":
+            raise ValueError(
+                "No armazenamento direto, selecione o WAV/FLAC/MP3/OGG original. "
+                "O estado Safetensors será preparado pelo próprio Colab."
+            )
+        payload = {
+            "kind": "voice",
+            "language": language,
+            "model_variant": model_variant,
+            "name": name or path.stem,
+            "file": self._asset_file_info(path),
+        }
+        upload = self._request("POST", "/v1/assets/uploads", json=payload).json()
+        upload_id = str(upload.get("upload_id", ""))
+        if not upload_id:
+            raise ColabAPIError("O Colab não retornou o identificador de upload da voz.")
+        self._send_asset_chunks(upload_id, "voice", path)
+        return self._request(
+            "POST", f"/v1/assets/uploads/{upload_id}/commit"
+        ).json()
+
+    def list_assets(self) -> dict[str, Any]:
+        """Return the models and prepared voices currently persisted in Google Drive."""
+        return self._request("GET", "/v1/assets").json()
+
     def generate_audio(
         self,
         text: str,
@@ -144,12 +259,15 @@ class ColabAPIClient:
         voice_path: str | Path | None = None,
         cancel_event: Event | None = None,
         model_variant: str | None = None,
+        voice_id: str | None = None,
     ) -> bytes:
         data = {
             "text": text,
             "language": language,
             "model_variant": model_variant or language,
         }
+        if voice_id:
+            data["voice_id"] = voice_id
         files: list[Any] = []
         opened = None
         try:
