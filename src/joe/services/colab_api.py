@@ -217,6 +217,19 @@ class ColabAPIClient:
         ).json()
         return result
 
+    @staticmethod
+    def _drive_model_fingerprint(manifest: dict[str, Any]) -> str:
+        fields = {
+            "model_variant": manifest.get("model_variant"),
+            "checkpoint_sha256": manifest.get("checkpoint_sha256"),
+            "tokenizer_sha256": manifest.get("tokenizer_sha256"),
+            "pocket_tts_version": manifest.get("pocket_tts_version"),
+        }
+        raw = __import__("json").dumps(
+            fields, sort_keys=True, separators=(",", ":")
+        ).encode("utf-8")
+        return hashlib.sha256(raw).hexdigest()
+
     def prepare_voice(
         self,
         audio_path: str | Path,
@@ -233,12 +246,39 @@ class ColabAPIClient:
                 "No armazenamento direto, selecione o WAV/FLAC/MP3/OGG original. "
                 "O estado Safetensors será preparado pelo próprio Colab."
             )
+        file_info = self._asset_file_info(path)
+        # Avoid retransmitting and re-encoding a voice already stored with this
+        # exact checkpoint/tokenizer/Pocket TTS version in the remote Drive.
+        inventory = self.list_assets()
+        model_manifest = next(
+            (
+                item for item in inventory.get("models", [])
+                if item.get("model_variant") == model_variant
+            ),
+            None,
+        )
+        if model_manifest:
+            expected_fingerprint = self._drive_model_fingerprint(model_manifest)
+            for item in inventory.get("voices", []):
+                if (
+                    item.get("model_variant") == model_variant
+                    and item.get("source_sha256") == file_info["sha256"]
+                    and item.get("model_fingerprint") == expected_fingerprint
+                ):
+                    return {
+                        "kind": "voice",
+                        "voice_id": item.get("voice_id"),
+                        "name": item.get("name"),
+                        "model_variant": model_variant,
+                        "reused": True,
+                    }
+
         payload = {
             "kind": "voice",
             "language": language,
             "model_variant": model_variant,
             "name": name or path.stem,
-            "file": self._asset_file_info(path),
+            "file": file_info,
         }
         upload = self._request("POST", "/v1/assets/uploads", json=payload).json()
         upload_id = str(upload.get("upload_id", ""))
