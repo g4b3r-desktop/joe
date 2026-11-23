@@ -540,6 +540,7 @@ def commit_asset_upload(upload_id: str) -> dict[str, Any]:
 
     if kind == "model":
         staging = root / ".staging" / f"model-{upload_id}"
+        destination = root / "models" / model_variant
         staging.mkdir(parents=True, exist_ok=False)
         try:
             checkpoint = staging / "model.safetensors"
@@ -550,7 +551,9 @@ def commit_asset_upload(upload_id: str) -> dict[str, Any]:
             from pocket_tts.utils.config import CONFIGS_DIR
             import yaml
 
-            config_data = config_for_uploaded_model(model_variant, staging, CONFIGS_DIR)
+            # The YAML is written in the staging folder but must reference the
+            # final Drive directory, because staging is atomically renamed below.
+            config_data = config_for_uploaded_model(model_variant, destination, CONFIGS_DIR)
             config_path = staging / "config.yaml"
             config_path.write_text(
                 yaml.safe_dump(config_data, sort_keys=False, allow_unicode=True),
@@ -570,7 +573,6 @@ def commit_asset_upload(upload_id: str) -> dict[str, Any]:
                 "created_at": datetime.now(timezone.utc).isoformat(),
             }
             atomic_write_json(staging / "manifest.json", manifest)
-            destination = root / "models" / model_variant
             replace_directory_atomically(staging, destination)
             with _tts_lock:
                 _tts_voice_states.clear()
