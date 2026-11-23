@@ -7,7 +7,7 @@ Este diretório contém o backend executado dentro de uma sessão Google Colab.
 - Joe_Colab_API.ipynb: notebook de instalação, inicialização e publicação do túnel temporário.
 - api_server.py: API FastAPI com autenticação Bearer e inferência Pocket TTS / Parakeet Redux.
 - requirements.txt: dependências Python do runtime, incluindo o extra `quantize` do Pocket TTS.
-- drive_model_sync.py: baixa somente os arquivos portugueses ausentes e atualiza o ZIP do Drive com validação e limite de 4 GiB.
+- drive_model_sync.py: baixa somente os arquivos portugueses ausentes e atualiza o ZIP do Drive com validação e limite de 4 GB.
 
 ## Teste local do servidor (desenvolvimento)
 
@@ -78,7 +78,7 @@ pocket-tts-without-voice-cloning/
     └── portuguese_24l/tokenizer.json
 ~~~
 
-Ao clicar em **Aplicar pastas e modelos**, o notebook verifica os quatro arquivos (dois checkpoints e dois tokenizers). Se todos estiverem válidos, não baixa nada. Se faltar algum ou estiver inválido, baixa somente esse arquivo da revisão oficial correspondente e atualiza o ZIP do Drive, preservando o restante do conteúdo. O ZIP é gravado apenas se o resultado validado não ultrapassar **4 GiB**; em caso de erro ou excesso, o arquivo anterior é preservado.
+Ao clicar em **Aplicar pastas e modelos**, o notebook verifica os quatro arquivos (dois checkpoints e dois tokenizers). Se todos estiverem válidos, não baixa nada. Se faltar algum ou estiver inválido, baixa somente esse arquivo da revisão oficial correspondente e atualiza o ZIP do Drive, preservando o restante do conteúdo. O ZIP é gravado apenas se o resultado validado não ultrapassar **4 GB**; em caso de erro ou excesso, o arquivo anterior é preservado.
 
 Depois, o notebook extrai o ZIP para `/content/joe/models/` no armazenamento local da sessão Colab e gera dois YAMLs independentes: `portuguese_from_drive.yaml` e `portuguese_24l_from_drive.yaml`. A API seleciona o YAML correspondente a `model_variant`. O Pocket TTS não é carregado diretamente de dentro do ZIP. A extração precisa ser repetida quando uma nova sessão Colab for iniciada, pois `/content` é temporário.
 
@@ -104,7 +104,7 @@ Ao aplicar a configuração do Drive, o notebook verifica os quatro arquivos das
 
 As origens e revisões estão fixadas de acordo com os YAMLs oficiais do Pocket TTS. Se o ZIP não existir, ele será criado. Se algum arquivo estiver ausente, duplicado ou inválido, somente o arquivo necessário será baixado e substituído. Os demais itens existentes no arquivo são preservados.
 
-O tamanho máximo do ZIP atualizado é **4 GiB (4.294.967.296 bytes)**. O ZIP temporário é validado antes da substituição; se o tamanho final ultrapassar o limite ou ocorrer um erro, o ZIP anterior não é substituído.
+O tamanho máximo do ZIP atualizado é **4 GB (4.000.000.000 bytes)**. O ZIP temporário é validado antes da substituição; se o tamanho final ultrapassar o limite ou ocorrer um erro, o ZIP anterior não é substituído.
 
 Como os repositórios do modelo exigem aceitar as condições de acesso, aceite os termos em <https://huggingface.co/kyutai/pocket-tts> e crie um token Hugging Face com permissão de leitura. Salve-o no painel **Secrets** do Colab como `HF_TOKEN` e habilite **Notebook access**. O token não é gravado no Drive, no ZIP nem no notebook. Se os quatro arquivos já estiverem válidos, o download e o token não serão necessários.
 
