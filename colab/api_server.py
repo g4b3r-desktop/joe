@@ -604,14 +604,46 @@ def start_asset_upload(payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
             "name": safe_asset_name(str(payload.get("name") or Path(filename).stem)),
             "file": {"size": size, "sha256": checksum, "name": filename, "suffix": suffix},
         }
-        load_model_manifest(root, model_variant)
+        try:
+            load_model_manifest(root, model_variant)
+        except FileNotFoundError as exc:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"O modelo '{model_variant}' não está instalado no Google Drive "
+                    "ou não possui manifest.json. Use 'Enviar modelo local ao Google Drive' "
+                    "na aba Google Colab / API do Joe e tente novamente."
+                ),
+            ) from exc
+        except (OSError, ValueError) as exc:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"Não foi possível validar o manifesto do modelo '{model_variant}' "
+                    f"no Google Drive ({type(exc).__name__}: {exc}). "
+                    "Confira se a pasta JOE_TTS/models/<variante> contém manifest.json "
+                    "válido; se necessário, envie novamente o modelo pelo Joe."
+                ),
+            ) from exc
     else:
         raise HTTPException(status_code=422, detail="Tipo de upload desconhecido.")
 
     upload_id = uuid.uuid4().hex
     session_dir = root / ".uploads" / upload_id
-    session_dir.mkdir(parents=True, exist_ok=False)
-    atomic_write_json(session_dir / "upload.json", metadata)
+    try:
+        session_dir.mkdir(parents=True, exist_ok=False)
+        atomic_write_json(session_dir / "upload.json", metadata)
+    except OSError as exc:
+        shutil.rmtree(session_dir, ignore_errors=True)
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "O Google Drive não permitiu criar a sessão temporária de upload "
+                f"em JOE_TTS/.uploads ({type(exc).__name__}: {exc}). "
+                "Verifique se a célula de montagem do Drive continua ativa e se a pasta "
+                "JOE_TTS permite gravação."
+            ),
+        ) from exc
     return {
         "upload_id": upload_id,
         "chunk_bytes": ASSET_UPLOAD_CHUNK_BYTES,
