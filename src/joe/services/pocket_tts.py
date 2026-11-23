@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import gc
+import logging
 import tempfile
 import time
 from pathlib import Path
@@ -15,6 +16,46 @@ from joe.pocket_tts_models import (
 )
 
 DEFAULT_VOICE = "hf://kyutai/tts-voices/alba-mackenna/casual.wav"
+
+logger = logging.getLogger(__name__)
+
+
+class PocketTTSVoiceCloningUnavailableError(RuntimeError):
+    """Raised when a reference recording is requested but only fallback weights loaded."""
+
+
+def _voice_source_requires_cloning(voice_source: str) -> bool:
+    """Return whether a source is an audio prompt rather than a catalog/state voice."""
+    source = str(voice_source).strip()
+    normalized = source.split("?", 1)[0].split("#", 1)[0].replace("\\", "/")
+    if Path(normalized).suffix.lower() == ".safetensors":
+        # Pocket TTS imports precomputed voice states before checking the cloning flag.
+        return False
+
+    # Bare identifiers are left to Pocket TTS' built-in voice catalog resolver.
+    return (
+        "://" in source
+        or "/" in normalized
+        or bool(Path(normalized).suffix)
+        or Path(source).expanduser().is_file()
+    )
+
+
+def _ensure_voice_source_supported(model, model_variant: str, voice_source: str) -> None:
+    if getattr(model, "has_voice_cloning", True):
+        return
+    if not _voice_source_requires_cloning(voice_source):
+        return
+
+    raise PocketTTSVoiceCloningUnavailableError(
+        f"O Pocket TTS carregou o modelo '{model_variant}' com pesos alternativos "
+        "SEM clonagem de voz porque o download dos pesos completos falhou. "
+        "O JOE interrompeu esta geração para não tentar usar o WAV/URL de referência "
+        "com um modelo incompatível. Verifique a autenticação do Hugging Face "
+        "(HF_TOKEN ou HF_TOKEN_PATH), a permissão de acesso ao repositório "
+        "kyutai/pocket-tts e a conexão com a internet. Depois reinicie o JOE e tente "
+        "novamente. Nenhum áudio foi gerado."
+    )
 
 
 class PocketTTSService:
@@ -66,6 +107,12 @@ class PocketTTSService:
             **model_loading_options(model_variant),
             quantize=effective_quantize,
         )
+        if not getattr(model, "has_voice_cloning", True):
+            logger.warning(
+                "Pocket TTS model '%s' loaded with fallback weights without voice cloning. "
+                "WAV/URL reference prompts cannot be used.",
+                model_variant,
+            )
         if device == "cuda":
             try:
                 # Pocket TTS is moved to CUDA after loading; dynamic INT8 is CPU-only.
@@ -119,6 +166,7 @@ class PocketTTSService:
         voice_source = str(voice_path) if voice_path else (
             default_voice_for_language(language) or DEFAULT_VOICE
         )
+        _ensure_voice_source_supported(model, model_variant, voice_source)
         state_key = (
             model_variant, device_preference, effective_quantize, voice_source
         )
@@ -172,6 +220,7 @@ class PocketTTSService:
         )
 
         source_key = str(source.resolve())
+        _ensure_voice_source_supported(model, model_variant, source_key)
         state_key = (
             model_variant, device_preference, effective_quantize, source_key
         )
@@ -252,6 +301,7 @@ class PocketTTSService:
                     torch.cuda.synchronize()
                 model_load_seconds = time.perf_counter() - model_started
 
+                _ensure_voice_source_supported(model, model_variant, voice_source)
                 voice_started = time.perf_counter()
                 voice_state = model.get_state_for_audio_prompt(voice_source)
                 if device == "cuda":
