@@ -10,7 +10,7 @@ import soundfile as sf
 from scipy.signal import resample_poly
 
 
-_SENTENCE_SPLIT = re.compile(r"(?<=[.!?…])\\s+|\\n+")
+_SENTENCE_SPLIT = re.compile(r"(?<=[.!?…])\s+|\n+")
 
 
 def _split_long_text(text: str, max_chars: int) -> list[str]:
