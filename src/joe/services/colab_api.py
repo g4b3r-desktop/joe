@@ -287,20 +287,24 @@ class ColabAPIClient:
                 f"GET /v1/assets.{detail}"
             )
         expected_fingerprint = self._drive_model_fingerprint(model_manifest)
-            for item in inventory.get("voices", []):
-                if (
-                    item.get("model_variant") == model_variant
-                    and item.get("source_sha256") == file_info["sha256"]
-                    and item.get("model_fingerprint") == expected_fingerprint
-                    and item.get("state_valid") is True
-                ):
-                    return {
-                        "kind": "voice",
-                        "voice_id": item.get("voice_id"),
-                        "name": item.get("name"),
-                        "model_variant": model_variant,
-                        "reused": True,
-                    }
+        voices = inventory.get("voices", [])
+        if not isinstance(voices, list):
+            voices = []
+        for item in voices:
+            if (
+                isinstance(item, dict)
+                and item.get("model_variant") == model_variant
+                and item.get("source_sha256") == file_info["sha256"]
+                and item.get("model_fingerprint") == expected_fingerprint
+                and item.get("state_valid") is True
+            ):
+                return {
+                    "kind": "voice",
+                    "voice_id": item.get("voice_id"),
+                    "name": item.get("name"),
+                    "model_variant": model_variant,
+                    "reused": True,
+                }
 
         payload = {
             "kind": "voice",
