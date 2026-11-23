@@ -40,6 +40,87 @@ MODEL_ASSETS = {
 }
 
 
+def validate_local_tts_configs(config_paths: dict[str, str | Path]) -> dict[str, dict[str, str]]:
+    """Fail closed unless each local YAML points to valid model weights and tokenizer."""
+    import yaml
+
+    from safetensors_validation import validate_safetensors_file
+
+    validated: dict[str, dict[str, str]] = {}
+    for variant, raw_config_path in config_paths.items():
+        config_path = Path(raw_config_path).expanduser()
+        if not config_path.is_file():
+            raise FileNotFoundError(
+                f"YAML da variante {variant!r} não encontrado: {config_path}"
+            )
+
+        config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+        if not isinstance(config, dict):
+            raise ValueError(f"YAML inválido para a variante {variant!r}: {config_path}")
+
+        weights_value = config.get("weights_path")
+        lookup_table = config.get("flow_lm", {}).get("lookup_table", {})
+        tokenizer_value = (
+            lookup_table.get("tokenizer_path")
+            if isinstance(lookup_table, dict)
+            else None
+        )
+        if not weights_value:
+            raise ValueError(
+                f"YAML {variant!r} não define weights_path: {config_path}"
+            )
+        if not tokenizer_value:
+            raise ValueError(
+                f"YAML {variant!r} não define flow_lm.lookup_table.tokenizer_path: "
+                f"{config_path}"
+            )
+
+        weights_path = Path(weights_value).expanduser()
+        tokenizer_path = Path(tokenizer_value).expanduser()
+        if not weights_path.is_file():
+            raise FileNotFoundError(
+                f"Checkpoint da variante {variant!r} não encontrado: {weights_path}"
+            )
+        if not tokenizer_path.is_file():
+            raise FileNotFoundError(
+                f"Tokenizer da variante {variant!r} não encontrado: {tokenizer_path}"
+            )
+
+        validate_safetensors_file(weights_path)
+        try:
+            tokenizer_data = json.loads(tokenizer_path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise ValueError(
+                f"Tokenizer da variante {variant!r} não é um JSON válido: "
+                f"{tokenizer_path}"
+            ) from exc
+        if not isinstance(tokenizer_data, dict) or not tokenizer_data:
+            raise ValueError(
+                f"Tokenizer da variante {variant!r} está vazio ou inválido: "
+                f"{tokenizer_path}"
+            )
+
+        optional_weights = config.get("weights_path_without_voice_cloning")
+        if optional_weights:
+            optional_path = Path(optional_weights).expanduser()
+            if not optional_path.is_file():
+                raise FileNotFoundError(
+                    f"Checkpoint sem clonagem da variante {variant!r} não encontrado: "
+                    f"{optional_path}"
+                )
+            validate_safetensors_file(optional_path)
+
+        validated[variant] = {
+            "config": str(config_path.resolve()),
+            "weights": str(weights_path.resolve()),
+            "tokenizer": str(tokenizer_path.resolve()),
+        }
+
+    if not validated:
+        raise ValueError("Nenhuma configuração local do Pocket TTS foi validada.")
+    return validated
+
+
 class ArchiveSizeLimitError(ValueError):
     """Raised when updating the model archive would exceed its configured limit."""
 
