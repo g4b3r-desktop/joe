@@ -352,7 +352,8 @@ class ClipboardAudioDialog(QDialog):
         self.performance: AudioPerformance | None = None
         self.phrase_texts = list(phrases or [])
         self._recognized_segments: list[dict] = []
-        self.chunk_paths: list[Path] = []\n        self.total_chunks = len(self.phrase_texts)
+        self.chunk_paths: list[Path] = []
+        self.total_chunks = len(self.phrase_texts)
         self.chunk_paths_by_index: dict[int, Path] = {}
         self.chunk_durations: dict[int, float] = {}
         self.next_chunk_index = 0
@@ -437,7 +438,8 @@ class ClipboardAudioDialog(QDialog):
         self.details_panel = QWidget()
         details_layout = QVBoxLayout(self.details_panel)
         details_layout.setContentsMargins(0, 2, 0, 4)
-        from PySide6.QtWidgets import QGridLayout\n        details_grid = QGridLayout()
+        from PySide6.QtWidgets import QGridLayout
+        details_grid = QGridLayout()
         details_grid.setContentsMargins(0, 0, 0, 0)
         details_grid.setHorizontalSpacing(22)
         details_grid.setVerticalSpacing(5)
@@ -490,7 +492,9 @@ class ClipboardAudioDialog(QDialog):
             item.setData(Qt.ItemDataRole.UserRole + 3, False)
             item.setToolTip("Aguardando geração desta frase…")
             self.phrase_list.addItem(item)
-        if not self.phrase_texts:\n            self.phrase_list.hide()\n        root.addWidget(self.phrase_list, 1)
+        if not self.phrase_texts:
+            self.phrase_list.hide()
+        root.addWidget(self.phrase_list, 1)
 
         self.recognition_toggle = QToolButton()
         self.recognition_toggle.setText("Reconhecimento de fala")
