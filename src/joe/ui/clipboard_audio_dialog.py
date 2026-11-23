@@ -417,7 +417,8 @@ class PhraseItemDelegate(QStyledItemDelegate):
         painter.setFont(option.font)
 
         text = str(index.data(Qt.ItemDataRole.DisplayRole) or "")
-        spacing = int(self.appearance.get("row_spacing", 0))\n        text_rect = rect.adjusted(112, 7 + spacing, -42, -7 - spacing)
+        spacing = int(self.appearance.get("row_spacing", 0))
+        text_rect = rect.adjusted(112, 7 + spacing, -42, -7 - spacing)
         document = self._document(text, option.font, text_rect.width())
         text_height = document.size().height()
         text_top = text_rect.top() + max(0.0, (text_rect.height() - text_height) / 2)
@@ -460,8 +461,6 @@ class ClipboardAudioDialog(QDialog):
         recognition_enabled: bool = False,
     ) -> None:
         super().__init__(parent)
-        from PySide6.QtCore import Signal
-
         self.player = player
         self.output_directory = output_directory
         self.temp_dir: Path | None = None
@@ -503,9 +502,14 @@ class ClipboardAudioDialog(QDialog):
         else:
             self.resize(820, 640)
 
-        self.setStyleSheet(_dialog_stylesheet())
+        self.setStyleSheet(_dialog_stylesheet(self.appearance))
+        self.setFont(self._appearance_font(auxiliary=True))
         root = QVBoxLayout(self)
-        root.setContentsMargins(18, 14, 18, 12)
+        self._root_layout = root
+        padding = int(self.appearance["window_padding"])
+        root.setContentsMargins(
+            padding, max(10, padding - 4), padding, max(10, padding - 6)
+        )
         root.setSpacing(8)
 
         header = QWidget(self)
@@ -589,7 +593,10 @@ class ClipboardAudioDialog(QDialog):
         root.addWidget(self.status_label)
 
         self.phrase_list = PhraseListWidget(self)
-        self.phrase_list.setItemDelegate(PhraseItemDelegate(self.phrase_list))
+        self.phrase_list.setFont(self._appearance_font())
+        self.phrase_list.setItemDelegate(
+            PhraseItemDelegate(self.phrase_list, self.appearance)
+        )
         self.phrase_list.setWordWrap(True)
         self.phrase_list.setTextElideMode(Qt.TextElideMode.ElideNone)
         self.phrase_list.setMouseTracking(True)
