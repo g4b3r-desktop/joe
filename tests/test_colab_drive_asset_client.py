@@ -139,7 +139,7 @@ def test_prepare_voice_fails_clearly_when_model_is_missing_from_drive(
         client.prepare_voice(audio, "portuguese", "portuguese", name="male_05")
     except Exception as exc:
         assert "não foi encontrado no Google Drive" in str(exc)
-        assert "Enviar primeiro" in str(exc)
+        assert "Envie primeiro" in str(exc)
     else:
         raise AssertionError("Missing Drive model must be reported before uploading the voice.")
 
