@@ -19,8 +19,8 @@ import torch  # noqa: F401
 
 # isort: split
 from PySide6.QtCore import (
-    QObject, QRunnable, QSettings, QStandardPaths, QThreadPool,
-    QSize, QTime, QTimer, QUrl, Qt, Signal,
+    QObject, QRunnable, QSize, QSettings, QStandardPaths, QThreadPool,
+    QTime, QTimer, QUrl, Qt, Signal,
 )
 from PySide6.QtGui import QAction, QDesktopServices, QIcon
 from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
