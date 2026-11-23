@@ -106,6 +106,16 @@ def _get_tts_model(language: str, model_variant: str) -> Any:
         # The Colab worker is sequential; retain only the selected variant in memory.
         _tts_voice_states.clear()
         _tts_models.clear()
+        if DIRECT_DRIVE_ASSETS:
+            drive_config = DRIVE_ASSETS_ROOT / "models" / model_variant / "config.yaml"
+            if not drive_config.is_file():
+                raise FileNotFoundError(
+                    f"Modelo {model_variant!r} ainda não foi enviado ao Google Drive. "
+                    "Use 'Enviar modelo local ao Google Drive' na aba Colab do Joe."
+                )
+            model = TTSModel.load_model(config=str(drive_config), quantize=False)
+            _tts_models[model_variant] = model
+            return model
         local_config = os.environ.get("JOE_TTS_CONFIG_PATH")
         local_24l_config = os.environ.get("JOE_TTS_24L_CONFIG_PATH")
         selected_local_config = None
