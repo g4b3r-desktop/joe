@@ -125,8 +125,21 @@ def test_dialog_appearance_preferences_update_live(qapp):
     assert dialog.appearance["accent"] == "violet"
     assert dialog.phrase_list.font().family() == "DejaVu Sans"
     assert dialog.phrase_list.font().pixelSize() == 18
+    assert dialog.phrase_list.item(0).font().family() == "DejaVu Sans"
+    assert dialog.phrase_list.item(0).font().pixelSize() == 18
+    delegate = dialog.phrase_list.itemDelegate()
+    assert delegate._phrase_font().family() == "DejaVu Sans"
+    assert delegate._phrase_font().pixelSize() == 18
     assert dialog.phrase_list.spacing() == 6
     assert "#9a83e8" in dialog.styleSheet()
+
+    # A subsequent change must update the already-created phrase item and
+    # the custom painter, not only the QListWidget's base font.
+    settings.setValue("clipboard_dialog/phrase_font_size", 22)
+    settings.sync()
+    dialog.apply_appearance_settings()
+    assert dialog.phrase_list.item(0).font().pixelSize() == 22
+    assert dialog.phrase_list.itemDelegate()._phrase_font().pixelSize() == 22
 
     dialog.close()
     settings.remove("clipboard_dialog")
