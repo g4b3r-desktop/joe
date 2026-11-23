@@ -10,6 +10,7 @@ on:
       - feature/pocket-tts-advanced-settings
       - fix/history-tab-performance
       - feature/clipboard-interactive-phrases
+      - feature/clipboard-dialog-desktop-design
       - fix/colab-safetensors-voice-state
       - feat/colab-drive-model-autosync
       - fix/colab-tts-safetensors-diagnostics
