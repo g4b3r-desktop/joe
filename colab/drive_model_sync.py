@@ -2,11 +2,10 @@ from __future__ import annotations
 
 import json
 import os
-from collections import Counter
 import shutil
 import tempfile
-import uuid
 import zipfile
+from collections import Counter
 from pathlib import Path
 from typing import Any, Callable
 
@@ -110,6 +109,10 @@ def _archive_prefix(names: list[str]) -> str:
         for name in names:
             if name.endswith(marker):
                 return name[: -len(marker)]
+    if any(name.startswith("pocket-tts/") for name in names):
+        return ""
+    if any(name.startswith("JOE_MODELS/") for name in names):
+        return "JOE_MODELS/"
     return "JOE_MODELS/"
 
 
@@ -243,18 +246,6 @@ def ensure_portuguese_model_in_zip(
             staged_path = staging / f"{len(downloaded):02d}_{local_path.name}"
             shutil.copy2(local_path, staged_path)
             downloaded[member_name] = staged_path
-
-        added_bytes = sum(path.stat().st_size for path in downloaded.values())
-        current_size = destination.stat().st_size if archive_exists else 0
-        estimated_size = current_size + added_bytes + 1024 * (len(downloaded) + 2)
-        if estimated_size > max_archive_bytes:
-            limit_gib = max_archive_bytes / (1024**3)
-            raise ArchiveSizeLimitError(
-                "A atualização foi cancelada para respeitar o limite configurado de "
-                f"{limit_gib:.2f} GiB. Estimativa do ZIP atualizado: "
-                f"{estimated_size:,} bytes; limite: {max_archive_bytes:,} bytes. "
-                "O ZIP original no Drive foi preservado."
-            )
 
         fd, temp_name = tempfile.mkstemp(
             prefix=f".{destination.name}.", suffix=".tmp", dir=destination.parent
