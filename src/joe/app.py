@@ -3857,16 +3857,81 @@ class JoeWindow(QMainWindow):
     def _clipboard_dialog_closed(self, dialog: ClipboardAudioDialog) -> None:
         if self.clipboard_audio_window is dialog:
             self.clipboard_audio_window = None
-        worker = self.clipboard_generation_worker
-        if worker is not None:
-            worker.cancel()
-        else:
+        generation_worker = self.clipboard_generation_worker
+        if generation_worker is not None:
+            generation_worker.cancel()
+        elif self.clipboard_recognition_worker is None:
             self._remove_clipboard_temp_dir(dialog.temp_dir)
             if self.clipboard_temp_dir == dialog.temp_dir:
                 self.clipboard_temp_dir = None
             dialog.temp_dir = None
-        if self.clipboard_only_mode and worker is None:
+        if (
+            self.clipboard_only_mode
+            and generation_worker is None
+            and self.clipboard_recognition_worker is None
+        ):
             QTimer.singleShot(0, QApplication.quit)
+
+    def _start_clipboard_recognition(
+        self,
+        audio_path: Path,
+        remote: ColabAPIClient | None,
+        dialog: ClipboardAudioDialog,
+        dialog_state: dict[str, bool],
+        temp_dir: Path,
+    ) -> None:
+        if not audio_path.is_file():
+            dialog.set_recognition_failed("O WAV completo não foi encontrado.")
+            return
+
+        if remote is not None:
+            recognize = lambda: remote.transcribe(audio_path, timestamps=True)
+        else:
+            device = str(self.asr_device.currentData() or "cpu")
+            recognize = lambda: self.asr.transcribe(
+                audio_path,
+                timestamps=True,
+                device_preference=device,
+            )
+
+        worker = FunctionWorker(recognize)
+        self.clipboard_recognition_worker = worker
+        dialog.set_recognition_started()
+
+        def cleanup_if_closed() -> None:
+            if dialog_state["closed"]:
+                self._remove_clipboard_temp_dir(temp_dir)
+                if self.clipboard_temp_dir == temp_dir:
+                    self.clipboard_temp_dir = None
+
+        def completed(result: object) -> None:
+            self.clipboard_recognition_worker = None
+            if dialog_state["closed"]:
+                cleanup_if_closed()
+            else:
+                dialog.set_recognition_result(result)
+            self.statusBar().showMessage(
+                "Reconhecimento do áudio do atalho concluído.", 5000
+            )
+            if self.clipboard_only_mode:
+                QTimer.singleShot(0, QApplication.quit)
+
+        def failed(message: str) -> None:
+            self.clipboard_recognition_worker = None
+            if dialog_state["closed"]:
+                cleanup_if_closed()
+            else:
+                dialog.set_recognition_failed(message)
+            detail = message.split("\n\n", 1)[0]
+            self.statusBar().showMessage(
+                f"Reconhecimento do áudio do atalho falhou: {detail}", 8000
+            )
+            if self.clipboard_only_mode:
+                QTimer.singleShot(0, QApplication.quit)
+
+        worker.signals.finished.connect(completed)
+        worker.signals.failed.connect(failed)
+        self.thread_pool.start(worker)
 
     def _generate_audio_from_clipboard(self) -> None:
         shortcut_action = decide_clipboard_shortcut_action(
@@ -3925,7 +3990,17 @@ class JoeWindow(QMainWindow):
                 else None
             )
             chunk_size = int(self.clipboard_chunk_size.currentData())
-            chunks = split_text_into_chunks(speech_text, max_chars=chunk_size)
+            interactive_phrases = bool(
+                self.clipboard_interactive_phrases.isChecked()
+            )
+            recognition_enabled = bool(
+                self.clipboard_recognize_generated_audio.isChecked()
+            )
+            chunks = (
+                split_text_into_phrases(speech_text, max_chars=chunk_size)
+                if interactive_phrases
+                else split_text_into_chunks(speech_text, max_chars=chunk_size)
+            )
             if not chunks:
                 raise ValueError("Não há texto para converter em áudio.")
         except Exception as exc:  # noqa: BLE001
@@ -3981,11 +4056,15 @@ class JoeWindow(QMainWindow):
             self.player,
             self.tts_output_directory.text().strip(),
             self,
+            phrases=chunks if interactive_phrases else [],
+            recognition_enabled=recognition_enabled,
         )
         dialog.temp_dir = temp_dir
         dialog.set_text_preview(copied_text)
         dialog.start_measurement(remote=remote is not None)
+        dialog_state = {"closed": False}
         dialog.closed.connect(lambda: self._clipboard_dialog_closed(dialog))
+        dialog.closed.connect(lambda: dialog_state.__setitem__("closed", True))
         dialog.saved.connect(
             lambda output_path, performance: self._record_clipboard_history(
                 output_path,
@@ -4013,9 +4092,9 @@ class JoeWindow(QMainWindow):
         )
         self.clipboard_generation_worker = worker
 
-        def chunk_ready(index: int, path: str, total: int) -> None:
-            if not dialog.is_closing:
-                dialog.add_chunk(index, Path(path), total)
+        def chunk_ready(index: int, path: str, total: int, text: str) -> None:
+            if not dialog_state["closed"]:
+                dialog.add_chunk(index, Path(path), total, text)
 
         def progress(message: str) -> None:
             if not dialog.is_closing:
@@ -4023,28 +4102,34 @@ class JoeWindow(QMainWindow):
 
         def cleanup_closed_dialog() -> None:
             self._remove_clipboard_temp_dir(temp_dir)
-            dialog.temp_dir = None
             if self.clipboard_temp_dir == temp_dir:
                 self.clipboard_temp_dir = None
-            if self.clipboard_only_mode:
+            if self.clipboard_only_mode and self.clipboard_recognition_worker is None:
                 QTimer.singleShot(0, QApplication.quit)
 
         def finished(result: object) -> None:
             self.clipboard_generation_worker = None
-            if dialog.is_closing:
+            result_data = result if isinstance(result, dict) else {"path": str(result)}
+            if dialog_state["closed"]:
                 cleanup_closed_dialog()
                 return
-            dialog.set_ready(
-                result if isinstance(result, dict) else {"path": str(result)}
-            )
+            dialog.set_ready(result_data)
             self.statusBar().showMessage("Áudio do clipboard gerado e unido.", 5000)
+            if recognition_enabled:
+                self._start_clipboard_recognition(
+                    destination,
+                    remote,
+                    dialog,
+                    dialog_state,
+                    temp_dir,
+                )
 
         def failed(message: str) -> None:
             self.clipboard_generation_worker = None
             parts = message.split("\n\n", 1)
             detail = parts[0].strip() or "Erro desconhecido"
             technical_details = parts[1] if len(parts) > 1 else ""
-            if dialog.is_closing:
+            if dialog_state["closed"]:
                 cleanup_closed_dialog()
             else:
                 dialog.set_failed(detail, technical_details)
@@ -4055,6 +4140,8 @@ class JoeWindow(QMainWindow):
         def cancelled() -> None:
             self.clipboard_generation_worker = None
             cleanup_closed_dialog()
+            if self.clipboard_only_mode and self.clipboard_recognition_worker is None:
+                QTimer.singleShot(0, QApplication.quit)
 
         worker.signals.chunk_ready.connect(chunk_ready)
         worker.signals.progress.connect(progress)
