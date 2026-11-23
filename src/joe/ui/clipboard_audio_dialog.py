@@ -613,7 +613,12 @@ class ClipboardAudioDialog(QDialog):
         self.preview_label.setToolTip(normalized)
 
     def set_progress(self, message: str) -> None:
-        if self.is_closing:
+        if self.is_closing or (
+            self.playing_final_audio
+            or self.playing_phrase
+            or self.playing_timed_segment
+            or self.play_requested
+        ):
             return
         self.status_label.setText(message)
 
