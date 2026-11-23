@@ -7,7 +7,8 @@ Este diretório contém o backend executado dentro de uma sessão Google Colab.
 - Joe_Colab_API.ipynb: notebook de instalação, inicialização e publicação do túnel temporário.
 - api_server.py: API FastAPI com autenticação Bearer e inferência Pocket TTS / Parakeet Redux.
 - requirements.txt: dependências Python do runtime, incluindo o extra `quantize` do Pocket TTS.
-- drive_model_sync.py: baixa somente os arquivos portugueses ausentes e atualiza o ZIP do Drive com validação e limite de 4 GB.
+- drive_assets.py: valida, organiza e protege modelos/vozes persistidos em arquivos individuais no Google Drive.
+- drive_model_sync.py: rotina legada do fluxo ZIP; não é importada nem executada pelo notebook de armazenamento direto.
 - [ADDING_TTS_MODELS.md](ADDING_TTS_MODELS.md): guia para integrar outros idiomas/modelos ao Colab, incluindo sincronização, YAML, API, testes e limite do ZIP.
 
 ## Teste local do servidor (desenvolvimento)
@@ -30,7 +31,11 @@ Authorization: Bearer <JOE_API_TOKEN>
 ## Rotas
 
 - GET /health: status do servidor, GPU e estado dos modelos.
-- POST /v1/jobs/tts: multipart com text, language, model_variant opcional e campo de arquivo voice opcional; retorna job_id. Se model_variant for omitido, o servidor usa a versão padrão do idioma.
+- POST /v1/jobs/tts: multipart com text, language, model_variant e voice_id opcional; no modo Drive direto, a voz deve estar preparada no Drive.
+- POST /v1/assets/uploads: inicia upload em blocos de um modelo (checkpoint + tokenizer) ou áudio de referência.
+- PUT /v1/assets/uploads/{upload_id}/{asset_key}/{chunk_index}: recebe um bloco de até 8 MiB.
+- POST /v1/assets/uploads/{upload_id}/commit: valida e instala o modelo ou prepara/persiste a voz no Google Drive.
+- GET /v1/assets: lista modelos e vozes persistidos no Drive. Se model_variant for omitido, o servidor usa a versão padrão do idioma.
 - POST /v1/jobs/transcribe: multipart com arquivo audio e campo timestamps (none, segment ou word); retorna job_id.
 - GET /v1/jobs/{job_id}: consulta queued, running, completed ou failed.
 - GET /v1/jobs/{job_id}/result: baixa o WAV ou recebe o JSON quando completed.
@@ -58,55 +63,65 @@ Não grave os segredos diretamente em células, arquivos do repositório, variá
 
 O campo opcional `model_variant` aceita somente variantes compatíveis com o idioma informado. O Joe desktop envia esse campo automaticamente para que a mesma seleção funcione no modo Local e no Colab. Português, espanhol, francês, italiano, alemão e neerlandês oferecem o modelo padrão e a variante de 24 camadas (preview). Inglês também oferece versões datadas, sampler Drifting e variantes compactas de 18,2 M, 6,9 M e 1,9 M de parâmetros. O japonês está disponível somente como **experimental**, usando o modelo compacto de 6 camadas `japanese` de [takuma104/pocket-tts-ja-cc](https://huggingface.co/takuma104/pocket-tts-ja-cc) (aproximadamente 219 MB); o servidor carrega o YAML publicado pelo autor e usa a voz japonesa `female_03.wav` quando não há gravação própria. A versão japonesa de 24 camadas não é exposta. As variantes portuguesas padrão e `portuguese_24l` usam YAMLs próprios com checkpoints e tokenizers locais do Drive; os demais modelos usam seus identificadores ou configurações específicas.
 
-## Modelos no Google Drive
+## Armazenamento direto no Google Drive (sem ZIP)
 
-O notebook espera o arquivo compactado:
-
-~~~text
-Meu Drive/3d_models_ia/modelos-voz/JOE_MODELS.zip
-~~~
-
-Dentro do ZIP, o notebook mantém as duas variantes portuguesas (a estrutura pode estar diretamente na raiz ou dentro de uma pasta `JOE_MODELS/`):
+O notebook atual usa a pasta persistente:
 
 ~~~text
-pocket-tts/
-└── languages/
-    ├── portuguese/model.safetensors
-    └── portuguese_24l/model.safetensors
-pocket-tts-without-voice-cloning/
-└── languages/
-    ├── portuguese/tokenizer.json
-    └── portuguese_24l/tokenizer.json
+Meu Drive/JOE_TTS/
+├── models/<variante>/
+│   ├── model.safetensors
+│   ├── tokenizer.json
+│   ├── config.yaml
+│   └── manifest.json
+├── voices/<variante>/<voice-id>/
+│   ├── reference.<wav|flac|mp3|ogg>
+│   ├── voice_state.safetensors
+│   └── metadata.json
+├── .uploads/
+├── .staging/
+└── cache/
 ~~~
 
-Ao clicar em **Aplicar pastas e modelos**, o notebook verifica os quatro arquivos (dois checkpoints e dois tokenizers). Se todos estiverem válidos, não baixa nada. Se faltar algum ou estiver inválido, baixa somente esse arquivo da revisão oficial correspondente e atualiza o ZIP do Drive, preservando o restante do conteúdo. O ZIP é gravado apenas se o resultado validado não ultrapassar **4 GB**; em caso de erro ou excesso, o arquivo anterior é preservado.
+**O fluxo do notebook não usa mais `JOE_MODELS.zip`, não extrai arquivos e não define os YAMLs portugueses a partir do ZIP.** A rotina antiga `drive_model_sync.py` permanece no repositório por compatibilidade/histórico, mas não é chamada pelo notebook novo.
 
-Depois, o notebook extrai o ZIP para `/content/joe/models/` no armazenamento local da sessão Colab e gera dois YAMLs independentes: `portuguese_from_drive.yaml` e `portuguese_24l_from_drive.yaml`. A API seleciona o YAML correspondente a `model_variant`. O Pocket TTS não é carregado diretamente de dentro do ZIP. A extração precisa ser repetida quando uma nova sessão Colab for iniciada, pois `/content` é temporário.
+### Enviar o modelo do computador
 
-O campo **Arquivo ZIP** permite alterar o caminho do arquivo. O notebook verifica se o ZIP existe e se contém a pasta `pocket-tts`; também aceita uma pasta externa `JOE_MODELS/`. O caminho do tokenizer é preenchido automaticamente com base na estrutura esperada, mas pode ser ajustado no campo correspondente.
+Na aba **Google Colab / API** do Joe, clique em **Enviar modelo local ao Google Drive** e escolha uma pasta contendo no nível principal:
 
-Para clonagem personalizada, o Joe também pode enviar um áudio de referência em cada solicitação. O arquivo WAV ou estado `.safetensors` indicado em **Voz padrão** é opcional e precisa existir no Drive. O campo **Cache HF/ASR** define `HF_HOME`; use uma pasta persistente no Drive se quiser manter o cache entre sessões.
+- `model.safetensors`: pesos com suporte a clonagem.
+- `tokenizer.json`: tokenizer da mesma versão do modelo.
 
+O Joe envia os dois arquivos separadamente em blocos de 8 MiB, evitando uma requisição multipart única maior que os limites comuns de túneis HTTP. O Colab confere tamanho, SHA-256, cabeçalho Safetensors e JSON do tokenizer. Depois cria o YAML local derivado do template da mesma variante instalado no runtime e substitui a pasta do modelo atomicamente. Se a transferência ou validação falhar, a versão anterior no Drive permanece.
 
-## Garantia de carregamento local do Pocket TTS
+O upload pela interface cobre as variantes cujo YAML está disponível no pacote Pocket TTS instalado. A instalação de modelos comunitários com YAML próprio exige adaptar o resolvedor e o validador antes de ser habilitada.
 
-O notebook configura `weights_path` para o checkpoint de clonagem em `pocket-tts/languages/portuguese/model.safetensors` e o tokenizer para o arquivo local do Drive. Se existir, também configura o checkpoint de fallback sem clonagem em `pocket-tts-without-voice-cloning/languages/portuguese/model.safetensors`. A API é impedida de iniciar em modo Drive se a configuração local não tiver sido aplicada.
+### Vozes preparadas no próprio Colab
 
-A voz de referência padrão não é mais um endereço `hf://`. Se o Joe não enviar um WAV na requisição, configure um WAV local no campo **Voz padrão WAV**. Os arquivos de voz em formato WAV são áudio de referência; não são os pesos do modelo.
+Quando existe um áudio de referência selecionado no Joe e o modo Google Colab está ativo, o cliente:
 
-### Sincronização automática dos modelos no ZIP do Drive
+1. Envia o áudio original em blocos.
+2. O Colab verifica se já existe uma voz com o mesmo hash de áudio e fingerprint do modelo atual.
+3. Se não existir, carrega o modelo do Drive, chama `get_state_for_audio_prompt()` e exporta o estado com `export_model_state()`.
+4. Salva a gravação original, o estado e o manifesto da voz no Drive.
+5. Usa o identificador remoto da voz para todos os trechos daquela geração.
 
-Ao aplicar a configuração do Drive, o notebook verifica os quatro arquivos das variantes portuguesas padrão e 24L:
+Se o modelo for substituído, o fingerprint muda. Estados preparados com pesos/tokenizer antigos são rejeitados e o áudio original precisa ser enviado novamente para preparação. O fluxo direto aceita WAV, FLAC, MP3 e OGG. Não envie um `.safetensors` criado localmente: o Colab precisa preparar o estado com os pesos que realmente estão instalados no Drive.
 
-- `pocket-tts/languages/portuguese/model.safetensors`
-- `pocket-tts-without-voice-cloning/languages/portuguese/tokenizer.json`
-- `pocket-tts/languages/portuguese_24l/model.safetensors`
-- `pocket-tts-without-voice-cloning/languages/portuguese_24l/tokenizer.json`
+### Limites e segurança
 
-As origens e revisões estão fixadas de acordo com os YAMLs oficiais do Pocket TTS. Se o ZIP não existir, ele será criado. Se algum arquivo estiver ausente, duplicado ou inválido, somente o arquivo necessário será baixado e substituído. Os demais itens existentes no arquivo são preservados.
+- Cada bloco de upload tem 8 MiB; o cliente calcula SHA-256 antes da transferência.
+- O checkpoint pode ter até 4 GB e o tokenizer até 100 MiB. O áudio de referência tem limite de 80 MiB.
+- Uploads incompletos ficam em `.uploads/`; arquivos finais são instalados somente após conferência do tamanho e hash.
+- Modelos e vozes são gravados em diretórios temporários e promovidos por substituição atômica.
+- Não compartilhe a pasta `JOE_TTS` se ela contiver gravações privadas. Os tokens de acesso continuam sendo lidos dos Secrets do Colab, nunca dos arquivos de modelo/voz.
+- O Drive permanece persistente entre sessões; o conteúdo de `/content` continua temporário.
 
-O tamanho máximo do ZIP atualizado é **4 GB (4.000.000.000 bytes)**. O ZIP temporário é validado antes da substituição; se o tamanho final ultrapassar o limite ou ocorrer um erro, o ZIP anterior não é substituído.
+### Testes
 
-Como os repositórios do modelo exigem aceitar as condições de acesso, aceite os termos em <https://huggingface.co/kyutai/pocket-tts> e crie um token Hugging Face com permissão de leitura. Salve-o no painel **Secrets** do Colab como `HF_TOKEN` e habilite **Notebook access**. O token não é gravado no Drive, no ZIP nem no notebook. Se os quatro arquivos já estiverem válidos, o download e o token não serão necessários.
+~~~bash
+python -m pytest tests/test_colab_drive_assets.py tests/test_colab_drive_asset_client.py -q
+python -m pytest -q
+~~~
 
-A variante `portuguese_24l` usa os próprios pesos, tokenizer e YAML; não compartilha os arquivos da versão padrão. Estados de voz `.safetensors` preparados para 24L devem ser usados com a variante 24L. A rotina fica em `colab/drive_model_sync.py`, com testes em `tests/test_colab_drive_model_sync.py`.
+A rotina de upload e preparação depende de uma sessão real do Colab com Google Drive montado. Os testes automatizados verificam as validações, protocolo de blocos e proteção de compatibilidade, mas não substituem um teste de geração real no runtime.
