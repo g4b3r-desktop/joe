@@ -16,6 +16,7 @@ on:
       - fix/colab-safetensors-upload-suffix
       - feature/colab-drive-direct-assets
       - fix/colab-pocket-tts-inference-quality
+      - fix/colab-drive-voice-id-409
   pull_request:
     branches:
       - main
