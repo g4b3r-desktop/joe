@@ -60,6 +60,44 @@ def test_model_cache_is_inside_project_and_overrides_global_cache(monkeypatch, t
     assert os.environ["HUGGINGFACE_HUB_CACHE"] == str(cache_root / "hub")
 
 
+def test_model_cache_preserves_token_location_before_redirecting_hf_home(
+    monkeypatch, tmp_path
+):
+    from joe.model_cache import configure_model_cache
+
+    global_hf_home = tmp_path / "global-huggingface"
+    token_path = global_hf_home / "token"
+    token_path.parent.mkdir(parents=True)
+    token_path.write_text("test-token", encoding="utf-8")
+
+    monkeypatch.setenv("HF_HOME", str(global_hf_home))
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "xdg-cache"))
+    monkeypatch.delenv("HF_TOKEN", raising=False)
+    monkeypatch.delenv("HF_TOKEN_PATH", raising=False)
+
+    configure_model_cache(tmp_path / "joe-project")
+
+    assert os.environ["HF_TOKEN_PATH"] == str(token_path)
+
+
+def test_model_cache_preserves_default_xdg_token_location(monkeypatch, tmp_path):
+    from joe.model_cache import configure_model_cache
+
+    xdg_cache = tmp_path / "xdg-cache"
+    token_path = xdg_cache / "huggingface" / "token"
+    token_path.parent.mkdir(parents=True)
+    token_path.write_text("test-token", encoding="utf-8")
+
+    monkeypatch.delenv("HF_HOME", raising=False)
+    monkeypatch.setenv("XDG_CACHE_HOME", str(xdg_cache))
+    monkeypatch.delenv("HF_TOKEN", raising=False)
+    monkeypatch.delenv("HF_TOKEN_PATH", raising=False)
+
+    configure_model_cache(tmp_path / "joe-project")
+
+    assert os.environ["HF_TOKEN_PATH"] == str(token_path)
+
+
 def test_model_catalog_exposes_variants_by_language():
     from joe.pocket_tts_models import (
         default_model_variant,
@@ -145,6 +183,126 @@ def test_generate_uses_the_selected_model_variant(monkeypatch, tmp_path):
 
     assert loaded == [("portuguese_24l", False)]
     assert destination.read_bytes() == b"fake wav"
+
+def test_generate_reports_when_fallback_weights_cannot_clone_custom_voice(
+    monkeypatch, tmp_path
+):
+    import sys
+    from types import SimpleNamespace
+
+    from joe.services.pocket_tts import (
+        PocketTTSService,
+        PocketTTSVoiceCloningUnavailableError,
+    )
+
+    calls = []
+
+    class FakeModel:
+        sample_rate = 24_000
+        has_voice_cloning = False
+
+        def get_state_for_audio_prompt(self, voice):
+            calls.append(("voice", voice))
+            return object()
+
+        def generate_audio(self, _state, _text):
+            calls.append(("generate",))
+            raise AssertionError("Audio generation must not run without voice cloning.")
+
+    class FakeTTSModel:
+        @staticmethod
+        def load_model(**_kwargs):
+            return FakeModel()
+
+    class FakeSoundFile:
+        @staticmethod
+        def write(*_args, **_kwargs):
+            raise AssertionError("No WAV should be written after the fallback is detected.")
+
+    monkeypatch.setitem(sys.modules, "torch", SimpleNamespace(set_num_threads=lambda _n: None))
+    monkeypatch.setitem(sys.modules, "soundfile", FakeSoundFile)
+    monkeypatch.setitem(sys.modules, "pocket_tts", SimpleNamespace(TTSModel=FakeTTSModel))
+
+    with pytest.raises(
+        PocketTTSVoiceCloningUnavailableError,
+        match="SEM clonagem de voz.*download dos pesos completos falhou",
+    ):
+        PocketTTSService().generate(
+            "Olá",
+            "portuguese",
+            tmp_path / "must-not-exist.wav",
+            voice_path=tmp_path / "reclamona.wav",
+            model_variant="portuguese",
+            quantize=False,
+        )
+
+    assert calls == []
+    assert not (tmp_path / "must-not-exist.wav").exists()
+
+
+def test_generate_keeps_catalog_voices_available_with_fallback_weights(
+    monkeypatch, tmp_path
+):
+    import sys
+    from types import SimpleNamespace
+
+    from joe.services.pocket_tts import PocketTTSService
+
+    prompts = []
+
+    class FakeAudio:
+        def detach(self):
+            return self
+
+        def cpu(self):
+            return self
+
+        def numpy(self):
+            return [0.0, 0.1, -0.1]
+
+    class FakeModel:
+        sample_rate = 24_000
+        has_voice_cloning = False
+
+        def get_state_for_audio_prompt(self, voice):
+            prompts.append(voice)
+            return object()
+
+        def generate_audio(self, _state, _text):
+            return FakeAudio()
+
+    class FakeTTSModel:
+        @staticmethod
+        def load_model(**_kwargs):
+            return FakeModel()
+
+    class FakeSoundFile:
+        @staticmethod
+        def write(path, _samples, _rate, subtype):
+            assert subtype == "PCM_16"
+            Path(path).write_bytes(b"fake wav")
+
+        @staticmethod
+        def info(_path):
+            return SimpleNamespace(frames=3, samplerate=24_000)
+
+    monkeypatch.setitem(sys.modules, "torch", SimpleNamespace(set_num_threads=lambda _n: None))
+    monkeypatch.setitem(sys.modules, "soundfile", FakeSoundFile)
+    monkeypatch.setitem(sys.modules, "pocket_tts", SimpleNamespace(TTSModel=FakeTTSModel))
+
+    destination = tmp_path / "catalog.wav"
+    PocketTTSService().generate(
+        "Olá",
+        "portuguese",
+        destination,
+        voice_path="alba",
+        model_variant="portuguese",
+        quantize=False,
+    )
+
+    assert prompts == ["alba"]
+    assert destination.read_bytes() == b"fake wav"
+
 
 def test_generate_japanese_uses_compact_config_and_japanese_voice(monkeypatch, tmp_path):
     import sys
