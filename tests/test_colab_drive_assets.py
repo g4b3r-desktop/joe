@@ -17,6 +17,7 @@ from drive_assets import (
     resolve_voice_state,
     safe_asset_name,
     validate_model_files,
+    voice_state_for_safetensors_export,
 )
 
 
@@ -75,6 +76,35 @@ def test_resolve_voice_state_rejects_other_model_fingerprint(tmp_path):
 
     with pytest.raises(ValueError, match="outros pesos/tokenizer"):
         resolve_voice_state(root, variant, voice_id, "new-fingerprint")
+
+
+def test_voice_state_for_safetensors_export_detaches_and_moves_tensors_to_cpu():
+    import torch
+
+    source = torch.arange(4, dtype=torch.float32, requires_grad=True).reshape(2, 2)
+    state = {
+        "flow_lm": {
+            "cache": source,
+            "offset": torch.tensor([3], dtype=torch.long),
+        }
+    }
+
+    exported = voice_state_for_safetensors_export(state)
+
+    assert exported["flow_lm"]["cache"].device.type == "cpu"
+    assert exported["flow_lm"]["cache"].is_contiguous()
+    assert not exported["flow_lm"]["cache"].requires_grad
+    assert torch.equal(exported["flow_lm"]["cache"], source.detach())
+    assert exported["flow_lm"]["offset"].device.type == "cpu"
+    # Conversion must not mutate the cached state used by inference.
+    assert source.requires_grad
+
+
+def test_voice_state_for_safetensors_export_rejects_non_tensor_entries():
+    import pytest
+
+    with pytest.raises(TypeError, match="não contém um tensor"):
+        voice_state_for_safetensors_export({"flow_lm": {"cache": "invalid"}})
 
 
 def test_config_for_uploaded_model_uses_variant_template_and_drive_paths(tmp_path):
