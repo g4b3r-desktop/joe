@@ -264,6 +264,7 @@ class ColabAPIClient:
                     item.get("model_variant") == model_variant
                     and item.get("source_sha256") == file_info["sha256"]
                     and item.get("model_fingerprint") == expected_fingerprint
+                    and item.get("state_valid") is True
                 ):
                     return {
                         "kind": "voice",
