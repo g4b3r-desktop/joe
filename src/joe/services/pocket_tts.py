@@ -33,11 +33,15 @@ def _voice_source_requires_cloning(voice_source: str) -> bool:
         return False
 
     # Bare identifiers are left to Pocket TTS' built-in voice catalog resolver.
+    try:
+        is_local_file = Path(source).expanduser().is_file()
+    except OSError:
+        is_local_file = False
     return (
         "://" in source
         or "/" in normalized
         or bool(Path(normalized).suffix)
-        or Path(source).expanduser().is_file()
+        or is_local_file
     )
 
 
@@ -109,8 +113,8 @@ class PocketTTSService:
         )
         if not getattr(model, "has_voice_cloning", True):
             logger.warning(
-                "Pocket TTS model '%s' loaded with fallback weights without voice cloning. "
-                "WAV/URL reference prompts cannot be used.",
+                "O modelo Pocket TTS '%s' foi carregado com pesos alternativos sem clonagem "
+                "de voz; prompts de referência WAV/URL não estarão disponíveis.",
                 model_variant,
             )
         if device == "cuda":
