@@ -28,9 +28,9 @@ def decide_clipboard_shortcut_action(
     dialog_open: bool,
     generation_active: bool,
 ) -> str:
-    """Decide whether a clipboard shortcut should focus, wait, or start a dialog."""
-    if dialog_open:
-        return "focus"
+    """Choose whether to focus an active job, replace an idle dialog, or start."""
     if generation_active:
-        return "busy"
+        return "focus" if dialog_open else "busy"
+    if dialog_open:
+        return "replace"
     return "start"
