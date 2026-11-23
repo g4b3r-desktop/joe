@@ -1463,7 +1463,8 @@ class JoeWindow(QMainWindow):
         self.generation_queue = GenerationQueue()
         self.active_generation_worker: TTSGenerationWorker | None = None
         self.generation_queue_dialog: GenerationQueueDialog | None = None
-        self.clipboard_generation_worker: FunctionWorker | None = None
+        self.clipboard_generation_worker: ClipboardChunkWorker | None = None
+        self.clipboard_recognition_worker: FunctionWorker | None = None
         self.clipboard_audio_window: ClipboardAudioDialog | None = None
         self.clipboard_temp_dir: Path | None = None
         self.hotkey_listener = None
@@ -2220,6 +2221,39 @@ class JoeWindow(QMainWindow):
             )
         )
 
+        self.clipboard_interactive_phrases = QCheckBox(
+            "Ativar frases clicáveis no atalho (ouvir cada frase separadamente)"
+        )
+        self.clipboard_interactive_phrases.setToolTip(
+            "Gera cada frase em um WAV separado dentro da sessão temporária, "
+            "permitindo clicar nela para ouvir somente aquele trecho."
+        )
+        self.clipboard_interactive_phrases.setChecked(
+            self.app_settings.value("clipboard_interactive_phrases", True, type=bool)
+        )
+        self.clipboard_interactive_phrases.toggled.connect(
+            lambda checked: self.app_settings.setValue(
+                "clipboard_interactive_phrases", bool(checked)
+            )
+        )
+
+        self.clipboard_recognize_generated_audio = QCheckBox(
+            "Reconhecer a fala após gerar (Parakeet) e sincronizar segmentos"
+        )
+        self.clipboard_recognize_generated_audio.setToolTip(
+            "Após a geração, executa o reconhecimento de fala no WAV completo. "
+            "Quando o backend fornece tempos, cada segmento reconhecido pode ser reproduzido "
+            "isoladamente. Pode aumentar o tempo de espera e carregar o modelo ASR."
+        )
+        self.clipboard_recognize_generated_audio.setChecked(
+            self.app_settings.value("clipboard_recognize_generated_audio", False, type=bool)
+        )
+        self.clipboard_recognize_generated_audio.toggled.connect(
+            lambda checked: self.app_settings.setValue(
+                "clipboard_recognize_generated_audio", bool(checked)
+            )
+        )
+
         self.history_save_text_check = QCheckBox(
             "Salvar também o texto original associado ao áudio no histórico"
         )
@@ -2240,6 +2274,8 @@ class JoeWindow(QMainWindow):
         output_form.addRow("", self.tts_auto_filename)
         output_form.addRow("Privacidade do histórico", self.history_save_text_check)
         output_form.addRow("Tamanho dos blocos do atalho", self.clipboard_chunk_size)
+        output_form.addRow("", self.clipboard_interactive_phrases)
+        output_form.addRow("", self.clipboard_recognize_generated_audio)
         settings_layout.addWidget(output_group)
 
         footer = QHBoxLayout()
