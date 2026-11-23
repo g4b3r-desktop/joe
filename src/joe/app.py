@@ -951,6 +951,7 @@ class ClipboardAudioDialog(QDialog):
         self.audio_path: Path | None = None
         self.performance: AudioPerformance | None = None
         self.phrase_texts = list(phrases or [])
+        self._recognized_segments: list[dict] = []
         self.chunk_paths: list[Path] = []
         self.chunk_paths_by_index: dict[int, Path] = {}
         self.next_chunk_index = 0
