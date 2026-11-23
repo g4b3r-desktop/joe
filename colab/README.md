@@ -7,6 +7,7 @@ Este diretório contém o backend executado dentro de uma sessão Google Colab.
 - Joe_Colab_API.ipynb: notebook de instalação, inicialização e publicação do túnel temporário.
 - api_server.py: API FastAPI com autenticação Bearer e inferência Pocket TTS / Parakeet Redux.
 - requirements.txt: dependências Python do runtime, incluindo o extra `quantize` do Pocket TTS.
+- drive_model_sync.py: baixa somente os arquivos portugueses ausentes e atualiza o ZIP do Drive com validação e limite de 4 GiB.
 
 ## Teste local do servidor (desenvolvimento)
 
