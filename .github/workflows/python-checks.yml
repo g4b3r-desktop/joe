@@ -10,6 +10,7 @@ on:
       - feature/pocket-tts-advanced-settings
       - fix/history-tab-performance
       - feature/clipboard-interactive-phrases
+      - fix/colab-safetensors-voice-state
   pull_request:
     branches:
       - main
