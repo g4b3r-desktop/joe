@@ -684,7 +684,15 @@ def list_drive_assets() -> dict[str, Any]:
     if voices_root.is_dir():
         for metadata_path in voices_root.glob("*/*/metadata.json"):
             try:
-                voices.append(json.loads(metadata_path.read_text(encoding="utf-8")))
+                voice_metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+                state_path = metadata_path.parent / "voice_state.safetensors"
+                expected_hash = str(voice_metadata.get("voice_state_sha256", ""))
+                voice_metadata["state_valid"] = bool(
+                    state_path.is_file()
+                    and expected_hash
+                    and hmac.compare_digest(sha256_file(state_path), expected_hash)
+                )
+                voices.append(voice_metadata)
             except (OSError, ValueError):
                 continue
     return {"root": str(root), "models": models, "voices": voices}
