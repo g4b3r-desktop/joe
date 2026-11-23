@@ -150,3 +150,43 @@ def test_invalid_existing_model_is_replaced_instead_of_kept(tmp_path):
     assert result["downloaded"] == [MODEL_MEMBER]
     with zipfile.ZipFile(zip_path) as archive:
         assert archive.namelist().count(MODEL_MEMBER) == 1
+
+def test_root_level_archive_keeps_root_layout(tmp_path):
+    files = _make_downloads(tmp_path)
+    zip_path = tmp_path / "JOE_MODELS.zip"
+    root_model = MODEL_MEMBER.removeprefix("JOE_MODELS/")
+    root_tokenizer = TOKENIZER_MEMBER.removeprefix("JOE_MODELS/")
+    with zipfile.ZipFile(zip_path, "w") as archive:
+        archive.write(files["languages/portuguese/model.safetensors"], root_model)
+
+    calls: list[str] = []
+    result = ensure_portuguese_model_in_zip(
+        zip_path,
+        download_file=_downloader_for(files, calls),
+    )
+
+    assert result["downloaded"] == [root_tokenizer]
+    with zipfile.ZipFile(zip_path) as archive:
+        assert root_model in archive.namelist()
+        assert root_tokenizer in archive.namelist()
+        assert not any(name.startswith("JOE_MODELS/") for name in archive.namelist())
+
+
+def test_duplicate_model_entries_are_repaired_without_duplicate_files(tmp_path):
+    files = _make_downloads(tmp_path)
+    zip_path = tmp_path / "JOE_MODELS.zip"
+    with zipfile.ZipFile(zip_path, "w") as archive:
+        archive.writestr(MODEL_MEMBER, b"old corrupt model")
+        archive.write(files["languages/portuguese/model.safetensors"], MODEL_MEMBER)
+        archive.write(files["languages/portuguese/tokenizer.json"], TOKENIZER_MEMBER)
+
+    result = ensure_portuguese_model_in_zip(
+        zip_path,
+        download_file=_downloader_for(files, []),
+    )
+
+    assert result["updated"] is True
+    with zipfile.ZipFile(zip_path) as archive:
+        assert archive.namelist().count(MODEL_MEMBER) == 1
+        assert archive.namelist().count(TOKENIZER_MEMBER) == 1
+
