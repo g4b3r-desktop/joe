@@ -123,6 +123,18 @@ def validate_model_files(model_file: str | Path, tokenizer_file: str | Path) -> 
     checkpoint = Path(model_file)
     tokenizer = Path(tokenizer_file)
     checkpoint_info = validate_safetensors_file(checkpoint)
+    # Pocket TTS voice-state exports use "module/tensor" keys, whereas a
+    # model checkpoint is a normal nn.Module state_dict. Reject a voice state
+    # here instead of installing it as model weights by mistake.
+    from safetensors import safe_open
+
+    with safe_open(checkpoint, framework="pt") as model_file:
+        tensor_names = list(model_file.keys())
+    if not tensor_names or any("/" in name for name in tensor_names):
+        raise ValueError(
+            "O arquivo Safetensors parece ser um estado de voz preparado, não um "
+            "checkpoint completo do modelo Pocket TTS. Envie os pesos model.safetensors."
+        )
     parsed = json.loads(tokenizer.read_text(encoding="utf-8"))
     if not isinstance(parsed, dict) or not parsed:
         raise ValueError("O tokenizer JSON está vazio ou inválido.")
