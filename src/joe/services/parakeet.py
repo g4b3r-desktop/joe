@@ -7,11 +7,14 @@ from pathlib import Path
 from typing import Any
 
 MODEL_ID = "moondream/parakeet-redux"
+# The current Redux repository is Photon-only. Keep the last published
+# Transformers-compatible snapshot for CPUs without AVX-512 VNNI.
+TRANSFORMERS_REFERENCE_REVISION = "475a51b8c2d3588cd2cad04f1bc646c832d76366"
 logger = logging.getLogger(__name__)
 
 
 def photon_cpu_supported() -> bool:
-    """Photon's documented x86 fast path requires AVX-512 VNNI."""
+    """Photon's optimized x86 Redux path requires AVX-512 VNNI."""
     machine = platform.machine().lower()
     if machine in {"aarch64", "arm64"}:
         return True
@@ -30,7 +33,7 @@ def photon_cpu_supported() -> bool:
 
 
 class ParakeetReduxService:
-    """Parakeet Redux adapter: Photon when supported, Transformers otherwise."""
+    """Parakeet Redux adapter: Photon on supported hardware, pinned Transformers fallback."""
 
     def __init__(self) -> None:
         self._backend: str | None = None
@@ -50,26 +53,33 @@ class ParakeetReduxService:
     def backend_note(self) -> str:
         return self._backend_note
 
-    def _load_photon(self) -> bool:
-        if not photon_cpu_supported():
+    def _load_photon(self, device: str) -> bool:
+        """Load Redux with Photon on CUDA or on CPUs supported by its kernels."""
+        if device == "cpu" and not photon_cpu_supported():
             return False
         try:
             import moondream as md
 
-            device = (
-                "mps"
-                if sys.platform == "darwin" and platform.machine().lower() == "arm64"
-                else "cpu"
-            )
-            context = md.photon(MODEL_ID, device=device)
+            photon_device = device
+            if (
+                device == "cpu"
+                and sys.platform == "darwin"
+                and platform.machine().lower() == "arm64"
+            ):
+                photon_device = "mps"
+
+            context = md.photon(MODEL_ID, device=photon_device)
             speech = context.__enter__()
             self._photon_context = context
             self._speech = speech
-            self._backend = "Photon"
-            self._backend_note = "Backend otimizado Photon"
+            self._backend = f"Photon {photon_device.upper()}"
+            self._device = photon_device
+            self._backend_note = (
+                "Parakeet Redux executado pelo Photon; pesos ternários carregados diretamente."
+            )
             return True
         except Exception as exc:  # noqa: BLE001
-            self._backend_note = f"Photon indisponível; usando Transformers ({exc})"
+            self._backend_note = f"Photon indisponível; usando fallback Transformers ({exc})"
             if self._photon_context is not None:
                 try:
                     self._photon_context.__exit__(None, None, None)
@@ -88,8 +98,8 @@ class ParakeetReduxService:
             from transformers import AutoModel, AutoProcessor
         except ImportError as exc:
             raise RuntimeError(
-                "O backend compatível com esta CPU precisa do extra Transformers. "
-                "Execute: python -m pip install -e '.[asr-fallback]'"
+                "O fallback Transformers precisa do extra ASR. Execute: "
+                "python -m pip install -e '.[asr-fallback]'"
             ) from exc
 
         try:
@@ -97,12 +107,14 @@ class ParakeetReduxService:
         except RuntimeError:
             pass
 
-        # The model repository provides custom Parakeet TDT code; trust_remote_code
-        # is required by its documented reference implementation.
-        self._processor = AutoProcessor.from_pretrained(
-            MODEL_ID,
-            trust_remote_code=True,
-        )
+        # The current model revision is Photon-only and no longer ships the
+        # Transformers processor files. Pin the last reference snapshot so
+        # AutoProcessor never follows the mutable main branch.
+        model_kwargs = {
+            "revision": TRANSFORMERS_REFERENCE_REVISION,
+            "trust_remote_code": True,
+        }
+        self._processor = AutoProcessor.from_pretrained(MODEL_ID, **model_kwargs)
 
         device = "cuda" if prefer_cuda and torch.cuda.is_available() else "cpu"
         if prefer_cuda and device == "cpu":
@@ -113,24 +125,24 @@ class ParakeetReduxService:
         try:
             model = AutoModel.from_pretrained(
                 MODEL_ID,
-                trust_remote_code=True,
+                **model_kwargs,
                 dtype=dtype,
             )
             model.to(device).eval()
         except Exception as exc:
             if device != "cuda":
                 raise
-            # A CUDA build may be installed on a machine with insufficient VRAM
-            # or an incompatible driver. Retry on CPU instead of failing outright.
+            # A CUDA build may be installed with insufficient VRAM or an
+            # incompatible runtime. Retry the reference implementation on CPU.
             try:
                 del model
             except UnboundLocalError:
                 pass
             torch.cuda.empty_cache()
-            self._backend_note = f"CUDA indisponível ({exc}); fallback para CPU."
+            self._backend_note = f"Fallback Transformers CUDA indisponível ({exc}); usando CPU."
             model = AutoModel.from_pretrained(
                 MODEL_ID,
-                trust_remote_code=True,
+                **model_kwargs,
                 dtype=torch.float32,
             )
             model.to("cpu").eval()
@@ -138,10 +150,13 @@ class ParakeetReduxService:
 
         self._model = model
         self._device = device
-        self._backend = "Transformers CUDA (FP16)" if device == "cuda" else "Transformers CPU"
+        self._backend = (
+            "Transformers CUDA (FP16)" if device == "cuda" else "Transformers CPU (referência)"
+        )
         if not self._backend_note:
             self._backend_note = (
-                "Backend de referência. Pode usar mais RAM e ser mais lento que o Photon."
+                "Fallback de referência fixado em uma revisão compatível do modelo; "
+                "pode ser mais lento que Photon."
             )
         else:
             self._backend_note += " — modo de referência ativo."
@@ -153,18 +168,17 @@ class ParakeetReduxService:
             self.close()
         if self._backend is not None:
             return
-        try:
-            import moondream  # noqa: F401
-        except ImportError as exc:
-            raise RuntimeError(
-                "Pacote Moondream ausente. Execute bash scripts/install-linux.sh."
-            ) from exc
 
-        # CPU mode can use Photon on supported CPUs. CUDA mode uses the
-        # documented Transformers reference path on the NVIDIA GPU.
-        if device_preference == "cpu" and self._load_photon():
+        # Photon CUDA is supported by the current SDK for Parakeet Redux.
+        # On CPU, use Photon only when the CPU has the required instruction set.
+        if device_preference == "cuda":
+            if self._load_photon("cuda"):
+                self._loaded_preference = device_preference
+                return
+        elif self._load_photon("cpu"):
             self._loaded_preference = device_preference
             return
+
         self._load_transformers(prefer_cuda=(device_preference == "cuda"))
         self._loaded_preference = device_preference
 
@@ -201,7 +215,7 @@ class ParakeetReduxService:
 
         self._ensure_loaded(device_preference)
 
-        if self._backend == "Photon":
+        if self._speech is not None:
             options: dict[str, Any] = {}
             if timestamps:
                 options["timestamps"] = "segment"
