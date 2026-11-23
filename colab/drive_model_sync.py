@@ -219,10 +219,11 @@ def ensure_portuguese_model_in_zip(
         current_size = destination.stat().st_size if archive_exists else 0
         estimated_size = current_size + added_bytes + 1024 * (len(downloaded) + 2)
         if estimated_size > max_archive_bytes:
+            limit_gib = max_archive_bytes / (1024**3)
             raise ArchiveSizeLimitError(
-                "A atualização foi cancelada para respeitar o limite de 4 GiB. "
-                f"Estimativa do ZIP atualizado: {estimated_size:,} bytes; "
-                f"limite: {max_archive_bytes:,} bytes. "
+                "A atualização foi cancelada para respeitar o limite configurado de "
+                f"{limit_gib:.2f} GiB. Estimativa do ZIP atualizado: "
+                f"{estimated_size:,} bytes; limite: {max_archive_bytes:,} bytes. "
                 "O ZIP original no Drive foi preservado."
             )
 
@@ -271,9 +272,11 @@ def ensure_portuguese_model_in_zip(
 
             final_size = temporary_zip.stat().st_size
             if final_size > max_archive_bytes:
+                limit_gib = max_archive_bytes / (1024**3)
                 raise ArchiveSizeLimitError(
-                    "O ZIP atualizado ultrapassaria o limite de 4 GiB "
-                    f"({final_size:,} bytes). O ZIP original no Drive foi preservado."
+                    "O ZIP atualizado ultrapassaria o limite configurado de "
+                    f"{limit_gib:.2f} GiB ({final_size:,} bytes). "
+                    "O ZIP original no Drive foi preservado."
                 )
 
             with zipfile.ZipFile(temporary_zip, "r") as check_zip:
