@@ -20,7 +20,7 @@ import torch  # noqa: F401
 # isort: split
 from PySide6.QtCore import (
     QObject, QRunnable, QSettings, QStandardPaths, QThreadPool,
-    QTime, QTimer, QUrl, Qt, Signal,
+    QSize, QTime, QTimer, QUrl, Qt, Signal,
 )
 from PySide6.QtGui import QAction, QDesktopServices, QIcon
 from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
@@ -475,6 +475,7 @@ class ColabModelSelectionDialog(QDialog):
         self.model_list = QListWidget()
         self.model_list.setWordWrap(True)
         self.model_list.setSpacing(4)
+        self.model_list.setUniformItemSizes(False)
         layout.addWidget(self.model_list, 1)
 
         footer = QHBoxLayout()
@@ -581,6 +582,7 @@ class ColabModelSelectionDialog(QDialog):
                 f"{model.checkpoint}"
             )
             item.setData(Qt.ItemDataRole.UserRole, model)
+            item.setSizeHint(QSize(0, 82))
             item.setToolTip(str(model.checkpoint))
             flags = item.flags()
             if model.can_upload:
