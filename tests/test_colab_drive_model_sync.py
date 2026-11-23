@@ -177,7 +177,7 @@ def test_size_limit_keeps_existing_archive_unchanged(tmp_path):
     with pytest.raises(ArchiveSizeLimitError):
         ensure_portuguese_model_in_zip(
             zip_path,
-            max_archive_bytes=1000,
+            max_archive_bytes=300,
             download_file=_downloader_for(files, calls),
         )
 
