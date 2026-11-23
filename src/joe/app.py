@@ -1185,9 +1185,14 @@ class ClipboardAudioDialog(QDialog):
                 "Clique em um deles para ouvir somente esse intervalo."
             )
         else:
+            fallback = (
+                " Use as frases clicáveis acima."
+                if self.phrase_texts
+                else " Ative frases clicáveis nas configurações do atalho para ouvir trechos isolados."
+            )
             self.recognition_info.setText(
                 f"{backend}: transcrição concluída, mas este backend não retornou "
-                "tempos de segmento. Use as frases clicáveis acima."
+                f"tempos de segmento.{fallback}"
             )
         if note:
             self.recognition_info.setToolTip(note)
@@ -1278,10 +1283,6 @@ class ClipboardAudioDialog(QDialog):
             self.player.stop()
             self.pause_button.setEnabled(False)
             self.status_label.setText("Segmento reconhecido concluído.")
-
-    def set_recognition_result_safe(self, result: object) -> None:
-        if not self.is_closing:
-            self.set_recognition_result(result)
 
     def _show_failure_details(self) -> None:
         if not self.failure_details:
@@ -3937,7 +3938,10 @@ class JoeWindow(QMainWindow):
     def _generate_audio_from_clipboard(self) -> None:
         shortcut_action = decide_clipboard_shortcut_action(
             dialog_open=self.clipboard_audio_window is not None,
-            generation_active=self.clipboard_generation_worker is not None,
+            generation_active=(
+                self.clipboard_generation_worker is not None
+                or self.clipboard_recognition_worker is not None
+            ),
         )
         if shortcut_action == "focus":
             dialog = self.clipboard_audio_window
@@ -3949,8 +3953,11 @@ class JoeWindow(QMainWindow):
                 dialog.raise_()
                 dialog.activateWindow()
             message = (
-                "A geração do texto copiado já está em andamento."
-                if self.clipboard_generation_worker is not None
+                "A geração ou o reconhecimento do texto copiado já está em andamento."
+                if (
+                    self.clipboard_generation_worker is not None
+                    or self.clipboard_recognition_worker is not None
+                )
                 else "A janela de áudio rápido já está aberta. "
                 "Use-a para reproduzir ou salvar o áudio gerado."
             )
@@ -3959,7 +3966,7 @@ class JoeWindow(QMainWindow):
 
         if shortcut_action == "busy":
             self.statusBar().showMessage(
-                "A geração do texto copiado já está em andamento.", 4000
+                "A geração ou o reconhecimento do texto copiado já está em andamento.", 4000
             )
             return
 
@@ -4098,7 +4105,7 @@ class JoeWindow(QMainWindow):
                 dialog.add_chunk(index, Path(path), total, text)
 
         def progress(message: str) -> None:
-            if not dialog.is_closing:
+            if not dialog_state["closed"]:
                 dialog.set_progress(message)
 
         def cleanup_closed_dialog() -> None:
