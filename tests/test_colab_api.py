@@ -19,15 +19,56 @@ def test_colab_client_normalizes_url():
 
 
 
-def test_colab_tts_rejects_prepared_voice_state_files(tmp_path):
-    from joe.services.colab_api import ColabAPIError
+def test_colab_tts_uploads_prepared_voice_state_files(monkeypatch, tmp_path):
+    import httpx
 
-    prepared_voice = tmp_path / "voice.safetensors"
-    prepared_voice.write_bytes(b"prepared state")
+    prepared_voice = tmp_path / "jane.safetensors"
+    prepared_voice.write_bytes(b"prepared pocket tts state")
     client = ColabAPIClient("https://example.trycloudflare.com", "x" * 40)
+    submitted = {}
 
-    with pytest.raises(ColabAPIError, match="áudio original"):
-        client.generate_audio("Olá", "portuguese", prepared_voice)
+    def request(method, endpoint, **kwargs):
+        assert method == "POST"
+        assert endpoint == "/v1/jobs/tts"
+        uploaded = kwargs["files"][0]
+        submitted["field"] = uploaded[0]
+        submitted["filename"] = uploaded[1][0]
+        submitted["content_type"] = uploaded[1][2]
+        submitted["content"] = uploaded[1][1].read()
+        submitted["data"] = kwargs["data"]
+        return httpx.Response(202, json={"job_id": "job-voice-state"})
+
+    monkeypatch.setattr(client, "_request", request)
+    monkeypatch.setattr(
+        client,
+        "_wait_for_result",
+        lambda *_args, **_kwargs: httpx.Response(
+            200, content=b"RIFF" + b"\\x00" * 4 + b"WAVE"
+        ),
+    )
+
+    result = client.generate_audio(
+        "Olá",
+        "portuguese",
+        prepared_voice,
+        model_variant="portuguese",
+    )
+
+    assert result.startswith(b"RIFF")
+    assert submitted["field"] == "voice"
+    assert submitted["filename"] == "jane.safetensors"
+    assert submitted["content_type"] == "application/octet-stream"
+    assert submitted["content"] == b"prepared pocket tts state"
+    assert submitted["data"]["language"] == "portuguese"
+    assert submitted["data"]["model_variant"] == "portuguese"
+
+
+def test_colab_tts_reports_missing_voice_file_clearly(tmp_path):
+    client = ColabAPIClient("https://example.trycloudflare.com", "x" * 40)
+    with pytest.raises(FileNotFoundError, match="Arquivo de voz não encontrado"):
+        client.generate_audio(
+            "Olá", "portuguese", tmp_path / "missing.safetensors"
+        )
 
 
 def test_colab_tts_rejects_non_wav_results(monkeypatch):
