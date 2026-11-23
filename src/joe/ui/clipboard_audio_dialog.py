@@ -37,7 +37,7 @@ CLIPBOARD_DIALOG_PALETTE = {
     "surface": "#111d2b",
     "surface_hover": "#182a3e",
     "surface_active": "#1b3550",
-    "blue": "#368de0",
+    "blue": "#368de0",\n    "on_blue": "#ffffff",
     "blue_soft": "#254a6d",
     "text": "#edf3fb",
     "text_secondary": "#c0cede",
@@ -68,7 +68,7 @@ def _dialog_stylesheet() -> str:
         }}
         QLabel#brand {{
             background: {p["blue"]};
-            color: #ffffff;
+            color: {p["on_blue"]};
             border-radius: 6px;
             padding: 4px 9px;
             font-size: 13px;
