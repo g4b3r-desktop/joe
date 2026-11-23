@@ -111,3 +111,18 @@ def inspect_audio_samples(samples: Any, sample_rate: int) -> dict[str, float | i
         "clipping_fraction": clipping_fraction,
         "sample_count": int(array.shape[0]),
     }
+
+
+
+def voice_state_for_safetensors_export(voice_state: dict[str, dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    """Copy voice-state tensors to contiguous CPU memory before Safetensors export."""
+    cpu_state: dict[str, dict[str, Any]] = {}
+    for module_name, module_state in voice_state.items():
+        cpu_state[module_name] = {}
+        for tensor_name, tensor in module_state.items():
+            if not hasattr(tensor, "detach") or not hasattr(tensor, "to"):
+                raise TypeError(
+                    f"Estado de voz inválido: {module_name}/{tensor_name} não é tensor PyTorch."
+                )
+            cpu_state[module_name][tensor_name] = tensor.detach().to("cpu").contiguous()
+    return cpu_state
