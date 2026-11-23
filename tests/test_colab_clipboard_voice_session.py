@@ -33,7 +33,7 @@ class FakeColabClient:
             "model_variant": model_variant,
             "voice_id": voice_id,
         })
-        return b"RIFF" + b"\\x00" * 4 + b"WAVE"
+        return b"RIFF" + b"\x00" * 4 + b"WAVE"
 
 
 def test_clipboard_voice_session_prepares_once_and_reuses_drive_voice_id(tmp_path):
