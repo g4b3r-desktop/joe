@@ -70,7 +70,19 @@ def test_prepare_voice_uploads_reference_audio_and_returns_voice_id(monkeypatch,
     audio = tmp_path / "Kessya.wav"
     audio.write_bytes(b"fake wav reference")
     client = _client()
-    monkeypatch.setattr(client, "list_assets", lambda: {"models": [], "voices": []})
+    monkeypatch.setattr(
+        client,
+        "list_assets",
+        lambda: {
+            "models": [{
+                "model_variant": "portuguese",
+                "checkpoint_sha256": "a" * 64,
+                "tokenizer_sha256": "b" * 64,
+                "pocket_tts_version": "4.0.1",
+            }],
+            "voices": [],
+        },
+    )
     submitted_chunks = []
 
     def request(method, endpoint, **kwargs):
@@ -104,6 +116,32 @@ def test_prepare_voice_uploads_reference_audio_and_returns_voice_id(monkeypatch,
 
     assert result["voice_id"] == "kessya-1234"
     assert submitted_chunks == [audio.read_bytes()]
+
+
+def test_prepare_voice_fails_clearly_when_model_is_missing_from_drive(
+    monkeypatch, tmp_path
+):
+    audio = tmp_path / "male_05.wav"
+    audio.write_bytes(b"reference audio")
+    client = _client()
+    monkeypatch.setattr(
+        client,
+        "list_assets",
+        lambda: {"models": [], "voices": [], "invalid_models": []},
+    )
+
+    def unexpected_upload(*args, **kwargs):
+        raise AssertionError("Should not start an upload without an installed model.")
+
+    monkeypatch.setattr(client, "_request", unexpected_upload)
+
+    try:
+        client.prepare_voice(audio, "portuguese", "portuguese", name="male_05")
+    except Exception as exc:
+        assert "não foi encontrado no Google Drive" in str(exc)
+        assert "Enviar primeiro" in str(exc)
+    else:
+        raise AssertionError("Missing Drive model must be reported before uploading the voice.")
 
 
 def test_prepare_voice_rejects_safetensors_without_uploading(tmp_path):
