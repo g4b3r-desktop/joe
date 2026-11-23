@@ -84,26 +84,29 @@ def _variant_details() -> dict[str, tuple[str, str]]:
 def _model_identity(
     checkpoint: Path, variants: dict[str, tuple[str, str]]
 ) -> tuple[str, str, str] | None:
-    # Resolve from the nearest recognized folder, so a snapshot containing several
-    # language folders is classified by the actual model directory, not its parent.
-    for part in reversed(checkpoint.parent.parts):
-        if part in variants:
-            language, label = variants[part]
-            if language != "japanese" and part not in MODEL_CONFIG_BY_VARIANT:
-                return language, part, label
+    # O diretório imediatamente acima do checkpoint identifica a variante.
+    # Nos snapshots oficiais ele é languages/<idioma>.
+    folder_name = checkpoint.parent.name
+    if folder_name in variants:
+        language, label = variants[folder_name]
+        if language != "japanese" and folder_name not in MODEL_CONFIG_BY_VARIANT:
+            return language, folder_name, label
+        return None
 
-        # Official HF snapshots use .../languages/<language>/model.safetensors.
-        if part in MODEL_VARIANTS_BY_LANGUAGE:
-            if part == "japanese":
-                return None
-            variant = default_model_variant(part)
-            label = next(
-                (item[1] for item in MODEL_VARIANTS_BY_LANGUAGE[part] if item[0] == variant),
-                variant,
-            )
-            return part, variant, label
+    if folder_name in MODEL_VARIANTS_BY_LANGUAGE:
+        if folder_name == "japanese":
+            return None
+        variant = default_model_variant(folder_name)
+        label = next(
+            (
+                item[1]
+                for item in MODEL_VARIANTS_BY_LANGUAGE[folder_name]
+                if item[0] == variant
+            ),
+            variant,
+        )
+        return folder_name, variant, label
     return None
-
 
 def discover_local_models(search_roots: Iterable[str | Path]) -> list[LocalModel]:
     """Find known Pocket TTS checkpoints under selected folders without downloading files."""
