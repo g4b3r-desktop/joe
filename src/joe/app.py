@@ -1888,7 +1888,19 @@ class JoeWindow(QMainWindow):
         self.colab_monitor_worker = None
         self.colab_monitor_manual = False
         data = result if isinstance(result, dict) else {}
-        gpu = data.get("gpu_name") or ("CUDA disponível" if data.get("cuda_available") else "CPU")
+        gpu = data.get("gpu_name") or ("CUDA disponível" if data.get("cuda_available") else "não disponível")
+        tts_mode = data.get("tts_device_mode", "auto")
+        tts_devices = data.get("tts_loaded_devices") or {}
+        tts_device = next(iter(tts_devices.values()), data.get("tts_device_selected", "não selecionado"))
+        tts_threads = data.get("tts_cpu_threads", "—")
+        tts_steps = data.get("tts_sampler_decode_steps", "—")
+        last_tts = data.get("last_tts_generation") or {}
+        last_tts_status = (
+            f"Última síntese: {last_tts.get('device')} | "
+            f"RTF {float(last_tts.get('realtime_factor', 0)):.2f} | "
+            f"{float(last_tts.get('duration_seconds', 0)):.2f}s de áudio."
+            if last_tts else "Ainda não há síntese TTS nesta sessão."
+        )
         checked_at = QTime.currentTime().toString("HH:mm:ss")
         self.colab_status.setText(f"API online — última verificação às {checked_at}.")
         direct_drive = bool(data.get("direct_drive_assets_enabled"))
@@ -1904,7 +1916,9 @@ class JoeWindow(QMainWindow):
         self.colab_info.setText(
             f"Conexão confirmada. Servidor: {data.get('service', 'Joe Colab API')}\n"
             f"ASR: {data.get('asr', 'Parakeet Redux')}\n"
-            f"GPU: {gpu}\n"
+            f"GPU disponível: {gpu}\n"
+            f"TTS Pocket TTS: {tts_device} (modo {tts_mode}) | threads CPU: {tts_threads} | passos: {tts_steps}\n"
+            f"{last_tts_status}\n"
             f"Parakeet carregado: {'sim' if data.get('asr_loaded') else 'ainda não'}\n"
             f"{storage_status}\n\n"
             "O monitoramento confirma conectividade, mas não mantém o runtime do Colab ativo."
@@ -1934,7 +1948,7 @@ class JoeWindow(QMainWindow):
     def _open_colab_notebook(self) -> None:
         url = (
             "https://colab.research.google.com/github/g4b3r-desktop/joe/"
-            "blob/feature/colab-drive-direct-assets/colab/Joe_Colab_API.ipynb"
+            "blob/fix/colab-pocket-tts-inference-quality/colab/Joe_Colab_API.ipynb"
         )
         QDesktopServices.openUrl(QUrl(url))
 
