@@ -10,6 +10,7 @@ from PySide6.QtWidgets import (
     QApplication,
     QComboBox,
     QDialog,
+    QGridLayout,
     QFileDialog,
     QHBoxLayout,
     QLabel,
@@ -350,7 +351,7 @@ class ClipboardAudioDialog(QDialog):
         self.performance: AudioPerformance | None = None
         self.phrase_texts = list(phrases or [])
         self._recognized_segments: list[dict] = []
-        self.chunk_paths: list[Path] = []
+        self.chunk_paths: list[Path] = []\n        self.total_chunks = len(self.phrase_texts)
         self.chunk_paths_by_index: dict[int, Path] = {}
         self.chunk_durations: dict[int, float] = {}
         self.next_chunk_index = 0
@@ -488,7 +489,7 @@ class ClipboardAudioDialog(QDialog):
             item.setData(Qt.ItemDataRole.UserRole + 3, False)
             item.setToolTip("Aguardando geração desta frase…")
             self.phrase_list.addItem(item)
-        root.addWidget(self.phrase_list, 1)
+        if not self.phrase_texts:\n            self.phrase_list.hide()\n        root.addWidget(self.phrase_list, 1)
 
         self.recognition_toggle = QToolButton()
         self.recognition_toggle.setText("Reconhecimento de fala")
@@ -684,7 +685,7 @@ class ClipboardAudioDialog(QDialog):
                 ).replace(".", ",")
             else:
                 self.summary_label.setText(
-                    f"Áudio pronto · {len(self.phrase_texts)} frases"
+                    f"Áudio pronto · {self.total_chunks or len(self.phrase_texts)} frases"
                 )
         else:
             self.summary_label.setText(
@@ -720,7 +721,7 @@ class ClipboardAudioDialog(QDialog):
                 item.setToolTip("A geração desta frase falhou.")
         self._update_summary_progress()
         self.summary_label.setText(
-            f"{len(self.chunk_paths_by_index)} de {len(self.phrase_texts)} frases prontas"
+            f"{len(self.chunk_paths_by_index)} de {self.total_chunks or len(self.phrase_texts)} frases prontas"
         )
         self.status_label.setText(
             f"Falha ao gerar o áudio: {message}. "
