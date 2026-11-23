@@ -10,8 +10,8 @@ from PySide6.QtWidgets import (
     QApplication,
     QComboBox,
     QDialog,
-    QGridLayout,
     QFileDialog,
+    QGridLayout,
     QHBoxLayout,
     QLabel,
     QListWidget,
@@ -438,7 +438,6 @@ class ClipboardAudioDialog(QDialog):
         self.details_panel = QWidget()
         details_layout = QVBoxLayout(self.details_panel)
         details_layout.setContentsMargins(0, 2, 0, 4)
-        from PySide6.QtWidgets import QGridLayout
         details_grid = QGridLayout()
         details_grid.setContentsMargins(0, 0, 0, 0)
         details_grid.setHorizontalSpacing(22)
