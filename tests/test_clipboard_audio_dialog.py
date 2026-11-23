@@ -7,7 +7,7 @@ from pathlib import Path
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pytest
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QSettings, Qt
 from PySide6.QtMultimedia import QMediaPlayer
 from PySide6.QtWidgets import QApplication, QGroupBox, QScrollArea
 
@@ -97,3 +97,38 @@ def test_ready_chunk_gets_checkmark_state_and_realtime_factor(qapp, tmp_path):
     assert "envio, fila" in dialog.detail_note.text()
 
     dialog.close()
+
+def test_dialog_appearance_preferences_update_live(qapp):
+    settings = QSettings("g4b3r-desktop", "JoeAudioStudio")
+    settings.setValue("clipboard_dialog/font_family", "DejaVu Sans")
+    settings.setValue("clipboard_dialog/phrase_font_size", 18)
+    settings.setValue("clipboard_dialog/auxiliary_font_size", 15)
+    settings.setValue("clipboard_dialog/title_font_size", 20)
+    settings.setValue("clipboard_dialog/row_spacing", 6)
+    settings.setValue("clipboard_dialog/window_padding", 24)
+    settings.setValue("clipboard_dialog/accent", "violet")
+    settings.sync()
+
+    dialog = ClipboardAudioDialog(
+        QMediaPlayer(),
+        "",
+        phrases=["Frase de aparência personalizada."],
+    )
+    dialog.apply_appearance_settings()
+
+    assert dialog.appearance["font_family"] == "DejaVu Sans"
+    assert dialog.appearance["phrase_font_size"] == 18
+    assert dialog.appearance["auxiliary_font_size"] == 15
+    assert dialog.appearance["title_font_size"] == 20
+    assert dialog.appearance["row_spacing"] == 6
+    assert dialog.appearance["window_padding"] == 24
+    assert dialog.appearance["accent"] == "violet"
+    assert dialog.phrase_list.font().family() == "DejaVu Sans"
+    assert dialog.phrase_list.font().pixelSize() == 18
+    assert dialog.phrase_list.spacing() == 6
+    assert "#9a83e8" in dialog.styleSheet()
+
+    dialog.close()
+    settings.remove("clipboard_dialog")
+    settings.sync()
+
