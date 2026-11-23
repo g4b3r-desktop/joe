@@ -864,16 +864,23 @@ def commit_asset_upload(upload_id: str) -> dict[str, Any]:
 def list_drive_assets() -> dict[str, Any]:
     root = _require_direct_drive()
     models = []
+    invalid_models = []
     voices = []
     models_root = root / "models"
     if models_root.is_dir():
         for manifest_path in models_root.glob("*/manifest.json"):
+            variant = manifest_path.parent.name
             try:
                 manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+                if not isinstance(manifest, dict) or manifest.get("model_variant") != variant:
+                    raise ValueError("o conteúdo não corresponde à variante da pasta")
                 manifest["model_fingerprint"] = model_fingerprint(manifest)
                 models.append(manifest)
-            except (OSError, ValueError):
-                continue
+            except (OSError, ValueError) as exc:
+                invalid_models.append({
+                    "model_variant": variant,
+                    "error": f"{type(exc).__name__}: {exc}",
+                })
     voices_root = root / "voices"
     if voices_root.is_dir():
         for metadata_path in voices_root.glob("*/*/metadata.json"):
@@ -889,7 +896,12 @@ def list_drive_assets() -> dict[str, Any]:
                 voices.append(voice_metadata)
             except (OSError, ValueError):
                 continue
-    return {"root": str(root), "models": models, "voices": voices}
+    return {
+        "root": str(root),
+        "models": models,
+        "invalid_models": invalid_models,
+        "voices": voices,
+    }
 
 
 @app.get("/health")
