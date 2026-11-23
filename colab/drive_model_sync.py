@@ -10,17 +10,32 @@ import zipfile
 from pathlib import Path
 from typing import Any, Callable
 
-MODEL_REPO_ID = "kyutai/pocket-tts"
 MAX_ARCHIVE_BYTES = 4 * 1024**3  # 4 GiB
 
-# Archive path -> file path inside the official Hugging Face repository.
+# ZIP member -> (Hugging Face repo, file, pinned revision, validation type).
 MODEL_ASSETS = {
     "pocket-tts/languages/portuguese/model.safetensors": (
+        "kyutai/pocket-tts",
         "languages/portuguese/model.safetensors",
+        "3e82814a68665eec246ff649b14c71331f955c06",
         "safetensors",
     ),
     "pocket-tts-without-voice-cloning/languages/portuguese/tokenizer.json": (
+        "kyutai/pocket-tts-without-voice-cloning",
         "languages/portuguese/tokenizer.json",
+        "4e1e0a6a23401048648a9fdcfde2f89348215c2a7",
+        "json",
+    ),
+    "pocket-tts/languages/portuguese_24l/model.safetensors": (
+        "kyutai/pocket-tts",
+        "languages/portuguese_24l/model.safetensors",
+        "2dd944b099d06bb9edbd221fef138685711d9bf0",
+        "safetensors",
+    ),
+    "pocket-tts-without-voice-cloning/languages/portuguese_24l/tokenizer.json": (
+        "kyutai/pocket-tts-without-voice-cloning",
+        "languages/portuguese_24l/tokenizer.json",
+        "4e1e0a6a23401048648a9fdcfde2f89348215c2a7",
         "json",
     ),
 }
@@ -90,10 +105,7 @@ def _is_valid_file(path: Path, kind: str) -> bool:
 
 
 def _archive_prefix(names: list[str]) -> str:
-    markers = (
-        "pocket-tts/languages/portuguese/model.safetensors",
-        "pocket-tts-without-voice-cloning/languages/portuguese/tokenizer.json",
-    )
+    markers = tuple(MODEL_ASSETS)
     for marker in markers:
         for name in names:
             if name.endswith(marker):
@@ -102,11 +114,20 @@ def _archive_prefix(names: list[str]) -> str:
 
 
 def _default_download(
-    repo_id: str, filename: str, *, token: str | None
+    repo_id: str,
+    filename: str,
+    *,
+    revision: str,
+    token: str | None,
 ) -> str:
     from huggingface_hub import hf_hub_download
 
-    return hf_hub_download(repo_id=repo_id, filename=filename, token=token)
+    return hf_hub_download(
+        repo_id=repo_id,
+        filename=filename,
+        revision=revision,
+        token=token,
+    )
 
 
 def ensure_portuguese_model_in_zip(
@@ -145,22 +166,22 @@ def ensure_portuguese_model_in_zip(
     prefix = _archive_prefix(names)
     name_counts = Counter(names)
     target_members = {
-        prefix + archive_path: (repo_path, kind)
-        for archive_path, (repo_path, kind) in MODEL_ASSETS.items()
+        prefix + archive_path: asset
+        for archive_path, asset in MODEL_ASSETS.items()
     }
 
     valid_members: set[str] = set()
-    missing_members: dict[str, tuple[str, str]] = {}
+    missing_members: dict[str, tuple[str, str, str, str]] = {}
     if archive_exists:
         with zipfile.ZipFile(destination, "r") as archive:
-            for member_name, (repo_path, kind) in target_members.items():
+            for member_name, (_, _, _, kind) in target_members.items():
                 if (
                     name_counts[member_name] == 1
                     and _is_valid_member(archive, member_name, kind)
                 ):
                     valid_members.add(member_name)
                 else:
-                    missing_members[member_name] = (repo_path, kind)
+                    missing_members[member_name] = target_members[member_name]
     else:
         missing_members = dict(target_members)
 
@@ -193,11 +214,19 @@ def ensure_portuguese_model_in_zip(
     downloaded: dict[str, Path] = {}
     with tempfile.TemporaryDirectory(prefix="joe-pocket-tts-") as staging_dir:
         staging = Path(staging_dir)
-        for member_name, (repo_filename, kind) in missing_members.items():
+        for member_name, (
+            repo_id,
+            repo_filename,
+            revision,
+            kind,
+        ) in missing_members.items():
             try:
                 local_path = Path(
                     selected_downloader(
-                        MODEL_REPO_ID, repo_filename, token=effective_token
+                        repo_id,
+                        repo_filename,
+                        revision=revision,
+                        token=effective_token,
                     )
                 )
             except Exception as exc:
@@ -280,7 +309,7 @@ def ensure_portuguese_model_in_zip(
                 )
 
             with zipfile.ZipFile(temporary_zip, "r") as check_zip:
-                for member_name, (_, kind) in target_members.items():
+                for member_name, (_, _, _, kind) in target_members.items():
                     if not _is_valid_member(check_zip, member_name, kind):
                         raise ValueError(
                             f"Falha na validação do arquivo dentro do ZIP: {member_name}"
