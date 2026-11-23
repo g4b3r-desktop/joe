@@ -1891,11 +1891,22 @@ class JoeWindow(QMainWindow):
         gpu = data.get("gpu_name") or ("CUDA disponível" if data.get("cuda_available") else "CPU")
         checked_at = QTime.currentTime().toString("HH:mm:ss")
         self.colab_status.setText(f"API online — última verificação às {checked_at}.")
+        direct_drive = bool(data.get("direct_drive_assets_enabled"))
+        installed_models = data.get("tts_direct_drive_models") or []
+        voice_count = int(data.get("tts_direct_drive_voice_count") or 0)
+        storage_status = (
+            f"Armazenamento Drive direto: ativo — modelos: {', '.join(installed_models) or 'nenhum'}; "
+            f"vozes preparadas: {voice_count}."
+            if direct_drive else
+            "Armazenamento Drive direto: indisponível. Abra o notebook novo do branch "
+            "feature/colab-drive-direct-assets e aplique a montagem do Drive."
+        )
         self.colab_info.setText(
             f"Conexão confirmada. Servidor: {data.get('service', 'Joe Colab API')}\n"
             f"ASR: {data.get('asr', 'Parakeet Redux')}\n"
             f"GPU: {gpu}\n"
-            f"Parakeet carregado: {'sim' if data.get('asr_loaded') else 'ainda não'}\n\n"
+            f"Parakeet carregado: {'sim' if data.get('asr_loaded') else 'ainda não'}\n"
+            f"{storage_status}\n\n"
             "O monitoramento confirma conectividade, mas não mantém o runtime do Colab ativo."
         )
         self.statusBar().showMessage("API do Google Colab conectada.", 5000)
