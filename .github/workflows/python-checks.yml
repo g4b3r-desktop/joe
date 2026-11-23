@@ -15,6 +15,7 @@ on:
       - fix/colab-tts-safetensors-diagnostics
       - fix/colab-safetensors-upload-suffix
       - feature/colab-drive-direct-assets
+      - fix/colab-pocket-tts-inference-quality
   pull_request:
     branches:
       - main
