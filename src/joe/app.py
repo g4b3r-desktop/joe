@@ -55,7 +55,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from joe.audio_chunks import merge_wav_files, split_text_into_chunks
+from joe.audio_chunks import merge_wav_files, split_text_into_chunks, split_text_into_phrases
 from joe.audio_history import AudioHistoryStore
 from joe.generation_queue import GenerationQueue, GenerationTask
 from joe.system_monitor import read_hardware_metrics
@@ -124,7 +124,7 @@ class FunctionWorker(QRunnable):
 
 
 class ChunkWorkerSignals(QObject):
-    chunk_ready = Signal(int, str, int)
+    chunk_ready = Signal(int, str, int, str)
     progress = Signal(str)
     finished = Signal(object)
     failed = Signal(str)
@@ -176,7 +176,7 @@ class ClipboardChunkWorker(QRunnable):
                     return
 
                 generated.append(result)
-                self.signals.chunk_ready.emit(index, str(result), total)
+                self.signals.chunk_ready.emit(index, str(result), total, text)
 
             if self.cancel_event.is_set():
                 self.signals.cancelled.emit()
@@ -930,7 +930,7 @@ class HotkeyBridge(QObject):
 
 
 class ClipboardAudioDialog(QDialog):
-    """Compact playback window for chunked clipboard audio."""
+    """Compact player with clickable generated phrases and optional ASR segments."""
 
     closed = Signal()
     saved = Signal(str, object)
@@ -940,6 +940,9 @@ class ClipboardAudioDialog(QDialog):
         player: QMediaPlayer,
         output_directory: str,
         parent: QWidget | None = None,
+        *,
+        phrases: list[str] | None = None,
+        recognition_enabled: bool = False,
     ) -> None:
         super().__init__(parent)
         self.player = player
@@ -947,13 +950,18 @@ class ClipboardAudioDialog(QDialog):
         self.temp_dir: Path | None = None
         self.audio_path: Path | None = None
         self.performance: AudioPerformance | None = None
+        self.phrase_texts = list(phrases or [])
         self.chunk_paths: list[Path] = []
+        self.chunk_paths_by_index: dict[int, Path] = {}
         self.next_chunk_index = 0
         self.current_chunk_path: Path | None = None
         self.generation_finished = False
         self.play_requested = False
         self.waiting_for_chunk = False
         self.playing_final_audio = False
+        self.playing_phrase = False
+        self.playing_timed_segment = False
+        self._active_segment_end_ms: int | None = None
         self.is_closing = False
         self.failure_details = ""
         self.generation_started_at: float | None = None
@@ -962,16 +970,14 @@ class ClipboardAudioDialog(QDialog):
         self.performance_timer.timeout.connect(self._update_performance_elapsed)
 
         self.setWindowTitle("Joe — Texto copiado para áudio")
-        # Tool windows are commonly omitted from the task switcher/taskbar on Linux.
-        # Use a regular window so the shortcut window has its own Joe icon.
         self.setWindowFlags(Qt.WindowType.Window)
         self.setWindowIcon(QApplication.windowIcon())
         self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
-        self.resize(480, 330)
+        self.resize(620, 620 if recognition_enabled else 500)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(18, 16, 18, 16)
-        layout.setSpacing(10)
+        layout.setSpacing(9)
 
         self.preview_label = QLabel("Texto copiado")
         self.preview_label.setWordWrap(True)
@@ -989,8 +995,51 @@ class ClipboardAudioDialog(QDialog):
         self.performance_label.setWordWrap(True)
         layout.addWidget(self.performance_label)
 
+        self.phrases_title = QLabel("Frases geradas — clique em uma para ouvir somente esse trecho")
+        self.phrases_title.setObjectName("muted")
+        self.phrase_list = QListWidget()
+        self.phrase_list.setMaximumHeight(170)
+        self.phrase_list.itemClicked.connect(self._play_phrase_item)
+        for index, phrase in enumerate(self.phrase_texts, start=1):
+            item = QListWidgetItem(f"◷ {index:03d} · {phrase}")
+            item.setData(Qt.ItemDataRole.UserRole, index)
+            item.setToolTip("Aguardando a geração deste trecho de áudio.")
+            item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEnabled)
+            self.phrase_list.addItem(item)
+        if self.phrase_texts:
+            layout.addWidget(self.phrases_title)
+            layout.addWidget(self.phrase_list)
+        else:
+            self.phrases_title.hide()
+            self.phrase_list.hide()
+
+        self.recognition_title = QLabel("Reconhecimento de fala — Parakeet Redux")
+        self.recognition_title.setObjectName("muted")
+        self.recognition_info = QLabel(
+            "O reconhecimento será iniciado quando o WAV completo estiver pronto."
+        )
+        self.recognition_info.setWordWrap(True)
+        self.recognition_info.setObjectName("muted")
+        self.recognition_list = QListWidget()
+        self.recognition_list.setMaximumHeight(140)
+        self.recognition_list.setEnabled(False)
+        self.recognition_list.itemClicked.connect(self._play_recognized_segment)
+        self.recognition_text_label = QLabel("")
+        self.recognition_text_label.setWordWrap(True)
+        self.recognition_text_label.setObjectName("muted")
+        self.recognition_text_label.hide()
+        if recognition_enabled:
+            layout.addWidget(self.recognition_title)
+            layout.addWidget(self.recognition_info)
+            layout.addWidget(self.recognition_list)
+            layout.addWidget(self.recognition_text_label)
+        else:
+            self.recognition_title.hide()
+            self.recognition_info.hide()
+            self.recognition_list.hide()
+
         buttons = QHBoxLayout()
-        self.play_button = QPushButton("Reproduzir")
+        self.play_button = QPushButton("Reproduzir áudio completo")
         self.play_button.setObjectName("primaryButton")
         self.play_button.setEnabled(False)
         self.play_button.clicked.connect(self._play)
@@ -1014,6 +1063,7 @@ class ClipboardAudioDialog(QDialog):
         layout.addLayout(buttons)
 
         self.player.mediaStatusChanged.connect(self._on_media_status_changed)
+        self.player.positionChanged.connect(self._stop_timed_segment)
 
     def set_text_preview(self, text: str) -> None:
         compact = " ".join(text.split())
@@ -1022,7 +1072,6 @@ class ClipboardAudioDialog(QDialog):
         self.preview_label.setText(compact)
 
     def start_measurement(self, remote: bool = False) -> None:
-        """Inicia o cronômetro do desktop para a geração em blocos."""
         self.generation_started_at = time.perf_counter()
         self.performance_label.setText(
             "Medição do Joe neste computador — "
@@ -1044,12 +1093,18 @@ class ClipboardAudioDialog(QDialog):
         if not self.is_closing:
             self.status_label.setText(message)
 
-    def add_chunk(self, index: int, audio_path: Path, total: int) -> None:
+    def add_chunk(self, index: int, audio_path: Path, total: int, text: str) -> None:
         if self.is_closing:
             return
         self.chunk_paths.append(audio_path)
+        self.chunk_paths_by_index[index] = audio_path
+        if self.phrase_texts and 1 <= index <= self.phrase_list.count():
+            item = self.phrase_list.item(index - 1)
+            item.setText(f"✓ {index:03d} · {text}")
+            item.setToolTip("Clique para reproduzir somente esta frase.")
+            item.setFlags(item.flags() | Qt.ItemFlag.ItemIsEnabled)
         self.play_button.setEnabled(True)
-        if not self.generation_finished and not self.play_requested:
+        if not self.generation_finished and not self.play_requested and not self.playing_phrase:
             self.status_label.setText(
                 f"Trecho {index} de {total} pronto. Gerando os próximos…"
             )
@@ -1071,9 +1126,10 @@ class ClipboardAudioDialog(QDialog):
             )
         self.play_button.setEnabled(bool(self.chunk_paths))
         self.save_button.setEnabled(True)
-        if not self.play_requested:
+        if not self.play_requested and not self.playing_phrase and not self.playing_timed_segment:
             self.status_label.setText(
-                "Áudio completo pronto. Você pode reproduzir ou salvar o WAV."
+                "Áudio completo pronto. Clique em uma frase para ouvi-la isoladamente "
+                "ou reproduza/salve o WAV completo."
             )
         elif self.waiting_for_chunk:
             self._play_next_chunk()
@@ -1094,6 +1150,138 @@ class ClipboardAudioDialog(QDialog):
         self.play_button.setEnabled(bool(self.chunk_paths))
         self.save_button.setEnabled(False)
 
+    def set_recognition_started(self) -> None:
+        if not self.is_closing:
+            self.recognition_info.setText(
+                "Reconhecendo o áudio gerado. A primeira execução pode carregar os pesos do Parakeet."
+            )
+
+    def set_recognition_result(self, result: object) -> None:
+        data = result if isinstance(result, dict) else {}
+        segments = normalize_timed_segments(list(data.get("segments", [])))
+        recognized_text = str(data.get("text", "")).strip()
+        backend = str(data.get("backend", "Parakeet Redux"))
+        self.recognition_list.clear()
+
+        for index, segment in enumerate(segments):
+            start = float(segment["start"])
+            end = float(segment["end"])
+            item = QListWidgetItem(
+                f"{index + 1:03d}  "
+                f"[{self._format_time_ms(start * 1000)} – {self._format_time_ms(end * 1000)}]  "
+                f"{segment['text']}"
+            )
+            item.setData(Qt.ItemDataRole.UserRole, index)
+            item.setToolTip("Clique para ouvir somente este segmento reconhecido.")
+            self.recognition_list.addItem(item)
+
+        self._recognized_segments = segments
+        self.recognition_list.setEnabled(bool(segments))
+        note = str(data.get("note", "")).strip()
+        if segments:
+            self.recognition_info.setText(
+                f"{backend}: {len(segments)} segmento(s) com tempo. "
+                "Clique em um deles para ouvir somente esse intervalo."
+            )
+        else:
+            self.recognition_info.setText(
+                f"{backend}: transcrição concluída, mas este backend não retornou "
+                "tempos de segmento. Use as frases clicáveis acima."
+            )
+        if note:
+            self.recognition_info.setToolTip(note)
+        if recognized_text:
+            compact = " ".join(recognized_text.split())
+            if len(compact) > 320:
+                compact = compact[:317].rstrip() + "…"
+            self.recognition_text_label.setText(f"Texto reconhecido: {compact}")
+            self.recognition_text_label.setToolTip(recognized_text)
+            self.recognition_text_label.show()
+        else:
+            self.recognition_text_label.hide()
+
+    def set_recognition_failed(self, message: str) -> None:
+        if not self.is_closing:
+            detail = str(message).split("\n\n", 1)[0]
+            self.recognition_info.setText(f"Não foi possível reconhecer a fala: {detail}")
+
+    @staticmethod
+    def _format_time_ms(milliseconds: float) -> str:
+        total = max(0, int(round(milliseconds)))
+        minutes, remainder = divmod(total, 60_000)
+        seconds, millis = divmod(remainder, 1000)
+        return f"{minutes:02d}:{seconds:02d}.{millis:03d}"
+
+    def _play_phrase_item(self, item: QListWidgetItem) -> None:
+        if self.is_closing:
+            return
+        index = item.data(Qt.ItemDataRole.UserRole)
+        if not isinstance(index, int):
+            return
+        path = self.chunk_paths_by_index.get(index)
+        if path is None or not path.is_file():
+            self.status_label.setText(
+                f"A frase {index} ainda está sendo gerada. Aguarde o trecho ficar pronto."
+            )
+            return
+        self.play_requested = False
+        self.waiting_for_chunk = False
+        self.playing_final_audio = False
+        self.playing_timed_segment = False
+        self._active_segment_end_ms = None
+        self.playing_phrase = True
+        self.current_chunk_path = path
+        self.player.stop()
+        self.player.setSource(QUrl.fromLocalFile(str(path.resolve())))
+        self.player.play()
+        self.pause_button.setEnabled(True)
+        self.status_label.setText(f"Reproduzindo somente a frase {index} de {len(self.phrase_texts)}.")
+
+    def _play_recognized_segment(self, item: QListWidgetItem) -> None:
+        index = item.data(Qt.ItemDataRole.UserRole)
+        if not isinstance(index, int) or not 0 <= index < len(self._recognized_segments):
+            return
+        if not self.audio_path or not self.audio_path.is_file():
+            self.recognition_info.setText("O WAV completo não está mais disponível.")
+            return
+        segment = self._recognized_segments[index]
+        start_ms = max(0, int(round(float(segment["start"]) * 1000)))
+        end_ms = max(start_ms + 1, int(round(float(segment["end"]) * 1000)))
+        self.play_requested = False
+        self.waiting_for_chunk = False
+        self.playing_phrase = False
+        self.playing_final_audio = False
+        self.playing_timed_segment = True
+        self._active_segment_end_ms = end_ms
+        current = self.player.source().toLocalFile()
+        target = str(self.audio_path.resolve())
+        if not current or Path(current).resolve() != Path(target):
+            self.player.stop()
+            self.player.setSource(QUrl.fromLocalFile(target))
+        self.player.setPosition(start_ms)
+        self.player.play()
+        self.pause_button.setEnabled(True)
+        self.status_label.setText(
+            f"Reproduzindo segmento reconhecido {index + 1}: "
+            f"{segment['text']}"
+        )
+
+    def _stop_timed_segment(self, position_ms: int) -> None:
+        if (
+            self.playing_timed_segment
+            and self._active_segment_end_ms is not None
+            and int(position_ms) >= self._active_segment_end_ms
+        ):
+            self._active_segment_end_ms = None
+            self.playing_timed_segment = False
+            self.player.stop()
+            self.pause_button.setEnabled(False)
+            self.status_label.setText("Segmento reconhecido concluído.")
+
+    def set_recognition_result_safe(self, result: object) -> None:
+        if not self.is_closing:
+            self.set_recognition_result(result)
+
     def _show_failure_details(self) -> None:
         if not self.failure_details:
             return
@@ -1108,7 +1296,9 @@ class ClipboardAudioDialog(QDialog):
         if not self.chunk_paths:
             return
         if self.player.playbackState() == QMediaPlayer.PlaybackState.PausedState:
-            self.play_requested = not self.playing_final_audio
+            self.play_requested = not (
+                self.playing_final_audio or self.playing_phrase or self.playing_timed_segment
+            )
             self.player.play()
             self.pause_button.setEnabled(True)
             return
@@ -1116,13 +1306,21 @@ class ClipboardAudioDialog(QDialog):
             self.play_requested = False
             self.waiting_for_chunk = False
             self.playing_final_audio = True
+            self.playing_phrase = False
+            self.playing_timed_segment = False
+            self._active_segment_end_ms = None
             self.current_chunk_path = None
             self.player.setSource(QUrl.fromLocalFile(str(self.audio_path.resolve())))
             self.player.play()
             self.pause_button.setEnabled(True)
-            self.status_label.setText("Reproduzindo o WAV completo unido, sem troca entre trechos…")
+            self.status_label.setText(
+                "Reproduzindo o WAV completo unido, sem troca entre trechos…"
+            )
             return
         self.play_requested = True
+        self.playing_phrase = False
+        self.playing_timed_segment = False
+        self._active_segment_end_ms = None
         if self.current_chunk_path and self.player.source().isValid() and (
             self.player.mediaStatus() != QMediaPlayer.MediaStatus.EndOfMedia
         ):
@@ -1134,6 +1332,9 @@ class ClipboardAudioDialog(QDialog):
     def _play_next_chunk(self) -> None:
         if not self.play_requested or self.is_closing:
             return
+        self.playing_phrase = False
+        self.playing_timed_segment = False
+        self._active_segment_end_ms = None
         if self.next_chunk_index < len(self.chunk_paths):
             path = self.chunk_paths[self.next_chunk_index]
             self.next_chunk_index += 1
@@ -1167,7 +1368,16 @@ class ClipboardAudioDialog(QDialog):
     def _on_media_status_changed(self, status) -> None:
         if status != QMediaPlayer.MediaStatus.EndOfMedia:
             return
-        if self.playing_final_audio:
+        if self.playing_timed_segment:
+            self._active_segment_end_ms = None
+            self.playing_timed_segment = False
+            self.pause_button.setEnabled(False)
+            self.status_label.setText("Segmento reconhecido concluído.")
+        elif self.playing_phrase:
+            self.playing_phrase = False
+            self.pause_button.setEnabled(False)
+            self.status_label.setText("Frase concluída.")
+        elif self.playing_final_audio:
             self.playing_final_audio = False
             self.pause_button.setEnabled(False)
             self.status_label.setText("Reprodução concluída.")
@@ -1217,6 +1427,12 @@ class ClipboardAudioDialog(QDialog):
         self.performance_timer.stop()
         self.generation_started_at = None
         self.play_requested = False
+        self._active_segment_end_ms = None
+        try:
+            self.player.positionChanged.disconnect(self._stop_timed_segment)
+            self.player.mediaStatusChanged.disconnect(self._on_media_status_changed)
+        except (RuntimeError, TypeError):
+            pass
         current_source = self.player.source().toLocalFile()
         chunk_sources = {str(path.resolve()) for path in self.chunk_paths}
         if current_source and (
