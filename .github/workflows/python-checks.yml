@@ -9,6 +9,7 @@ on:
       - feature/pocket-tts-cuda-performance
       - feature/pocket-tts-advanced-settings
       - fix/history-tab-performance
+      - feature/clipboard-interactive-phrases
   pull_request:
     branches:
       - main
