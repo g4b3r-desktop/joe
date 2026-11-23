@@ -81,7 +81,9 @@ def _variant_details() -> dict[str, tuple[str, str]]:
     return details
 
 
-def _model_identity(checkpoint: Path, variants: dict[str, tuple[str, str]]) -> tuple[str, str, str] | None:
+def _model_identity(
+    checkpoint: Path, variants: dict[str, tuple[str, str]]
+) -> tuple[str, str, str] | None:
     # Resolve from the nearest recognized folder, so a snapshot containing several
     # language folders is classified by the actual model directory, not its parent.
     for part in reversed(checkpoint.parent.parts):
@@ -148,7 +150,9 @@ def discover_local_models(search_roots: Iterable[str | Path]) -> list[LocalModel
                 is_official_hf_snapshot = any(
                     ancestor.name == "models--kyutai--pocket-tts"
                     for ancestor in checkpoint.parents
-                ) and any(ancestor.parent.name == "snapshots" for ancestor in checkpoint.parents)
+                ) and any(
+                    ancestor.parent.name == "snapshots" for ancestor in checkpoint.parents
+                )
 
                 model = LocalModel(
                     language=language,
@@ -158,12 +162,18 @@ def discover_local_models(search_roots: Iterable[str | Path]) -> list[LocalModel
                     upload_directory=model_directory,
                     size_bytes=checkpoint.stat().st_size,
                     tokenizer_local=tokenizer_local,
-                    tokenizer_auto_download=bool(is_official_hf_snapshot and not tokenizer_local),
+                    tokenizer_auto_download=(
+                        is_official_hf_snapshot and not tokenizer_local
+                    ),
                 )
                 # A cache can contain several immutable snapshots of the same variant.
                 # Offer the newest checkpoint once, avoiding sequential overwrites.
                 previous = candidates.get(model_variant)
-                if previous is None or checkpoint.stat().st_mtime_ns > previous.checkpoint.stat().st_mtime_ns:
+                if (
+                    previous is None
+                    or checkpoint.stat().st_mtime_ns
+                    > previous.checkpoint.stat().st_mtime_ns
+                ):
                     candidates[model_variant] = model
         except OSError:
             # An inaccessible subfolder must not prevent scanning other roots.
