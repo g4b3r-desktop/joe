@@ -1709,6 +1709,13 @@ class JoeWindow(QMainWindow):
         self.colab_test_button.setObjectName("primaryButton")
         self.colab_test_button.clicked.connect(self._test_colab_connection)
 
+        self.colab_upload_model_button = QPushButton("Enviar modelo local ao Google Drive…")
+        self.colab_upload_model_button.setToolTip(
+            "Escolha uma pasta contendo model.safetensors e tokenizer.json. "
+            "O Colab valida e instala os arquivos individualmente no Google Drive."
+        )
+        self.colab_upload_model_button.clicked.connect(self._upload_colab_model)
+
         self.colab_open_button = QPushButton("Abrir notebook no Google Colab")
         self.colab_open_button.clicked.connect(self._open_colab_notebook)
 
@@ -1717,9 +1724,12 @@ class JoeWindow(QMainWindow):
         self.colab_status.setWordWrap(True)
 
         self.colab_info = QLabel(
-            "1. Abra o notebook no Google Colab e execute as células.\n"
-            "2. Copie a URL trycloudflare.com e o token exibidos no final.\n"
-            "3. Cole os dois campos acima e selecione Google Colab no modo.\n\n"
+            "1. Abra o notebook do branch de armazenamento direto e execute as células.\n"
+            "2. Copie a URL e o token exibidos no final e cole nos campos acima.\n"
+            "3. Envie a pasta do modelo com model.safetensors e tokenizer.json.\n"
+            "4. Selecione um áudio original no Joe; ele será enviado e preparado no Colab.\n\n"
+            "Modelos, áudios originais e estados de voz ficam em arquivos individuais no Google Drive. "
+            "O novo fluxo não utiliza JOE_MODELS.zip.\n\n"
             "O Joe verifica a conexão a cada 60 segundos enquanto o modo Colab está selecionado. "
             "Essa verificação apenas detecta desconexões: não impede o Colab de encerrar o runtime "
             "por inatividade ou por seus limites de sessão.\n"
@@ -1737,16 +1747,76 @@ class JoeWindow(QMainWindow):
         buttons.addWidget(self.colab_open_button)
         buttons.addStretch(1)
 
+        model_upload_group = QGroupBox("Modelos no Google Drive — sem ZIP")
+        model_upload_layout = QVBoxLayout(model_upload_group)
+        model_upload_description = QLabel(
+            "Selecione uma pasta local que contenha model.safetensors e tokenizer.json "
+            "correspondentes à variante atualmente escolhida na aba Texto → Áudio. "
+            "O Colab grava os arquivos no Drive e cria o YAML compatível."
+        )
+        model_upload_description.setObjectName("muted")
+        model_upload_description.setWordWrap(True)
+        model_upload_layout.addWidget(model_upload_description)
+        model_upload_layout.addWidget(self.colab_upload_model_button)
+
         layout.addWidget(title)
         layout.addWidget(description)
         layout.addLayout(form)
         layout.addLayout(buttons)
+        layout.addWidget(model_upload_group)
         layout.addWidget(self.colab_status)
         layout.addWidget(self.colab_info)
         layout.addStretch(1)
 
         self._update_mode_widgets()
         return page
+
+    def _upload_colab_model(self) -> None:
+        directory = QFileDialog.getExistingDirectory(
+            self,
+            "Selecionar pasta do modelo Pocket TTS",
+            str(Path.home()),
+        )
+        if not directory:
+            return
+        language = str(self.tts_language.currentData() or "portuguese")
+        model_variant = str(self.tts_model_variant.currentData() or language)
+        try:
+            client = self._colab_client()
+        except ValueError as exc:
+            QMessageBox.information(self, "Configure a API do Colab", str(exc))
+            return
+
+        folder = Path(directory)
+
+        def upload() -> dict:
+            return client.upload_model_bundle(folder, language, model_variant)
+
+        self._run_task(
+            f"Enviando {model_variant} ao Google Drive do Colab em blocos…",
+            upload,
+            self._colab_model_uploaded,
+        )
+
+    def _colab_model_uploaded(self, result: object) -> None:
+        data = result if isinstance(result, dict) else {}
+        variant = str(data.get("model_variant") or "modelo")
+        manifest = data.get("manifest") if isinstance(data.get("manifest"), dict) else {}
+        size_mb = (
+            int(manifest.get("checkpoint_size", 0))
+            + int(manifest.get("tokenizer_size", 0))
+        ) / (1024 * 1024)
+        QMessageBox.information(
+            self,
+            "Modelo instalado no Google Drive",
+            f"Variante: {variant}\n"
+            f"Tamanho transferido: {size_mb:.1f} MB\n"
+            "O modelo foi validado e salvo em arquivos individuais no Drive. "
+            "Vozes selecionadas serão preparadas pelo próprio Colab durante a geração.",
+        )
+        self.statusBar().showMessage(
+            f"Modelo {variant} instalado no Google Drive.", 7000
+        )
 
     def _save_colab_settings(self, *_args) -> None:
         if hasattr(self, "processing_mode"):
@@ -1853,7 +1923,7 @@ class JoeWindow(QMainWindow):
     def _open_colab_notebook(self) -> None:
         url = (
             "https://colab.research.google.com/github/g4b3r-desktop/joe/"
-            "blob/feature/joe-studio-improvements/colab/Joe_Colab_API.ipynb"
+            "blob/feature/colab-drive-direct-assets/colab/Joe_Colab_API.ipynb"
         )
         QDesktopServices.openUrl(QUrl(url))
 
@@ -4869,6 +4939,7 @@ class JoeWindow(QMainWindow):
             self.asr_device,
             self.timestamps_check,
             self.colab_test_button,
+            self.colab_upload_model_button,
         ):
             widget.setEnabled(not busy)
         if busy:
