@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import sys
 from pathlib import Path
@@ -58,13 +59,15 @@ def test_resolve_voice_state_rejects_other_model_fingerprint(tmp_path):
     voice_id = "kessya-abc123"
     voice_dir = root / "voices" / variant / voice_id
     voice_dir.mkdir(parents=True)
-    (voice_dir / "voice_state.safetensors").write_bytes(b"state")
+    state_file = voice_dir / "voice_state.safetensors"
+    state_file.write_bytes(b"state")
     (voice_dir / "metadata.json").write_text(
         json.dumps(
             {
                 "voice_id": voice_id,
                 "model_variant": variant,
                 "model_fingerprint": "old-fingerprint",
+                "voice_state_sha256": hashlib.sha256(state_file.read_bytes()).hexdigest(),
             }
         ),
         encoding="utf-8",
