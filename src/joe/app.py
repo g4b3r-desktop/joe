@@ -2071,7 +2071,9 @@ class JoeWindow(QMainWindow):
         self.colab_test_button.setObjectName("primaryButton")
         self.colab_test_button.clicked.connect(self._test_colab_connection)
 
-        self.colab_upload_model_button = QPushButton("Localizar modelos e escolher o que enviar…")
+        self.colab_upload_model_button = QPushButton(
+            "Localizar modelos e escolher o que enviar…"
+        )
         self.colab_upload_model_button.setToolTip(
             "O Joe procura automaticamente os modelos Pocket TTS no cache Hugging Face "
             "e nas pastas adicionadas. Selecione um ou mais modelos para enviar ao Drive."
@@ -2088,8 +2090,8 @@ class JoeWindow(QMainWindow):
         self.colab_info = QLabel(
             "1. Abra o notebook do branch de armazenamento direto e execute as células.\n"
             "2. Copie a URL e o token exibidos no final e cole nos campos acima.\n"
-            "3. Envie a pasta languages/<idioma> do snapshot Hugging Face; o Joe "
-            "localiza os pesos e busca o tokenizer da mesma revisão automaticamente.\n"
+            "3. Clique em 'Localizar modelos e escolher o que enviar' para listar os "
+            "modelos encontrados e marcar somente os que deseja instalar no Drive.\n"
             "4. Selecione um áudio original no Joe; ele será enviado e preparado no Colab.\n\n"
             "Modelos, áudios originais e estados de voz ficam em arquivos individuais no Google Drive. "
             "O novo fluxo não utiliza JOE_MODELS.zip.\n\n"
@@ -2220,18 +2222,18 @@ class JoeWindow(QMainWindow):
             lines.append(
                 f"✗ {item.get('model_variant')}: {item.get('error', 'falha sem detalhes')}"
             )
-        message = "\\n".join(lines) or "Nenhum modelo foi enviado."
+        message = "\n".join(lines) or "Nenhum modelo foi enviado."
         if failures:
             QMessageBox.warning(
                 self,
                 "Envio de modelos concluído com pendências",
-                f"Enviados: {len(successes)} · Falhas: {len(failures)}\\n\\n{message}",
+                f"Enviados: {len(successes)} · Falhas: {len(failures)}\n\n{message}",
             )
         else:
             QMessageBox.information(
                 self,
                 "Modelos instalados no Google Drive",
-                f"{len(successes)} modelo(s) enviado(s) e validado(s):\\n\\n{message}",
+                f"{len(successes)} modelo(s) enviado(s) e validado(s):\n\n{message}",
             )
         self.statusBar().showMessage(
             f"Envio de modelos concluído: {len(successes)} sucesso(s), "
