@@ -267,7 +267,7 @@ class PhraseItemDelegate(QStyledItemDelegate):
         if width <= 0:
             width = 620
         text = str(index.data(Qt.ItemDataRole.DisplayRole) or "")
-        document = self._document(text, option.font, width - 132)
+        document = self._document(text, option.font, width - 154)
         return QSize(width, max(48, int(document.size().height()) + 22))
 
     def paint(self, painter: QPainter, option, index) -> None:
@@ -290,6 +290,9 @@ class PhraseItemDelegate(QStyledItemDelegate):
         painter.fillRect(rect.left() + 12, separator_y, max(0, rect.width() - 24), 1, QColor(p['separator']))
 
         number = str(index.data(Qt.ItemDataRole.UserRole) or "").zfill(3)
+        number_font = option.font
+        number_font.setPointSizeF(max(9.0, number_font.pointSizeF() - 1.0))
+        painter.setFont(number_font)
         painter.setPen(QColor(p['text_muted']))
         painter.drawText(
             rect.adjusted(15, 0, -rect.width() + 55, 0),
@@ -303,12 +306,16 @@ class PhraseItemDelegate(QStyledItemDelegate):
             marker, marker_color = "!", p['danger']
         else:
             marker, marker_color = "gerando…", p['pending']
+        marker_font = option.font
+        marker_font.setPointSizeF(max(8.0, marker_font.pointSizeF() - 3.0))
+        painter.setFont(marker_font)
         painter.setPen(QColor(marker_color))
         painter.drawText(
             rect.adjusted(58, 0, -rect.width() + 112, 0),
             Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft,
             marker,
         )
+        painter.setFont(option.font)
 
         text = str(index.data(Qt.ItemDataRole.DisplayRole) or "")
         text_rect = rect.adjusted(112, 7, -42, -7)
@@ -328,6 +335,14 @@ class PhraseItemDelegate(QStyledItemDelegate):
                 "▶",
             )
         painter.restore()
+
+
+class PhraseListWidget(QListWidget):
+    """Recalcula as alturas quando a largura da lista muda."""
+
+    def resizeEvent(self, event) -> None:  # noqa: N802
+        super().resizeEvent(event)
+        self.doItemsLayout()
 
 
 class ClipboardAudioDialog(QDialog):
@@ -473,7 +488,7 @@ class ClipboardAudioDialog(QDialog):
         self.status_label.setWordWrap(True)
         root.addWidget(self.status_label)
 
-        self.phrase_list = QListWidget(self)
+        self.phrase_list = PhraseListWidget(self)
         self.phrase_list.setItemDelegate(PhraseItemDelegate(self.phrase_list))
         self.phrase_list.setWordWrap(True)
         self.phrase_list.setTextElideMode(Qt.TextElideMode.ElideNone)
@@ -703,7 +718,7 @@ class ClipboardAudioDialog(QDialog):
                 )
         else:
             self.summary_label.setText(
-                f"Áudio pronto · {len(self.phrase_texts)} frases"
+                f"Áudio pronto · {self.total_chunks or len(self.phrase_texts)} frases"
             )
             self.detail_note.setText(
                 "Não foi possível calcular todas as métricas desta geração."
