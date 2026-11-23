@@ -20,6 +20,11 @@ TOKENIZER_MEMBER = (
     "JOE_MODELS/pocket-tts-without-voice-cloning/"
     "languages/portuguese/tokenizer.json"
 )
+MODEL_24L_MEMBER = "JOE_MODELS/pocket-tts/languages/portuguese_24l/model.safetensors"
+TOKENIZER_24L_MEMBER = (
+    "JOE_MODELS/pocket-tts-without-voice-cloning/"
+    "languages/portuguese_24l/tokenizer.json"
+)
 
 
 def _make_safetensors(path: Path) -> Path:
@@ -36,20 +41,35 @@ def _make_safetensors(path: Path) -> Path:
 
 def _make_downloads(tmp_path: Path) -> dict[str, Path]:
     model = _make_safetensors(tmp_path / "model.safetensors")
+    model_24l = _make_safetensors(tmp_path / "model_24l.safetensors")
     tokenizer = tmp_path / "tokenizer.json"
-    tokenizer.write_text(
-        json.dumps({"version": "1.0", "model": {}, "pre_tokenizer": {}}),
-        encoding="utf-8",
+    tokenizer_24l = tmp_path / "tokenizer_24l.json"
+    tokenizer_payload = json.dumps(
+        {"version": "1.0", "model": {}, "pre_tokenizer": {}}
     )
+    tokenizer.write_text(tokenizer_payload, encoding="utf-8")
+    tokenizer_24l.write_text(tokenizer_payload, encoding="utf-8")
     return {
         "languages/portuguese/model.safetensors": model,
         "languages/portuguese/tokenizer.json": tokenizer,
+        "languages/portuguese_24l/model.safetensors": model_24l,
+        "languages/portuguese_24l/tokenizer.json": tokenizer_24l,
     }
 
 
 def _downloader_for(files: dict[str, Path], calls: list[str]):
-    def download(repo_id: str, filename: str, *, token: str | None):
-        assert repo_id == "kyutai/pocket-tts"
+    def download(
+        repo_id: str,
+        filename: str,
+        *,
+        revision: str,
+        token: str | None,
+    ):
+        assert repo_id in {
+            "kyutai/pocket-tts",
+            "kyutai/pocket-tts-without-voice-cloning",
+        }
+        assert revision
         calls.append(filename)
         return files[filename]
 
@@ -67,11 +87,21 @@ def test_creates_drive_zip_and_downloads_missing_assets(tmp_path):
     )
 
     assert result["updated"] is True
-    assert set(result["downloaded"]) == {MODEL_MEMBER, TOKENIZER_MEMBER}
-    assert len(calls) == 2
+    assert set(result["downloaded"]) == {
+        MODEL_MEMBER,
+        TOKENIZER_MEMBER,
+        MODEL_24L_MEMBER,
+        TOKENIZER_24L_MEMBER,
+    }
+    assert len(calls) == 4
     with zipfile.ZipFile(zip_path) as archive:
         assert archive.testzip() is None
-        assert set(archive.namelist()) == {MODEL_MEMBER, TOKENIZER_MEMBER}
+        assert set(archive.namelist()) == {
+            MODEL_MEMBER,
+            TOKENIZER_MEMBER,
+            MODEL_24L_MEMBER,
+            TOKENIZER_24L_MEMBER,
+        }
 
 
 def test_existing_model_is_reused_and_only_missing_tokenizer_is_downloaded(tmp_path):
@@ -87,13 +117,26 @@ def test_existing_model_is_reused_and_only_missing_tokenizer_is_downloaded(tmp_p
         download_file=_downloader_for(files, calls),
     )
 
-    assert calls == ["languages/portuguese/tokenizer.json"]
+    assert calls == [
+        "languages/portuguese/tokenizer.json",
+        "languages/portuguese_24l/model.safetensors",
+        "languages/portuguese_24l/tokenizer.json",
+    ]
     assert result["reused"] == [MODEL_MEMBER]
-    assert result["downloaded"] == [TOKENIZER_MEMBER]
+    assert set(result["downloaded"]) == {
+        TOKENIZER_MEMBER,
+        MODEL_24L_MEMBER,
+        TOKENIZER_24L_MEMBER,
+    }
     with zipfile.ZipFile(zip_path) as archive:
         assert archive.read("user-data/keep.txt") == b"preservar"
-        assert archive.namelist().count(MODEL_MEMBER) == 1
-        assert archive.namelist().count(TOKENIZER_MEMBER) == 1
+        for member in (
+            MODEL_MEMBER,
+            TOKENIZER_MEMBER,
+            MODEL_24L_MEMBER,
+            TOKENIZER_24L_MEMBER,
+        ):
+            assert archive.namelist().count(member) == 1
 
 
 def test_complete_zip_does_not_download_or_rewrite(tmp_path):
@@ -102,6 +145,14 @@ def test_complete_zip_does_not_download_or_rewrite(tmp_path):
     with zipfile.ZipFile(zip_path, "w") as archive:
         archive.write(files["languages/portuguese/model.safetensors"], MODEL_MEMBER)
         archive.write(files["languages/portuguese/tokenizer.json"], TOKENIZER_MEMBER)
+        archive.write(
+            files["languages/portuguese_24l/model.safetensors"],
+            MODEL_24L_MEMBER,
+        )
+        archive.write(
+            files["languages/portuguese_24l/tokenizer.json"],
+            TOKENIZER_24L_MEMBER,
+        )
     original_bytes = zip_path.read_bytes()
     calls: list[str] = []
 
@@ -139,6 +190,14 @@ def test_invalid_existing_model_is_replaced_instead_of_kept(tmp_path):
     with zipfile.ZipFile(zip_path, "w") as archive:
         archive.writestr(MODEL_MEMBER, b"not a safetensors file")
         archive.write(files["languages/portuguese/tokenizer.json"], TOKENIZER_MEMBER)
+        archive.write(
+            files["languages/portuguese_24l/model.safetensors"],
+            MODEL_24L_MEMBER,
+        )
+        archive.write(
+            files["languages/portuguese_24l/tokenizer.json"],
+            TOKENIZER_24L_MEMBER,
+        )
 
     calls: list[str] = []
     result = ensure_portuguese_model_in_zip(
@@ -158,6 +217,14 @@ def test_root_level_archive_keeps_root_layout(tmp_path):
     root_tokenizer = TOKENIZER_MEMBER.removeprefix("JOE_MODELS/")
     with zipfile.ZipFile(zip_path, "w") as archive:
         archive.write(files["languages/portuguese/model.safetensors"], root_model)
+        archive.write(
+            files["languages/portuguese_24l/model.safetensors"],
+            MODEL_24L_MEMBER.removeprefix("JOE_MODELS/"),
+        )
+        archive.write(
+            files["languages/portuguese_24l/tokenizer.json"],
+            TOKENIZER_24L_MEMBER.removeprefix("JOE_MODELS/"),
+        )
 
     calls: list[str] = []
     result = ensure_portuguese_model_in_zip(
@@ -179,6 +246,14 @@ def test_duplicate_model_entries_are_repaired_without_duplicate_files(tmp_path):
         archive.writestr(MODEL_MEMBER, b"old corrupt model")
         archive.write(files["languages/portuguese/model.safetensors"], MODEL_MEMBER)
         archive.write(files["languages/portuguese/tokenizer.json"], TOKENIZER_MEMBER)
+        archive.write(
+            files["languages/portuguese_24l/model.safetensors"],
+            MODEL_24L_MEMBER,
+        )
+        archive.write(
+            files["languages/portuguese_24l/tokenizer.json"],
+            TOKENIZER_24L_MEMBER,
+        )
 
     result = ensure_portuguese_model_in_zip(
         zip_path,
