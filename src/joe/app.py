@@ -1351,8 +1351,8 @@ class ClipboardAudioDialog(QDialog):
                 background: #141f2e;
                 border: 1px solid #2b3b50;
                 border-radius: 12px;
-                margin-top: 13px;
-                padding: 15px 13px 13px 13px;
+                margin-top: 9px;
+                padding: 10px 10px 9px 10px;
                 color: #e7eef8;
                 font-size: 11pt;
                 font-weight: 650;
@@ -1376,9 +1376,9 @@ class ClipboardAudioDialog(QDialog):
                 background: #172b40;
                 border: 1px solid #355b7e;
                 border-radius: 10px;
-                padding: 12px 14px;
+                padding: 8px 10px;
                 color: #eff7ff;
-                font-size: 10.5pt;
+                font-size: 10pt;
                 font-weight: 600;
             }
             QFrame#metricTile {
@@ -1400,16 +1400,16 @@ class ClipboardAudioDialog(QDialog):
                 background: #0e1825;
                 border: 1px solid #2b4057;
                 border-radius: 9px;
-                padding: 10px;
+                padding: 8px;
                 color: #f0f5fb;
                 selection-background-color: #245f9c;
-                font-size: 11pt;
+                font-size: 10.5pt;
             }
             QListWidget {
                 background: #0e1825;
                 border: 1px solid #2b4057;
                 border-radius: 9px;
-                padding: 7px;
+                padding: 5px;
                 color: #edf3fb;
                 font-size: 10.5pt;
                 outline: none;
@@ -1418,8 +1418,8 @@ class ClipboardAudioDialog(QDialog):
                 background: #172435;
                 border: 1px solid #26394f;
                 border-radius: 8px;
-                padding: 9px 11px;
-                margin: 3px 2px;
+                padding: 6px 9px;
+                margin: 2px 1px;
             }
             QListWidget::item:hover {
                 background: #20364d;
@@ -1436,8 +1436,8 @@ class ClipboardAudioDialog(QDialog):
                 border-radius: 12px;
             }
             QPushButton {
-                min-height: 42px;
-                padding: 6px 15px;
+                min-height: 36px;
+                padding: 5px 10px;
                 border: 1px solid #405570;
                 border-radius: 9px;
                 background: #26374d;
@@ -1615,8 +1615,8 @@ class ClipboardAudioDialog(QDialog):
         player_bar = QFrame(self)
         player_bar.setObjectName("playerBar")
         buttons = QHBoxLayout(player_bar)
-        buttons.setContentsMargins(11, 10, 11, 10)
-        buttons.setSpacing(8)
+        buttons.setContentsMargins(8, 7, 8, 7)
+        buttons.setSpacing(6)
         self.play_button = QPushButton("▶  Ouvir áudio completo")
         self.play_button.setObjectName("primaryButton")
         self.play_button.setEnabled(False)
