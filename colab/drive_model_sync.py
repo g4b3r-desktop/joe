@@ -295,7 +295,7 @@ def ensure_portuguese_model_in_zip(
                 limit_gb = max_archive_bytes / 1_000_000_000
                 raise ArchiveSizeLimitError(
                     "O ZIP atualizado ultrapassaria o limite configurado de "
-                    f"{limit_gib:.2f} GiB ({final_size:,} bytes). "
+                    f"{limit_gb:.2f} GB ({final_size:,} bytes). "
                     "O ZIP original no Drive foi preservado."
                 )
 
