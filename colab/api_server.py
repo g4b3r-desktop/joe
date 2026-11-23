@@ -23,6 +23,7 @@ from pocket_tts_compat import (
     load_tts_model,
 )
 from safetensors_validation import validate_safetensors_file
+from upload_file_utils import safe_upload_suffix
 import os, torch
 torch.set_num_threads(os.cpu_count() or 2)
 
@@ -66,12 +67,6 @@ def require_token(authorization: str | None = Header(default=None)) -> None:
     if not hmac.compare_digest(supplied, API_TOKEN):
         raise HTTPException(status_code=401, detail="Token inválido.")
 
-
-def _safe_suffix(filename: str | None) -> str:
-    suffix = Path(filename or "audio.wav").suffix.lower()
-    if not suffix or len(suffix) > 10 or not suffix[1:].isalnum():
-        return ".wav"
-    return suffix
 
 
 async def _read_upload(upload: UploadFile) -> bytes:
@@ -434,7 +429,7 @@ async def submit_tts_job(
             detail="A versão selecionada não está disponível para o idioma informado.",
         )
     voice_data = await _read_upload(voice) if voice is not None else None
-    suffix = _safe_suffix(voice.filename) if voice is not None else ".wav"
+    suffix = safe_upload_suffix(voice.filename) if voice is not None else ".wav"
     voice_filename = (
         (voice.filename or f"voice{suffix}").replace("\\", "/").rsplit("/", 1)[-1]
         if voice is not None else None
@@ -460,7 +455,7 @@ async def submit_transcription_job(
     if timestamps not in {"none", "segment", "word"}:
         raise HTTPException(status_code=422, detail="timestamps deve ser none, segment ou word.")
     audio_data = await _read_upload(audio)
-    suffix = _safe_suffix(audio.filename)
+    suffix = safe_upload_suffix(audio.filename)
     job_id = _submit_job("transcription", _transcribe_job, audio_data, suffix, timestamps)
     return {"job_id": job_id, "status": "queued"}
 
