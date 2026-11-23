@@ -78,29 +78,56 @@ def test_resolve_voice_state_rejects_other_model_fingerprint(tmp_path):
         resolve_voice_state(root, variant, voice_id, "new-fingerprint")
 
 
-def test_voice_state_for_safetensors_export_detaches_and_moves_tensors_to_cpu():
-    import torch
+def test_voice_state_for_safetensors_export_detaches_and_moves_tensors_to_cpu(
+    monkeypatch,
+):
+    import sys
+    from types import SimpleNamespace
 
-    source = torch.arange(4, dtype=torch.float32, requires_grad=True).reshape(2, 2)
-    state = {
-        "flow_lm": {
-            "cache": source,
-            "offset": torch.tensor([3], dtype=torch.long),
-        }
-    }
+    class FakeTensor:
+        def __init__(self, values, device="cuda", requires_grad=True):
+            self.values = values
+            self.device = device
+            self.requires_grad = requires_grad
+            self.was_made_contiguous = False
+
+        def detach(self):
+            return FakeTensor(self.values, self.device, requires_grad=False)
+
+        def to(self, *, device):
+            self.device = device
+            return self
+
+        def contiguous(self):
+            self.was_made_contiguous = True
+            return self
+
+    monkeypatch.setitem(sys.modules, "torch", SimpleNamespace(Tensor=FakeTensor))
+    source = FakeTensor([[1, 2], [3, 4]])
+    state = {"flow_lm": {"cache": source}}
 
     exported = voice_state_for_safetensors_export(state)
+    result = exported["flow_lm"]["cache"]
 
-    assert exported["flow_lm"]["cache"].device.type == "cpu"
-    assert exported["flow_lm"]["cache"].is_contiguous()
-    assert not exported["flow_lm"]["cache"].requires_grad
-    assert torch.equal(exported["flow_lm"]["cache"], source.detach())
-    assert exported["flow_lm"]["offset"].device.type == "cpu"
+    assert result.device == "cpu"
+    assert result.was_made_contiguous
+    assert not result.requires_grad
+    assert result.values == source.values
     # Conversion must not mutate the cached state used by inference.
+    assert source.device == "cuda"
     assert source.requires_grad
 
 
-def test_voice_state_for_safetensors_export_rejects_non_tensor_entries():
+def test_voice_state_for_safetensors_export_rejects_non_tensor_entries(
+    monkeypatch,
+):
+    import sys
+    from types import SimpleNamespace
+
+    class FakeTensor:
+        pass
+
+    monkeypatch.setitem(sys.modules, "torch", SimpleNamespace(Tensor=FakeTensor))
     import pytest
 
     with pytest.raises(TypeError, match="não contém um tensor"):
