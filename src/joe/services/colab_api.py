@@ -9,6 +9,122 @@ from typing import Any
 import httpx
 
 
+def _download_hf_tokenizer(filename: str, revision: str, cache_dir: Path) -> Path:
+    """Download one tokenizer file from the exact Hugging Face model revision."""
+    try:
+        from huggingface_hub import hf_hub_download
+    except ImportError as exc:
+        raise RuntimeError(
+            "O tokenizer.json não está no cache local e huggingface_hub não está "
+            "instalado. Atualize as dependências do Joe para permitir o download automático."
+        ) from exc
+
+    try:
+        downloaded = hf_hub_download(
+            repo_id="kyutai/pocket-tts",
+            filename=filename,
+            revision=revision,
+            cache_dir=str(cache_dir),
+        )
+    except Exception as exc:
+        raise RuntimeError(
+            "O Joe encontrou os pesos no cache do Hugging Face, mas não conseguiu "
+            "obter o tokenizer.json da mesma revisão. Confira sua conexão, execute "
+            "'hf auth login' e aceite as condições de acesso ao repositório "
+            "'kyutai/pocket-tts' no Hugging Face. Detalhe: "
+            f"{type(exc).__name__}: {exc}"
+        ) from exc
+    return Path(downloaded)
+
+
+def _find_model_checkpoint(root: Path, language: str, model_variant: str) -> Path:
+    """Find a model checkpoint in a bundle, language folder, or HF snapshot."""
+    candidates = [
+        root / "model.safetensors",
+        root / "languages" / model_variant / "model.safetensors",
+        root / model_variant / "model.safetensors",
+        root / "languages" / language / "model.safetensors",
+        root / language / "model.safetensors",
+    ]
+    for candidate in candidates:
+        if candidate.is_file():
+            return candidate
+
+    # A snapshot root can contain multiple language folders. Prefer an exact
+    # variant folder, then the language folder; never choose an arbitrary model.
+    for folder_name in (model_variant, language):
+        matches = sorted({
+            path for path in root.glob(f"**/{folder_name}/model.safetensors")
+            if path.is_file()
+        })
+        if len(matches) == 1:
+            return matches[0]
+        if len(matches) > 1:
+            raise FileNotFoundError(
+                f"Foram encontrados vários checkpoints para '{folder_name}' em {root}. "
+                "Selecione a pasta languages/<idioma> do snapshot desejado."
+            )
+
+    raise FileNotFoundError(
+        "Não encontrei model.safetensors na pasta selecionada. Selecione a pasta "
+        "languages/<idioma> do cache Hugging Face, a pasta do snapshot ou uma pasta "
+        "que contenha model.safetensors."
+    )
+
+
+def _resolve_model_bundle_files(
+    root: Path, language: str, model_variant: str
+) -> tuple[Path, Path]:
+    """Resolve the checkpoint and its matching tokenizer, downloading only if needed."""
+    checkpoint = _find_model_checkpoint(root, language, model_variant)
+    tokenizer = checkpoint.parent / "tokenizer.json"
+    if tokenizer.is_file():
+        return checkpoint, tokenizer
+
+    # A generic hand-made bundle may keep the tokenizer one level above the
+    # checkpoint. Do not use this fallback for languages/<id>, where tokenizers
+    # are language-specific.
+    is_language_folder = checkpoint.parent.parent.name == "languages"
+    root_tokenizer = root / "tokenizer.json"
+    if not is_language_folder and root_tokenizer.is_file():
+        return checkpoint, root_tokenizer
+
+    # HF snapshots are immutable revisions. Derive the tokenizer path from the
+    # checkpoint's own path and fetch it from that exact commit, never from main.
+    snapshot_root = next(
+        (
+            ancestor for ancestor in checkpoint.parents
+            if ancestor.parent.name == "snapshots"
+        ),
+        None,
+    )
+    is_official_hf_cache = any(
+        ancestor.name == "models--kyutai--pocket-tts"
+        for ancestor in checkpoint.parents
+    )
+    if snapshot_root is not None and is_official_hf_cache:
+        relative_folder = checkpoint.parent.relative_to(snapshot_root)
+        tokenizer_filename = (relative_folder / "tokenizer.json").as_posix()
+        cached_candidate = snapshot_root / relative_folder / "tokenizer.json"
+        if cached_candidate.is_file():
+            return checkpoint, cached_candidate
+        cache_dir = snapshot_root.parents[2]
+        tokenizer = _download_hf_tokenizer(
+            tokenizer_filename, snapshot_root.name, cache_dir
+        )
+        if not tokenizer.is_file():
+            raise FileNotFoundError(
+                f"O Hugging Face não retornou o tokenizer esperado: {tokenizer}"
+            )
+        return checkpoint, tokenizer
+
+    raise FileNotFoundError(
+        "O arquivo tokenizer.json não foi encontrado junto do modelo. Selecione a "
+        "pasta completa do modelo ou use o snapshot do cache Hugging Face para que "
+        "o Joe baixe automaticamente o tokenizer da mesma revisão."
+    )
+
+
 class ColabAPIError(RuntimeError):
     """Raised when the remote Joe API cannot complete a request."""
 
@@ -189,14 +305,9 @@ class ColabAPIClient:
         root = Path(model_directory).expanduser()
         if not root.is_dir():
             raise NotADirectoryError(f"Pasta do modelo não encontrada: {root}")
-        checkpoint = root / "model.safetensors"
-        tokenizer = root / "tokenizer.json"
-        for file_path in (checkpoint, tokenizer):
-            if not file_path.is_file():
-                raise FileNotFoundError(
-                    "A pasta do modelo precisa conter model.safetensors e tokenizer.json "
-                    f"no nível principal. Arquivo ausente: {file_path}"
-                )
+        checkpoint, tokenizer = _resolve_model_bundle_files(
+            root, language, model_variant
+        )
         payload = {
             "kind": "model",
             "language": language,
