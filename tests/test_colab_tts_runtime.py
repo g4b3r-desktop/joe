@@ -1,7 +1,13 @@
 from __future__ import annotations
 
+import sys
+from pathlib import Path
+
 import numpy as np
 import pytest
+
+COLAB_DIR = Path(__file__).resolve().parents[1] / "colab"
+sys.path.insert(0, str(COLAB_DIR))
 
 from tts_runtime import (
     configure_torch_threads,
