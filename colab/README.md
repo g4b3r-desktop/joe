@@ -9,7 +9,7 @@ Este diretório contém o backend executado dentro de uma sessão Google Colab.
 - requirements.txt: dependências Python do runtime, incluindo o extra `quantize` do Pocket TTS.
 - drive_assets.py: valida, organiza e protege modelos/vozes persistidos em arquivos individuais no Google Drive.
 - drive_model_sync.py: rotina legada do fluxo ZIP; não é importada nem executada pelo notebook de armazenamento direto.
-- [ADDING_TTS_MODELS.md](ADDING_TTS_MODELS.md): guia para integrar outros idiomas/modelos ao Colab, incluindo sincronização, YAML, API, testes e limite do ZIP.
+- [ADDING_TTS_MODELS.md](ADDING_TTS_MODELS.md): guia histórico do fluxo ZIP; não é usado pelo notebook de armazenamento direto.
 
 ## Teste local do servidor (desenvolvimento)
 
