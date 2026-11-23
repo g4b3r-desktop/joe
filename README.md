@@ -15,7 +15,7 @@ O instalador não substitui um comando existente em `Ctrl+Shift+Espaço`. Para r
 - **TTS — [Kyutai Pocket TTS](https://github.com/kyutai-labs/pocket-tts):** gera WAV localmente, roda na CPU e inclui suporte nativo a português, inglês, espanhol, francês, italiano, alemão e neerlandês. O japonês está disponível como opção **experimental**, por meio do modelo comunitário compacto de 6 camadas [takuma104/pocket-tts-ja-cc](https://huggingface.co/takuma104/pocket-tts-ja-cc), com aproximadamente 219 MB de pesos. O Joe baixa configuração, pesos e voz de referência japonesa no primeiro uso, armazenando o cache em `.models/huggingface/`. A versão japonesa de 24 camadas não aparece no seletor. O modelo exige Pocket TTS 3.3.0 ou superior e usa licença CC BY 4.0; atribuição: takuma104, Pocket TTS Japanese (CC BY 4.0), baseado em Kyutai Pocket TTS.
 - **STT — [Moondream Parakeet Redux](https://huggingface.co/moondream/parakeet-redux):** transcrição local em 25 idiomas, com pesos compactados de aproximadamente 178 MB. Quando a implementação Photon compatível está disponível, ela é usada. Em CPUs sem AVX-512 VNNI, o app usa a implementação de referência Transformers; em FP32 ela pode expandir o uso de memória para cerca de 2,5 GB.
 
-No modo Local, o processamento ocorre no próprio computador. No modo Colab, texto e arquivos de áudio selecionados são enviados pela conexão HTTPS ao runtime temporário do Google Colab para inferência. Os pesos são baixados no ambiente em que o modelo estiver sendo executado e permanecem no cache daquele runtime enquanto ele existir.
+No modo Local, o processamento ocorre no próprio computador. No modo Colab, texto e arquivos de voz selecionados (gravações WAV/MP3 ou estados `.safetensors`) são enviados pela conexão HTTPS ao runtime temporário do Google Colab para inferência. Os pesos são baixados no ambiente em que o modelo estiver sendo executado e permanecem no cache daquele runtime enquanto ele existir.
 
 
 ## Modo Google Colab (API remota)
@@ -52,7 +52,7 @@ Todas as rotas exigem `Authorization: Bearer <token>`. A inferência usa uma fil
 
 - O Quick Tunnel é temporário e a URL muda ao reiniciar a sessão. O Colab pode desconectar o runtime por inatividade, limites de uso ou duração máxima; a disponibilidade de GPU não é garantida.
 - A URL e o token devem ser tratados como credenciais. Não publique a saída do notebook nem compartilhe o token. O Joe mantém o token apenas na memória durante a execução e grava somente a URL/modo nas configurações.
-- O modo Colab envia o texto e/ou o áudio para o runtime do Colab através do túnel HTTPS. Não use esse modo para conteúdo que não possa sair do computador.
+- O modo Colab envia o texto e os arquivos de voz selecionados (incluindo estados `.safetensors`) para o runtime do Colab através do túnel HTTPS. Não use esse modo para conteúdo que não possa sair do computador.
 - Feche a sessão quando terminar. O notebook inclui uma célula para encerrar o servidor e o túnel.
 - O Quick Tunnel é voltado a desenvolvimento/uso pessoal temporário; não é um endpoint de produção com disponibilidade garantida.
 
