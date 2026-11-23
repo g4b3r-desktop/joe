@@ -35,3 +35,31 @@ def test_colab_uses_japanese_preset_voice_unless_user_configured_one():
     assert default_voice_for_language("japanese", None) == JAPANESE_DEFAULT_VOICE
     assert default_voice_for_language("japanese", "/voices/custom.wav") == JAPANESE_DEFAULT_VOICE
     assert default_voice_for_language("portuguese", "/voices/custom.wav") == "/voices/custom.wav"
+
+
+
+def test_colab_forwards_quality_sampler_steps_when_configured():
+    calls = []
+
+    class FakeTTSModel:
+        @staticmethod
+        def load_model(**kwargs):
+            calls.append(kwargs)
+            return "loaded"
+
+    result = load_tts_model(
+        FakeTTSModel,
+        "portuguese",
+        "portuguese_24l",
+        quantize=False,
+        sampler_decode_steps=5,
+    )
+
+    assert result == "loaded"
+    assert calls == [
+        {
+            "language": "portuguese_24l",
+            "quantize": False,
+            "sampler_decode_steps": 5,
+        }
+    ]
