@@ -104,16 +104,19 @@ def _is_valid_file(path: Path, kind: str) -> bool:
 
 
 def _archive_prefix(names: list[str]) -> str:
-    markers = tuple(MODEL_ASSETS)
-    for marker in markers:
-        for name in names:
-            if name.endswith(marker):
-                return name[: -len(marker)]
-    if any(name.startswith("pocket-tts/") for name in names):
-        return ""
-    if any(name.startswith("JOE_MODELS/") for name in names):
-        return "JOE_MODELS/"
-    return "JOE_MODELS/"
+    """Choose the existing root layout with the most known model assets."""
+    nested_prefix = "JOE_MODELS/"
+    root_score = sum(member in names for member in MODEL_ASSETS)
+    nested_score = sum(nested_prefix + member in names for member in MODEL_ASSETS)
+
+    if root_score or nested_score:
+        return nested_prefix if nested_score > root_score else ""
+
+    if any(name.startswith(nested_prefix) for name in names):
+        return nested_prefix
+    # For an existing ZIP containing other root-level assets, add models at root.
+    # An empty archive uses the notebook's conventional JOE_MODELS/ directory.
+    return "" if names else nested_prefix
 
 
 def _default_download(
