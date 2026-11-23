@@ -261,6 +261,7 @@ class AudioHistoryPanel(QWidget):
         layout.addWidget(self.summary)
 
         self.table.itemSelectionChanged.connect(self._update_action_state)
+        self._update_action_state()
 
     @staticmethod
     def _format_generation_settings(settings_json: str) -> str:
