@@ -65,15 +65,22 @@ O notebook espera o arquivo compactado:
 Meu Drive/3d_models_ia/modelos-voz/JOE_MODELS.zip
 ~~~
 
-Dentro do ZIP, mantenha esta estrutura (ela pode estar diretamente na raiz ou dentro de uma pasta `JOE_MODELS/`):
+Dentro do ZIP, o notebook mantém as duas variantes portuguesas (a estrutura pode estar diretamente na raiz ou dentro de uma pasta `JOE_MODELS/`):
 
 ~~~text
-pocket-tts/languages/portuguese/model.safetensors
-pocket-tts-without-voice-cloning/languages/portuguese/tokenizer.json
-huggingface-cache/
+pocket-tts/
+└── languages/
+    ├── portuguese/model.safetensors
+    └── portuguese_24l/model.safetensors
+pocket-tts-without-voice-cloning/
+└── languages/
+    ├── portuguese/tokenizer.json
+    └── portuguese_24l/tokenizer.json
 ~~~
 
-Ao clicar em **Aplicar pastas e modelos**, o notebook extrai o ZIP para `/content/joe/models/` no armazenamento local da sessão Colab e aponta a configuração para os arquivos extraídos. O Pocket TTS não é carregado diretamente de dentro do ZIP. A extração precisa ser repetida quando uma nova sessão Colab for iniciada, pois `/content` é temporário.
+Ao clicar em **Aplicar pastas e modelos**, o notebook verifica os quatro arquivos (dois checkpoints e dois tokenizers). Se todos estiverem válidos, não baixa nada. Se faltar algum ou estiver inválido, baixa somente esse arquivo da revisão oficial correspondente e atualiza o ZIP do Drive, preservando o restante do conteúdo. O ZIP é gravado apenas se o resultado validado não ultrapassar **4 GiB**; em caso de erro ou excesso, o arquivo anterior é preservado.
+
+Depois, o notebook extrai o ZIP para `/content/joe/models/` no armazenamento local da sessão Colab e gera dois YAMLs independentes: `portuguese_from_drive.yaml` e `portuguese_24l_from_drive.yaml`. A API seleciona o YAML correspondente a `model_variant`. O Pocket TTS não é carregado diretamente de dentro do ZIP. A extração precisa ser repetida quando uma nova sessão Colab for iniciada, pois `/content` é temporário.
 
 O campo **Arquivo ZIP** permite alterar o caminho do arquivo. O notebook verifica se o ZIP existe e se contém a pasta `pocket-tts`; também aceita uma pasta externa `JOE_MODELS/`. O caminho do tokenizer é preenchido automaticamente com base na estrutura esperada, mas pode ser ajustado no campo correspondente.
 
@@ -86,18 +93,20 @@ O notebook configura `weights_path` para o checkpoint de clonagem em `pocket-tts
 
 A voz de referência padrão não é mais um endereço `hf://`. Se o Joe não enviar um WAV na requisição, configure um WAV local no campo **Voz padrão WAV**. Os arquivos de voz em formato WAV são áudio de referência; não são os pesos do modelo.
 
-### Sincronização automática do modelo no ZIP do Drive
+### Sincronização automática dos modelos no ZIP do Drive
 
-Ao aplicar a configuração do Drive, o notebook verifica estes dois arquivos do Pocket TTS português:
+Ao aplicar a configuração do Drive, o notebook verifica os quatro arquivos das variantes portuguesas padrão e 24L:
 
 - `pocket-tts/languages/portuguese/model.safetensors`
 - `pocket-tts-without-voice-cloning/languages/portuguese/tokenizer.json`
+- `pocket-tts/languages/portuguese_24l/model.safetensors`
+- `pocket-tts-without-voice-cloning/languages/portuguese_24l/tokenizer.json`
 
-A origem é o repositório oficial `kyutai/pocket-tts` no Hugging Face. Se o ZIP não existir, ele será criado. Se um arquivo estiver ausente ou inválido, somente o arquivo necessário será baixado e adicionado ao ZIP. Os demais itens existentes no arquivo são preservados.
+As origens e revisões estão fixadas de acordo com os YAMLs oficiais do Pocket TTS. Se o ZIP não existir, ele será criado. Se algum arquivo estiver ausente, duplicado ou inválido, somente o arquivo necessário será baixado e substituído. Os demais itens existentes no arquivo são preservados.
 
-O tamanho máximo do ZIP atualizado é **4 GiB (4.294.967.296 bytes)**. Se a estimativa ou o tamanho final ultrapassar esse valor, a atualização é cancelada e o ZIP anterior não é substituído.
+O tamanho máximo do ZIP atualizado é **4 GiB (4.294.967.296 bytes)**. O ZIP temporário é validado antes da substituição; se o tamanho final ultrapassar o limite ou ocorrer um erro, o ZIP anterior não é substituído.
 
-Como o repositório do modelo exige aceitar as condições de acesso, o usuário precisa aceitar os termos em <https://huggingface.co/kyutai/pocket-tts> e criar um token Hugging Face com permissão de leitura. Salve-o no painel **Secrets** do Colab como `HF_TOKEN` e habilite **Notebook access**. O token não é gravado no Drive, no ZIP nem no notebook. Caso os dois arquivos já estejam válidos no ZIP, não é necessário informar o token.
+Como os repositórios do modelo exigem aceitar as condições de acesso, aceite os termos em <https://huggingface.co/kyutai/pocket-tts> e crie um token Hugging Face com permissão de leitura. Salve-o no painel **Secrets** do Colab como `HF_TOKEN` e habilite **Notebook access**. O token não é gravado no Drive, no ZIP nem no notebook. Se os quatro arquivos já estiverem válidos, o download e o token não serão necessários.
 
-A rotina de sincronização fica em `colab/drive_model_sync.py`; seus testes automatizados ficam em `tests/test_colab_drive_model_sync.py`.
+A variante `portuguese_24l` usa os próprios pesos, tokenizer e YAML; não compartilha os arquivos da versão padrão. Estados de voz `.safetensors` preparados para 24L devem ser usados com a variante 24L. A rotina fica em `colab/drive_model_sync.py`, com testes em `tests/test_colab_drive_model_sync.py`.
 
