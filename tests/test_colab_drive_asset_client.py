@@ -6,7 +6,7 @@ from pathlib import Path
 
 import httpx
 
-from joe.services.colab_api import ColabAPIClient
+from joe.services.colab_api import ColabAPIClient, ColabAPIError
 
 
 def _client():
@@ -75,7 +75,7 @@ def test_prepare_voice_uploads_reference_audio_and_returns_voice_id(monkeypatch,
         "list_assets",
         lambda: {
             "models": [{
-                "model_variant": "portuguese",
+                "model_variant": "portuguese_24l",
                 "checkpoint_sha256": "a" * 64,
                 "tokenizer_sha256": "b" * 64,
                 "pocket_tts_version": "4.0.1",
@@ -137,7 +137,7 @@ def test_prepare_voice_fails_clearly_when_model_is_missing_from_drive(
 
     try:
         client.prepare_voice(audio, "portuguese", "portuguese", name="male_05")
-    except Exception as exc:
+    except ColabAPIError as exc:
         assert "não foi encontrado no Google Drive" in str(exc)
         assert "Envie primeiro" in str(exc)
     else:
