@@ -14,6 +14,7 @@ on:
       - feat/colab-drive-model-autosync
       - fix/colab-tts-safetensors-diagnostics
       - fix/colab-safetensors-upload-suffix
+      - feature/colab-drive-direct-assets
   pull_request:
     branches:
       - main
