@@ -140,7 +140,7 @@ def ensure_portuguese_model_in_zip(
     max_archive_bytes: int = MAX_ARCHIVE_BYTES,
     download_file: Callable[..., str | Path] | None = None,
 ) -> dict[str, Any]:
-    """Ensure the Portuguese Pocket TTS checkpoint and tokenizer are in a Drive ZIP.
+    """Ensure both Portuguese Pocket TTS variants are available in a Drive ZIP.
 
     Existing ZIP members are preserved. Only missing or invalid model assets are
     downloaded, and the original ZIP is replaced only after the new archive has
