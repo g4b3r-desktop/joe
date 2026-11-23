@@ -4,7 +4,7 @@ import shutil
 from pathlib import Path
 
 from PySide6.QtCore import QSettings, QSize, QUrl, Qt, Signal
-from PySide6.QtGui import QColor, QKeySequence, QPainter, QShortcut, QTextDocument, QTextOption
+from PySide6.QtGui import QColor, QFont, QKeySequence, QPainter, QShortcut, QTextDocument, QTextOption
 from PySide6.QtMultimedia import QMediaPlayer
 from PySide6.QtWidgets import (
     QApplication,
@@ -329,6 +329,20 @@ class ClickableSeekSlider(QSlider):
 class PhraseItemDelegate(QStyledItemDelegate):
     """Draw simple wrapped phrase rows with progress, hover and active states."""
 
+    def __init__(self, parent=None, appearance: dict[str, object] | None = None) -> None:
+        super().__init__(parent)
+        self.appearance = dict(DEFAULT_CLIPBOARD_DIALOG_APPEARANCE)
+        if appearance:
+            self.appearance.update(appearance)
+
+    def _palette(self) -> dict[str, str]:
+        palette = dict(CLIPBOARD_DIALOG_PALETTE)
+        palette.update(CLIPBOARD_DIALOG_ACCENTS.get(
+            str(self.appearance.get("accent", "blue")),
+            CLIPBOARD_DIALOG_ACCENTS["blue"],
+        ))
+        return palette
+
     def _document(self, text: str, font, width: int) -> QTextDocument:
         document = QTextDocument()
         document.setDocumentMargin(0)
@@ -352,10 +366,11 @@ class PhraseItemDelegate(QStyledItemDelegate):
             width = 620
         text = str(index.data(Qt.ItemDataRole.DisplayRole) or "")
         document = self._document(text, option.font, width - 154)
-        return QSize(width, max(48, int(document.size().height()) + 22))
+        spacing = int(self.appearance.get("row_spacing", 0))
+        return QSize(width, max(48, int(document.size().height()) + 22 + spacing * 2))
 
     def paint(self, painter: QPainter, option, index) -> None:
-        p = CLIPBOARD_DIALOG_PALETTE
+        p = self._palette()
         rect = option.rect
         active = bool(index.data(Qt.ItemDataRole.UserRole + 2))
         generated = bool(index.data(Qt.ItemDataRole.UserRole + 1))
@@ -402,7 +417,7 @@ class PhraseItemDelegate(QStyledItemDelegate):
         painter.setFont(option.font)
 
         text = str(index.data(Qt.ItemDataRole.DisplayRole) or "")
-        text_rect = rect.adjusted(112, 7, -42, -7)
+        spacing = int(self.appearance.get("row_spacing", 0))\n        text_rect = rect.adjusted(112, 7 + spacing, -42, -7 - spacing)
         document = self._document(text, option.font, text_rect.width())
         text_height = document.size().height()
         text_top = text_rect.top() + max(0.0, (text_rect.height() - text_height) / 2)
@@ -474,6 +489,7 @@ class ClipboardAudioDialog(QDialog):
         self.is_closing = False
         self.failure_details = ""
         self._settings = QSettings("g4b3r-desktop", "JoeAudioStudio")
+        self.appearance = load_clipboard_dialog_appearance(self._settings)
 
         self.setWindowTitle("Joe — Áudio do atalho")
         self.setWindowFlags(Qt.WindowType.Window)
@@ -578,7 +594,7 @@ class ClipboardAudioDialog(QDialog):
         self.phrase_list.setTextElideMode(Qt.TextElideMode.ElideNone)
         self.phrase_list.setMouseTracking(True)
         self.phrase_list.viewport().setMouseTracking(True)
-        self.phrase_list.setSpacing(0)
+        self.phrase_list.setSpacing(int(self.appearance["row_spacing"]))
         self.phrase_list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.phrase_list.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         self.phrase_list.setSelectionMode(QListWidget.SelectionMode.SingleSelection)
@@ -696,6 +712,31 @@ class ClipboardAudioDialog(QDialog):
         self._add_shortcut("Return", self._play_selected_phrase)
         self._add_shortcut("Enter", self._play_selected_phrase)
         self._add_shortcut("Escape", self.close)
+
+    def _appearance_font(self, *, auxiliary: bool = False) -> QFont:
+        font = QFont(str(self.appearance["font_family"]))
+        size_key = "auxiliary_font_size" if auxiliary else "phrase_font_size"
+        font.setPixelSize(int(self.appearance[size_key]))
+        return font
+
+    def apply_appearance_settings(self) -> None:
+        """Apply appearance preferences immediately to an open shortcut window."""
+        self.appearance = load_clipboard_dialog_appearance(self._settings)
+        self.setStyleSheet(_dialog_stylesheet(self.appearance))
+        self.setFont(self._appearance_font(auxiliary=True))
+        if hasattr(self, "_root_layout"):
+            padding = int(self.appearance["window_padding"])
+            self._root_layout.setContentsMargins(
+                padding, max(10, padding - 4), padding, max(10, padding - 6)
+            )
+        if hasattr(self, "phrase_list"):
+            self.phrase_list.setFont(self._appearance_font())
+            self.phrase_list.setItemDelegate(
+                PhraseItemDelegate(self.phrase_list, self.appearance)
+            )
+            self.phrase_list.setSpacing(int(self.appearance["row_spacing"]))
+            self.phrase_list.doItemsLayout()
+            self.phrase_list.viewport().update()
 
     def _add_shortcut(self, key: str, callback) -> None:
         shortcut = QShortcut(QKeySequence(key), self)
