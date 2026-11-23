@@ -210,8 +210,8 @@ class AudioHistoryStore:
             ).fetchone()
         return self._entry(row) if row is not None else None
 
-    def list_entries(
-        self,
+    @staticmethod
+    def _entry_filters(
         *,
         search: str = "",
         voice: str = "",
@@ -219,7 +219,7 @@ class AudioHistoryStore:
         date_to: str = "",
         min_duration: float | None = None,
         max_duration: float | None = None,
-    ) -> list[AudioHistoryEntry]:
+    ) -> tuple[str, list[object]]:
         clauses: list[str] = []
         values: list[object] = []
 
@@ -251,12 +251,64 @@ class AudioHistoryStore:
             values.append(float(max_duration))
 
         where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        return where, values
+
+    def list_entries(
+        self,
+        *,
+        search: str = "",
+        voice: str = "",
+        date_from: str = "",
+        date_to: str = "",
+        min_duration: float | None = None,
+        max_duration: float | None = None,
+        limit: int | None = None,
+        offset: int = 0,
+    ) -> list[AudioHistoryEntry]:
+        where, values = self._entry_filters(
+            search=search,
+            voice=voice,
+            date_from=date_from,
+            date_to=date_to,
+            min_duration=min_duration,
+            max_duration=max_duration,
+        )
+        query = (
+            f"SELECT * FROM audio_history {where} "
+            "ORDER BY created_at DESC, id DESC"
+        )
+        if limit is not None:
+            page_size = max(1, min(int(limit), 1000))
+            query += " LIMIT ? OFFSET ?"
+            values.extend((page_size, max(0, int(offset))))
+
         with self._connect() as connection:
-            rows = connection.execute(
-                f"SELECT * FROM audio_history {where} ORDER BY created_at DESC, id DESC",
-                values,
-            ).fetchall()
+            rows = connection.execute(query, values).fetchall()
         return [self._entry(row) for row in rows]
+
+    def count_entries(
+        self,
+        *,
+        search: str = "",
+        voice: str = "",
+        date_from: str = "",
+        date_to: str = "",
+        min_duration: float | None = None,
+        max_duration: float | None = None,
+    ) -> int:
+        where, values = self._entry_filters(
+            search=search,
+            voice=voice,
+            date_from=date_from,
+            date_to=date_to,
+            min_duration=min_duration,
+            max_duration=max_duration,
+        )
+        with self._connect() as connection:
+            row = connection.execute(
+                f"SELECT COUNT(*) AS total FROM audio_history {where}", values
+            ).fetchone()
+        return int(row["total"]) if row is not None else 0
 
     def available_voices(self) -> list[str]:
         with self._connect() as connection:
