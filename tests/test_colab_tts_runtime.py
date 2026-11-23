@@ -15,6 +15,7 @@ from tts_runtime import (
     inspect_audio_samples,
     resolve_cpu_threads,
     resolve_tts_device,
+    voice_state_for_safetensors_export,
 )
 
 
@@ -93,3 +94,35 @@ def test_audio_diagnostics_reject_silence_and_non_finite_values():
     broken[100] = np.nan
     with pytest.raises(RuntimeError, match="NaN ou infinito"):
         inspect_audio_samples(broken, 24_000)
+
+
+
+def test_voice_state_export_copies_tensors_to_cpu_and_contiguous():
+    class FakeTensor:
+        def __init__(self, device="cuda", contiguous=False):
+            self.device = device
+            self.is_contiguous = contiguous
+
+        def detach(self):
+            return self
+
+        def to(self, device):
+            return FakeTensor(device=device, contiguous=False)
+
+        def contiguous(self):
+            return FakeTensor(device=self.device, contiguous=True)
+
+    original = FakeTensor()
+    cpu_state = voice_state_for_safetensors_export(
+        {"flow_lm": {"cache": original}}
+    )
+
+    result = cpu_state["flow_lm"]["cache"]
+    assert result.device == "cpu"
+    assert result.is_contiguous is True
+    assert original.device == "cuda"
+
+
+def test_voice_state_export_rejects_non_tensor_values():
+    with pytest.raises(TypeError, match="não é tensor PyTorch"):
+        voice_state_for_safetensors_export({"flow_lm": {"cache": [1, 2, 3]}})
