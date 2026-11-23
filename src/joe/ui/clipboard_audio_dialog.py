@@ -250,7 +250,7 @@ class PhraseItemDelegate(QStyledItemDelegate):
         document.setDocumentMargin(0)
         document.setDefaultFont(font)
         document.setDefaultStyleSheet(
-            f"body {{ color: {CLIPBOARD_DIALOG_PALETTE[\"text\"]}; }}"
+            f"body {{ color: {CLIPBOARD_DIALOG_PALETTE['text']}; }}"
         )
         document.setPlainText(text)
         option = QTextOption()
