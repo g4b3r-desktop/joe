@@ -8,7 +8,7 @@ import shutil
 from pathlib import Path
 from typing import Any
 
-VOICE_AUDIO_SUFFIXES = {".wav", ".flac", ".mp3", ".ogg", ".m4a", ".aac"}
+VOICE_AUDIO_SUFFIXES = {".wav", ".flac", ".mp3", ".ogg"}
 
 
 def safe_asset_name(value: str, *, fallback: str = "voice") -> str:
@@ -78,6 +78,11 @@ def resolve_voice_state(
     metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
     if metadata.get("model_variant") != model_variant:
         raise ValueError("A voz foi preparada para outra variante de modelo.")
+    if metadata.get("voice_id") != voice_id:
+        raise ValueError("O arquivo de metadados não corresponde ao identificador da voz.")
+    expected_state_hash = str(metadata.get("voice_state_sha256", ""))
+    if not expected_state_hash or sha256_file(state_path) != expected_state_hash:
+        raise ValueError("O estado de voz no Google Drive está corrompido ou incompleto.")
     if metadata.get("model_fingerprint") != expected_fingerprint:
         raise ValueError(
             "A voz foi preparada com outros pesos/tokenizer. Reenvie o áudio original "
