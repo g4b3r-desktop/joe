@@ -57,66 +57,66 @@ def _dialog_stylesheet() -> str:
     p = CLIPBOARD_DIALOG_PALETTE
     return f"""
         QDialog {{
-            background: {p["window"]};
-            color: {p["text"]};
+            background: {p['window']};
+            color: {p['text']};
             font-family: "Noto Sans", "DejaVu Sans", sans-serif;
             font-size: 14px;
         }}
         QLabel {{
             background: transparent;
-            color: {p["text"]};
+            color: {p['text']};
             font-size: 14px;
         }}
         QLabel#brand {{
-            background: {p["blue"]};
-            color: {p["on_blue"]};
+            background: {p['blue']};
+            color: {p['on_blue']};
             border-radius: 6px;
             padding: 4px 9px;
             font-size: 13px;
             font-weight: 800;
         }}
         QLabel#dialogTitle {{
-            color: {p["text"]};
+            color: {p['text']};
             font-size: 16px;
             font-weight: 700;
         }}
         QLabel#preview {{
-            color: {p["text_secondary"]};
+            color: {p['text_secondary']};
             font-size: 13px;
         }}
         QLabel#summary {{
-            color: {p["text_secondary"]};
+            color: {p['text_secondary']};
             font-size: 13px;
         }}
         QLabel#status {{
-            color: {p["text_secondary"]};
+            color: {p['text_secondary']};
             font-size: 13px;
         }}
         QLabel#detailValue {{
-            color: {p["text"]};
+            color: {p['text']};
             font-size: 13px;
         }}
         QLabel#detailCaption {{
-            color: {p["text_muted"]};
+            color: {p['text_muted']};
             font-size: 12px;
         }}
         QToolButton {{
             background: transparent;
             border: 0;
-            color: {p["text_secondary"]};
+            color: {p['text_secondary']};
             padding: 4px 6px;
             font-size: 13px;
         }}
         QToolButton:hover {{
-            color: {p["text"]};
-            background: {p["surface_hover"]};
+            color: {p['text']};
+            background: {p['surface_hover']};
         }}
         QListWidget {{
             background: transparent;
             border: 0;
             outline: none;
             padding: 0;
-            color: {p["text"]};
+            color: {p['text']};
             font-size: 14px;
         }}
         QListWidget::item {{
@@ -131,12 +131,12 @@ def _dialog_stylesheet() -> str:
             margin: 2px 1px 2px 1px;
         }}
         QScrollBar::handle:vertical {{
-            background: {p["slider_track"]};
+            background: {p['slider_track']};
             min-height: 28px;
             border-radius: 3px;
         }}
         QScrollBar::handle:vertical:hover {{
-            background: {p["text_muted"]};
+            background: {p['text_muted']};
         }}
         QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{
             height: 0;
@@ -147,74 +147,74 @@ def _dialog_stylesheet() -> str:
         QPushButton#playButton {{
             min-width: 38px;
             min-height: 34px;
-            background: {p["blue_soft"]};
+            background: {p['blue_soft']};
             border: 0;
             border-radius: 8px;
-            color: {p["on_blue"]};
+            color: {p['on_blue']};
             font-size: 17px;
             font-weight: 700;
         }}
         QPushButton#playButton:hover {{
-            background: {p["blue"]};
+            background: {p['blue']};
         }}
         QPushButton#playButton:disabled, QPushButton#saveButton:disabled {{
-            color: {p["text_muted"]};
-            background: {p["surface"]};
+            color: {p['text_muted']};
+            background: {p['surface']};
         }}
         QPushButton#saveButton {{
             min-width: 36px;
             min-height: 34px;
-            background: {p["control"]};
+            background: {p['control']};
             border: 0;
             border-radius: 8px;
-            color: {p["text_secondary"]};
+            color: {p['text_secondary']};
             font-size: 17px;
         }}
         QPushButton#saveButton:hover {{
-            background: {p["control_hover"]};
-            color: {p["text"]};
+            background: {p['control_hover']};
+            color: {p['text']};
         }}
         QSlider::groove:horizontal {{
             height: 4px;
-            background: {p["slider_track"]};
+            background: {p['slider_track']};
             border-radius: 2px;
         }}
         QSlider::sub-page:horizontal {{
-            background: {p["blue"]};
+            background: {p['blue']};
             border-radius: 2px;
         }}
         QSlider::add-page:horizontal {{
-            background: {p["slider_track"]};
+            background: {p['slider_track']};
             border-radius: 2px;
         }}
         QSlider::handle:horizontal {{
-            background: {p["text"]};
+            background: {p['text']};
             width: 11px;
             margin: -4px 0;
             border-radius: 5px;
         }}
         QComboBox {{
-            background: {p["control"]};
+            background: {p['control']};
             border: 0;
             border-radius: 7px;
-            color: {p["text_secondary"]};
+            color: {p['text_secondary']};
             padding: 6px 8px;
             min-width: 66px;
             font-size: 13px;
         }}
         QComboBox:hover {{
-            background: {p["control_hover"]};
+            background: {p['control_hover']};
         }}
         QComboBox QAbstractItemView {{
-            background: {p["surface"]};
-            color: {p["text"]};
-            selection-background-color: {p["blue_soft"]};
-            border: 1px solid {p["separator"]};
+            background: {p['surface']};
+            color: {p['text']};
+            selection-background-color: {p['blue_soft']};
+            border: 1px solid {p['separator']};
         }}
         QMenu {{
-            background: {p["surface"]};
-            color: {p["text"]};
-            border: 1px solid {p["separator"]};
+            background: {p['surface']};
+            color: {p['text']};
+            border: 1px solid {p['separator']};
             padding: 4px;
         }}
         QMenu::item {{
@@ -222,7 +222,7 @@ def _dialog_stylesheet() -> str:
             border-radius: 4px;
         }}
         QMenu::item:selected {{
-            background: {p["surface_hover"]};
+            background: {p['surface_hover']};
         }}
     """
 
@@ -281,16 +281,16 @@ class PhraseItemDelegate(QStyledItemDelegate):
         painter.save()
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
         if active:
-            painter.fillRect(rect, QColor(p["surface_active"]))
-            painter.fillRect(rect.left(), rect.top() + 4, 3, max(1, rect.height() - 8), QColor(p["blue"]))
+            painter.fillRect(rect, QColor(p['surface_active']))
+            painter.fillRect(rect.left(), rect.top() + 4, 3, max(1, rect.height() - 8), QColor(p['blue']))
         elif hovered:
-            painter.fillRect(rect, QColor(p["surface_hover"]))
+            painter.fillRect(rect, QColor(p['surface_hover']))
 
         separator_y = rect.bottom()
-        painter.fillRect(rect.left() + 12, separator_y, max(0, rect.width() - 24), 1, QColor(p["separator"]))
+        painter.fillRect(rect.left() + 12, separator_y, max(0, rect.width() - 24), 1, QColor(p['separator']))
 
         number = str(index.data(Qt.ItemDataRole.UserRole) or "").zfill(3)
-        painter.setPen(QColor(p["text_muted"]))
+        painter.setPen(QColor(p['text_muted']))
         painter.drawText(
             rect.adjusted(15, 0, -rect.width() + 55, 0),
             Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft,
@@ -298,11 +298,11 @@ class PhraseItemDelegate(QStyledItemDelegate):
         )
 
         if generated:
-            marker, marker_color = "✓", p["success"]
+            marker, marker_color = "✓", p['success']
         elif failed:
-            marker, marker_color = "!", p["danger"]
+            marker, marker_color = "!", p['danger']
         else:
-            marker, marker_color = "gerando…", p["pending"]
+            marker, marker_color = "gerando…", p['pending']
         painter.setPen(QColor(marker_color))
         painter.drawText(
             rect.adjusted(58, 0, -rect.width() + 112, 0),
@@ -321,7 +321,7 @@ class PhraseItemDelegate(QStyledItemDelegate):
         painter.restore()
 
         if hovered:
-            painter.setPen(QColor(p["text_secondary"]))
+            painter.setPen(QColor(p['text_secondary']))
             painter.drawText(
                 rect.adjusted(rect.width() - 30, 0, -8, 0),
                 Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignRight,
