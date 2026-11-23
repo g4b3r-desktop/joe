@@ -81,6 +81,7 @@ from joe.pronunciation_dictionary import (
     merge_pronunciation_entries,
 )
 from joe.services.colab_api import ColabAPIClient, ColabAPIError
+from joe.model_discovery import LocalModel, default_model_search_roots, discover_local_models
 from joe.services.parakeet import ParakeetReduxService
 from joe.services.pocket_tts import PocketTTSService
 from joe.pocket_tts_models import (
@@ -423,6 +424,210 @@ class TTSGenerationWorker(QRunnable):
                         + "\n\n".join(attempt_diagnostics)
                     )
                 self.signals.failed.emit(self.task.task_id, report)
+
+
+class ColabModelSelectionDialog(QDialog):
+    """Discover local Pocket TTS models and let the user select Drive uploads."""
+
+    def __init__(self, search_roots: list[Path], parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("Modelos Pocket TTS encontrados")
+        self.setWindowIcon(QApplication.windowIcon())
+        self.resize(820, 610)
+        self.search_roots = list(dict.fromkeys(Path(path).expanduser() for path in search_roots))
+        self.models: list[LocalModel] = []
+
+        layout = QVBoxLayout(self)
+        heading = QLabel("Escolha os modelos que deseja enviar ao Google Drive")
+        heading.setObjectName("pageTitle")
+        layout.addWidget(heading)
+        description = QLabel(
+            "O Joe procura automaticamente arquivos model.safetensors nas pastas abaixo, "
+            "identifica as variantes conhecidas e prepara o envio em blocos. "
+            "Modelos já existentes no cache do Hugging Face podem obter o tokenizer "
+            "da mesma revisão automaticamente."
+        )
+        description.setWordWrap(True)
+        description.setObjectName("muted")
+        layout.addWidget(description)
+
+        roots_header = QHBoxLayout()
+        roots_header.addWidget(QLabel("Pastas pesquisadas"))
+        roots_header.addStretch(1)
+        self.add_folder_button = QPushButton("Adicionar pasta…")
+        self.remove_folder_button = QPushButton("Remover selecionada")
+        self.refresh_button = QPushButton("Atualizar busca")
+        roots_header.addWidget(self.add_folder_button)
+        roots_header.addWidget(self.remove_folder_button)
+        roots_header.addWidget(self.refresh_button)
+        layout.addLayout(roots_header)
+
+        self.roots_list = QListWidget()
+        self.roots_list.setMaximumHeight(105)
+        for root in self.search_roots:
+            self.roots_list.addItem(str(root))
+        layout.addWidget(self.roots_list)
+
+        self.scan_status = QLabel("Procurando modelos locais…")
+        self.scan_status.setObjectName("muted")
+        layout.addWidget(self.scan_status)
+
+        self.model_list = QListWidget()
+        self.model_list.setWordWrap(True)
+        self.model_list.setSpacing(4)
+        layout.addWidget(self.model_list, 1)
+
+        footer = QHBoxLayout()
+        self.select_all_button = QPushButton("Marcar todos disponíveis")
+        self.clear_button = QPushButton("Desmarcar todos")
+        self.upload_button = QPushButton("Enviar selecionados (0)")
+        self.upload_button.setObjectName("primaryButton")
+        self.upload_button.setEnabled(False)
+        self.close_button = QPushButton("Fechar")
+        footer.addWidget(self.select_all_button)
+        footer.addWidget(self.clear_button)
+        footer.addStretch(1)
+        footer.addWidget(self.upload_button)
+        footer.addWidget(self.close_button)
+        layout.addLayout(footer)
+
+        self.add_folder_button.clicked.connect(self._add_folder)
+        self.remove_folder_button.clicked.connect(self._remove_folder)
+        self.refresh_button.clicked.connect(self.refresh_models)
+        self.select_all_button.clicked.connect(self._select_all)
+        self.clear_button.clicked.connect(self._clear_all)
+        self.model_list.itemChanged.connect(self._update_upload_button)
+        self.upload_button.clicked.connect(self._accept_if_selected)
+        self.close_button.clicked.connect(self.reject)
+
+        self.refresh_models()
+
+    @staticmethod
+    def _language_name(language: str) -> str:
+        return {
+            "portuguese": "Português",
+            "english": "Inglês",
+            "spanish": "Espanhol",
+            "french": "Francês",
+            "italian": "Italiano",
+            "german": "Alemão",
+            "dutch": "Neerlandês",
+        }.get(language, language.capitalize())
+
+    @staticmethod
+    def _format_size(size_bytes: int) -> str:
+        value = float(size_bytes)
+        for unit in ("B", "KB", "MB", "GB"):
+            if value < 1024 or unit == "GB":
+                return f"{value:.1f} {unit}" if unit != "B" else f"{int(value)} B"
+            value /= 1024
+        return f"{value:.1f} GB"
+
+    def _add_folder(self) -> None:
+        selected = QFileDialog.getExistingDirectory(
+            self, "Adicionar pasta para procurar modelos", str(Path.home())
+        )
+        if not selected:
+            return
+        path = Path(selected).expanduser()
+        if path not in self.search_roots:
+            self.search_roots.append(path)
+            self.roots_list.addItem(str(path))
+            self.refresh_models()
+
+    def _remove_folder(self) -> None:
+        row = self.roots_list.currentRow()
+        if row < 0:
+            return
+        self.search_roots.pop(row)
+        self.roots_list.takeItem(row)
+        self.refresh_models()
+
+    def refresh_models(self) -> None:
+        self.model_list.clear()
+        self.models = discover_local_models(self.search_roots)
+        if not self.models:
+            self.scan_status.setText(
+                "Nenhum modelo Pocket TTS compatível foi encontrado. "
+                "Adicione a pasta do cache/modelo ou atualize a busca."
+            )
+            self.model_list.addItem(
+                "Nenhum modelo encontrado. O Joe reconhece variantes cadastradas "
+                "que contenham model.safetensors."
+            )
+            self.model_list.item(0).setFlags(Qt.ItemFlag.NoItemFlags)
+            self._update_upload_button()
+            return
+
+        ready_count = sum(model.can_upload for model in self.models)
+        self.scan_status.setText(
+            f"{len(self.models)} modelo(s) identificado(s); "
+            f"{ready_count} pronto(s) para envio."
+        )
+        for model in self.models:
+            tokenizer_state = (
+                "tokenizer local disponível"
+                if model.tokenizer_local
+                else (
+                    "tokenizer será obtido da mesma revisão Hugging Face"
+                    if model.tokenizer_auto_download
+                    else "tokenizer.json ausente — envio indisponível"
+                )
+            )
+            item = QListWidgetItem(
+                f"{self._language_name(model.language)} · {model.display_name} "
+                f"({model.model_variant})\n"
+                f"{self._format_size(model.size_bytes)} · {tokenizer_state}\n"
+                f"{model.checkpoint}"
+            )
+            item.setData(Qt.ItemDataRole.UserRole, model)
+            item.setToolTip(str(model.checkpoint))
+            flags = item.flags()
+            if model.can_upload:
+                item.setFlags(flags | Qt.ItemFlag.ItemIsUserCheckable)
+                item.setCheckState(Qt.CheckState.Unchecked)
+            else:
+                item.setFlags(flags & ~Qt.ItemFlag.ItemIsEnabled)
+            self.model_list.addItem(item)
+        self._update_upload_button()
+
+    def _selected_models(self) -> list[LocalModel]:
+        selected: list[LocalModel] = []
+        for index in range(self.model_list.count()):
+            item = self.model_list.item(index)
+            if item.checkState() == Qt.CheckState.Checked:
+                model = item.data(Qt.ItemDataRole.UserRole)
+                if isinstance(model, LocalModel):
+                    selected.append(model)
+        return selected
+
+    def selected_models(self) -> list[LocalModel]:
+        return self._selected_models()
+
+    def _update_upload_button(self, *_args) -> None:
+        count = len(self._selected_models())
+        self.upload_button.setText(f"Enviar selecionados ({count})")
+        self.upload_button.setEnabled(count > 0)
+
+    def _select_all(self) -> None:
+        for index in range(self.model_list.count()):
+            item = self.model_list.item(index)
+            if item.flags() & Qt.ItemFlag.ItemIsUserCheckable:
+                item.setCheckState(Qt.CheckState.Checked)
+
+    def _clear_all(self) -> None:
+        for index in range(self.model_list.count()):
+            item = self.model_list.item(index)
+            if item.flags() & Qt.ItemFlag.ItemIsUserCheckable:
+                item.setCheckState(Qt.CheckState.Unchecked)
+
+    def _accept_if_selected(self) -> None:
+        if not self._selected_models():
+            QMessageBox.information(
+                self, "Selecione modelos", "Marque ao menos um modelo para enviar."
+            )
+            return
+        self.accept()
 
 
 class GenerationQueueDialog(QDialog):
@@ -1866,12 +2071,10 @@ class JoeWindow(QMainWindow):
         self.colab_test_button.setObjectName("primaryButton")
         self.colab_test_button.clicked.connect(self._test_colab_connection)
 
-        self.colab_upload_model_button = QPushButton("Enviar modelo local ao Google Drive…")
+        self.colab_upload_model_button = QPushButton("Localizar modelos e escolher o que enviar…")
         self.colab_upload_model_button.setToolTip(
-            "Selecione a pasta do idioma no cache Hugging Face (por exemplo, "
-            "languages/portuguese) ou uma pasta que contenha model.safetensors. "
-            "O Joe localiza o checkpoint e baixa tokenizer.json da mesma revisão, "
-            "se necessário, antes de enviar os arquivos ao Google Drive."
+            "O Joe procura automaticamente os modelos Pocket TTS no cache Hugging Face "
+            "e nas pastas adicionadas. Selecione um ou mais modelos para enviar ao Drive."
         )
         self.colab_upload_model_button.clicked.connect(self._upload_colab_model)
 
@@ -1910,9 +2113,10 @@ class JoeWindow(QMainWindow):
         model_upload_group = QGroupBox("Modelos no Google Drive — sem ZIP")
         model_upload_layout = QVBoxLayout(model_upload_group)
         model_upload_description = QLabel(
-            "Selecione uma pasta local que contenha model.safetensors e tokenizer.json "
-            "correspondentes à variante atualmente escolhida na aba Texto → Áudio. "
-            "O Colab grava os arquivos no Drive e cria o YAML compatível."
+            "O Joe identifica automaticamente os modelos Pocket TTS no cache local. "
+            "Na janela seguinte, marque apenas as variantes que deseja enviar. "
+            "É possível adicionar outras pastas e enviar vários modelos em sequência; "
+            "não é necessário selecionar os arquivos individualmente."
         )
         model_upload_description.setObjectName("muted")
         model_upload_description.setWordWrap(True)
@@ -1931,31 +2135,108 @@ class JoeWindow(QMainWindow):
         self._update_mode_widgets()
         return page
 
+    def _colab_model_search_roots(self) -> list[Path]:
+        roots = default_model_search_roots()
+        saved = self.app_settings.value("colab_model_search_paths", [])
+        if isinstance(saved, str):
+            saved = [saved] if saved.strip() else []
+        if isinstance(saved, (list, tuple)):
+            roots.extend(Path(value).expanduser() for value in saved if str(value).strip())
+        unique: list[Path] = []
+        seen: set[str] = set()
+        for root in roots:
+            try:
+                resolved = root.resolve()
+            except OSError:
+                resolved = root.absolute()
+            key = str(resolved)
+            if key not in seen:
+                seen.add(key)
+                unique.append(resolved)
+        return unique
+
     def _upload_colab_model(self) -> None:
-        directory = QFileDialog.getExistingDirectory(
-            self,
-            "Selecionar pasta do modelo Pocket TTS",
-            str(Path.home()),
-        )
-        if not directory:
+        dialog = ColabModelSelectionDialog(self._colab_model_search_roots(), self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
             return
-        language = str(self.tts_language.currentData() or "portuguese")
-        model_variant = str(self.tts_model_variant.currentData() or language)
+        selected_models = dialog.selected_models()
+        if not selected_models:
+            return
+
+        self.app_settings.setValue(
+            "colab_model_search_paths", [str(path) for path in dialog.search_roots]
+        )
         try:
             client = self._colab_client()
         except ValueError as exc:
             QMessageBox.information(self, "Configure a API do Colab", str(exc))
             return
 
-        folder = Path(directory)
-
-        def upload() -> dict:
-            return client.upload_model_bundle(folder, language, model_variant)
+        def upload_selected() -> dict:
+            outcomes = []
+            for model in selected_models:
+                try:
+                    result = client.upload_model_bundle(
+                        model.upload_directory, model.language, model.model_variant
+                    )
+                    manifest = (
+                        result.get("manifest")
+                        if isinstance(result, dict) and isinstance(result.get("manifest"), dict)
+                        else {}
+                    )
+                    transferred = int(manifest.get("checkpoint_size", model.size_bytes))
+                    transferred += int(manifest.get("tokenizer_size", 0))
+                    outcomes.append({
+                        "model_variant": model.model_variant,
+                        "success": True,
+                        "size_bytes": transferred,
+                    })
+                except Exception as exc:  # noqa: BLE001
+                    outcomes.append({
+                        "model_variant": model.model_variant,
+                        "success": False,
+                        "error": f"{type(exc).__name__}: {exc}",
+                    })
+            return {"outcomes": outcomes}
 
         self._run_task(
-            f"Enviando {model_variant} ao Google Drive do Colab em blocos…",
-            upload,
-            self._colab_model_uploaded,
+            f"Enviando {len(selected_models)} modelo(s) selecionado(s) ao Google Drive…",
+            upload_selected,
+            self._colab_models_uploaded,
+        )
+
+    def _colab_models_uploaded(self, result: object) -> None:
+        data = result if isinstance(result, dict) else {}
+        outcomes = data.get("outcomes", [])
+        if not isinstance(outcomes, list):
+            outcomes = []
+        successes = [item for item in outcomes if isinstance(item, dict) and item.get("success")]
+        failures = [item for item in outcomes if isinstance(item, dict) and not item.get("success")]
+        lines = []
+        for item in successes:
+            size_mb = int(item.get("size_bytes", 0)) / (1024 * 1024)
+            lines.append(f"✓ {item.get('model_variant')}: enviado ({size_mb:.1f} MB)")
+        for item in failures:
+            lines.append(
+                f"✗ {item.get('model_variant')}: {item.get('error', 'falha sem detalhes')}"
+            )
+        message = "\\n".join(lines) or "Nenhum modelo foi enviado."
+        if failures:
+            QMessageBox.warning(
+                self,
+                "Envio de modelos concluído com pendências",
+                f"Enviados: {len(successes)} · Falhas: {len(failures)}\\n\\n{message}",
+            )
+        else:
+            QMessageBox.information(
+                self,
+                "Modelos instalados no Google Drive",
+                f"{len(successes)} modelo(s) enviado(s) e validado(s):\\n\\n{message}",
+            )
+        self.statusBar().showMessage(
+            f"Envio de modelos concluído: {len(successes)} sucesso(s), "
+            f"{len(failures)} falha(s).",
+            9000,
         )
 
     def _colab_model_uploaded(self, result: object) -> None:
