@@ -8,6 +8,7 @@ on:
       - feature/joe-studio-improvements
       - feature/pocket-tts-cuda-performance
       - feature/pocket-tts-advanced-settings
+      - fix/pocket-tts-explicit-voice-cloning-fallback
   pull_request:
     branches:
       - main
