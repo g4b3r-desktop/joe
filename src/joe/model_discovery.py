@@ -108,6 +108,7 @@ def _model_identity(
         return folder_name, variant, label
     return None
 
+
 def discover_local_models(search_roots: Iterable[str | Path]) -> list[LocalModel]:
     """Find known Pocket TTS checkpoints under selected folders without downloading files."""
     variants = _variant_details()
