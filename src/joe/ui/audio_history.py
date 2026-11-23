@@ -396,6 +396,9 @@ class AudioHistoryPanel(QWidget):
             self.refresh()
             return
 
+        selected = self._selected_entry()
+        selected_id = selected.id if selected is not None else None
+
         current_voice = self.voice_filter.currentData()
         self.voice_filter.blockSignals(True)
         self.voice_filter.clear()
@@ -405,11 +408,12 @@ class AudioHistoryPanel(QWidget):
         voice_index = self.voice_filter.findData(current_voice)
         self.voice_filter.setCurrentIndex(max(0, voice_index))
         self.voice_filter.blockSignals(False)
+        if current_voice and voice_index < 0:
+            self.refresh()
+            return
 
         self._entries_by_id = {entry.id: entry for entry in entries}
         self._text_entries_count = text_count
-        selected = self._selected_entry()
-        selected_id = selected.id if selected is not None else None
 
         self._loading_table = True
         self.table.setUpdatesEnabled(False)
