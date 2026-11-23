@@ -31,6 +31,35 @@ from joe.audio_performance import AudioPerformance, format_duration, wav_duratio
 from joe.transcript_sync import normalize_timed_segments
 
 
+# Preferências padrão da janela do atalho. A tela principal edita estes valores.
+DEFAULT_CLIPBOARD_DIALOG_APPEARANCE = {
+    "font_family": "Noto Sans",
+    "phrase_font_size": 14,
+    "auxiliary_font_size": 13,
+    "title_font_size": 16,
+    "row_spacing": 0,
+    "window_padding": 18,
+    "accent": "blue",
+}
+
+CLIPBOARD_DIALOG_ACCENTS = {
+    "blue": {
+        "blue": "#368de0",
+        "blue_soft": "#254a6d",
+        "surface_active": "#1b3550",
+    },
+    "violet": {
+        "blue": "#9a83e8",
+        "blue_soft": "#514477",
+        "surface_active": "#352d50",
+    },
+    "teal": {
+        "blue": "#36b9ad",
+        "blue_soft": "#245e5b",
+        "surface_active": "#1d4142",
+    },
+}
+
 # Paleta única da janela do atalho. O delegate e o QSS reutilizam estas cores.
 CLIPBOARD_DIALOG_PALETTE = {
     "window": "#0c1420",
@@ -53,59 +82,114 @@ CLIPBOARD_DIALOG_PALETTE = {
 }
 
 
-def _dialog_stylesheet() -> str:
-    p = CLIPBOARD_DIALOG_PALETTE
+def load_clipboard_dialog_appearance(settings: QSettings) -> dict[str, object]:
+    """Load and clamp user-editable appearance settings."""
+    defaults = DEFAULT_CLIPBOARD_DIALOG_APPEARANCE
+    try:
+        phrase_size = int(settings.value(
+            "clipboard_dialog/phrase_font_size", defaults["phrase_font_size"]
+        ))
+    except (TypeError, ValueError):
+        phrase_size = int(defaults["phrase_font_size"])
+    try:
+        auxiliary_size = int(settings.value(
+            "clipboard_dialog/auxiliary_font_size", defaults["auxiliary_font_size"]
+        ))
+    except (TypeError, ValueError):
+        auxiliary_size = int(defaults["auxiliary_font_size"])
+    try:
+        title_size = int(settings.value(
+            "clipboard_dialog/title_font_size", defaults["title_font_size"]
+        ))
+    except (TypeError, ValueError):
+        title_size = int(defaults["title_font_size"])
+    try:
+        row_spacing = int(settings.value(
+            "clipboard_dialog/row_spacing", defaults["row_spacing"]
+        ))
+    except (TypeError, ValueError):
+        row_spacing = int(defaults["row_spacing"])
+    try:
+        padding = int(settings.value(
+            "clipboard_dialog/window_padding", defaults["window_padding"]
+        ))
+    except (TypeError, ValueError):
+        padding = int(defaults["window_padding"])
+
+    font_family = str(settings.value(
+        "clipboard_dialog/font_family", defaults["font_family"]
+    ) or defaults["font_family"])
+    accent = str(settings.value(
+        "clipboard_dialog/accent", defaults["accent"]
+    ) or defaults["accent"])
+    if accent not in CLIPBOARD_DIALOG_ACCENTS:
+        accent = str(defaults["accent"])
+
+    return {
+        "font_family": font_family,
+        "phrase_font_size": max(11, min(22, phrase_size)),
+        "auxiliary_font_size": max(10, min(18, auxiliary_size)),
+        "title_font_size": max(13, min(24, title_size)),
+        "row_spacing": max(0, min(12, row_spacing)),
+        "window_padding": max(10, min(30, padding)),
+        "accent": accent,
+    }
+
+
+def _dialog_stylesheet(appearance: dict[str, object] | None = None) -> str:
+    settings = appearance or DEFAULT_CLIPBOARD_DIALOG_APPEARANCE
+    p = dict(CLIPBOARD_DIALOG_PALETTE)
+    p.update(CLIPBOARD_DIALOG_ACCENTS.get(
+        str(settings.get("accent", "blue")),
+        CLIPBOARD_DIALOG_ACCENTS["blue"],
+    ))
+    font_family = str(settings.get("font_family", "Noto Sans")).replace('"', "")
+    phrase_size = int(settings.get("phrase_font_size", 14))
+    auxiliary_size = int(settings.get("auxiliary_font_size", 13))
+    title_size = int(settings.get("title_font_size", 16))
     return f"""
         QDialog {{
             background: {p['window']};
             color: {p['text']};
-            font-family: "Noto Sans", "DejaVu Sans", sans-serif;
-            font-size: 14px;
+            font-family: "{font_family}", "Noto Sans", "DejaVu Sans", sans-serif;
+            font-size: {auxiliary_size}px;
         }}
         QLabel {{
             background: transparent;
             color: {p['text']};
-            font-size: 14px;
+            font-size: {auxiliary_size}px;
         }}
         QLabel#brand {{
             background: {p['blue']};
             color: {p['on_blue']};
             border-radius: 6px;
             padding: 4px 9px;
-            font-size: 13px;
+            font-size: {max(11, auxiliary_size - 1)}px;
             font-weight: 800;
         }}
         QLabel#dialogTitle {{
             color: {p['text']};
-            font-size: 16px;
+            font-size: {title_size}px;
             font-weight: 700;
         }}
-        QLabel#preview {{
+        QLabel#preview, QLabel#summary, QLabel#status {{
             color: {p['text_secondary']};
-            font-size: 13px;
-        }}
-        QLabel#summary {{
-            color: {p['text_secondary']};
-            font-size: 13px;
-        }}
-        QLabel#status {{
-            color: {p['text_secondary']};
-            font-size: 13px;
+            font-size: {auxiliary_size}px;
         }}
         QLabel#detailValue {{
             color: {p['text']};
-            font-size: 13px;
+            font-size: {auxiliary_size}px;
         }}
         QLabel#detailCaption {{
             color: {p['text_muted']};
-            font-size: 12px;
+            font-size: {max(10, auxiliary_size - 1)}px;
         }}
         QToolButton {{
             background: transparent;
             border: 0;
             color: {p['text_secondary']};
             padding: 4px 6px;
-            font-size: 13px;
+            font-size: {auxiliary_size}px;
         }}
         QToolButton:hover {{
             color: {p['text']};
@@ -117,7 +201,7 @@ def _dialog_stylesheet() -> str:
             outline: none;
             padding: 0;
             color: {p['text']};
-            font-size: 14px;
+            font-size: {phrase_size}px;
         }}
         QListWidget::item {{
             background: transparent;
@@ -200,7 +284,7 @@ def _dialog_stylesheet() -> str:
             color: {p['text_secondary']};
             padding: 6px 8px;
             min-width: 66px;
-            font-size: 13px;
+            font-size: {auxiliary_size}px;
         }}
         QComboBox:hover {{
             background: {p['control_hover']};
