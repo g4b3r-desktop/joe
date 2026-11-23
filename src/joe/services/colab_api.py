@@ -154,13 +154,13 @@ class ColabAPIClient:
         opened = None
         try:
             if voice_path:
-                path = Path(voice_path)
-                if path.suffix.lower() == ".safetensors":
-                    raise ColabAPIError(
-                        "O modo remoto ainda espera uma gravação WAV/MP3 como referência. "
-                        "Selecione o áudio original; .safetensors é um estado preparado para uso local."
-                    )
+                path = Path(voice_path).expanduser()
+                if not path.is_file():
+                    raise FileNotFoundError(f"Arquivo de voz não encontrado: {path}")
                 opened = path.open("rb")
+                # Pocket TTS accepts both reference recordings and exported
+                # .safetensors voice states through get_state_for_audio_prompt().
+                # Keep the original suffix so the Colab worker can detect the format.
                 files = [("voice", (path.name, opened, "application/octet-stream"))]
             response = self._request("POST", "/v1/jobs/tts", data=data, files=files)
         finally:
@@ -174,8 +174,7 @@ class ColabAPIClient:
             raise ColabAPIError(
                 "A API remota não retornou um WAV válido (cabeçalho RIFF/WAVE ausente). "
                 "Confira o erro da tarefa no Colab e o formato da voz enviada. "
-                "Para clonagem remota, use o áudio original WAV/MP3; .safetensors "
-                "é um estado de voz e não uma gravação."
+                "São aceitos áudios de referência e estados de voz .safetensors."
             )
         return audio
 
