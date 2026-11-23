@@ -4230,30 +4230,6 @@ class JoeWindow(QMainWindow):
             )
             return
 
-        if shortcut_action == "replace":
-            # The previous generation is idle. Closing it runs its normal
-            # cleanup, then this invocation continues with the latest clipboard.
-            dialog = self.clipboard_audio_window
-            if dialog is not None:
-                self._replacing_clipboard_dialog = True
-                try:
-                    closed = dialog.close()
-                except RuntimeError:
-                    # The Qt object may already have been destroyed.
-                    closed = True
-                    if self.clipboard_audio_window is dialog:
-                        self.clipboard_audio_window = None
-                finally:
-                    self._replacing_clipboard_dialog = False
-                if not closed:
-                    self.statusBar().showMessage(
-                        "Não foi possível substituir a janela de atalho aberta.",
-                        5000,
-                    )
-                    return
-                if self.clipboard_audio_window is dialog:
-                    self.clipboard_audio_window = None
-
         if shortcut_action == "busy":
             self.statusBar().showMessage(
                 "Já existe uma tarefa em andamento. Aguarde a conclusão antes de iniciar outro áudio.",
@@ -4363,6 +4339,31 @@ class JoeWindow(QMainWindow):
                     cpu_threads=cpu_threads,
                     quantize=tts_quantization,
                 )
+
+        if shortcut_action == "replace":
+            # Replace only after validating the new clipboard text and preparing
+            # its settings, so an empty/invalid clipboard keeps the old result open.
+            old_dialog = self.clipboard_audio_window
+            if old_dialog is not None:
+                self._replacing_clipboard_dialog = True
+                try:
+                    closed = old_dialog.close()
+                except RuntimeError:
+                    # The Qt object may already have been destroyed.
+                    closed = True
+                    if self.clipboard_audio_window is old_dialog:
+                        self.clipboard_audio_window = None
+                finally:
+                    self._replacing_clipboard_dialog = False
+                if not closed:
+                    self._remove_clipboard_temp_dir(temp_dir)
+                    self.statusBar().showMessage(
+                        "Não foi possível substituir a janela de atalho aberta.",
+                        5000,
+                    )
+                    return
+                if self.clipboard_audio_window is old_dialog:
+                    self.clipboard_audio_window = None
 
         dialog = ClipboardAudioDialog(
             self.player,
