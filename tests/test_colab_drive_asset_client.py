@@ -6,6 +6,7 @@ from pathlib import Path
 
 import httpx
 
+import joe.services.colab_api as colab_api
 from joe.services.colab_api import ColabAPIClient, ColabAPIError
 
 
@@ -219,3 +220,75 @@ def test_generate_audio_sends_drive_voice_id_without_file_upload(monkeypatch):
     assert audio.startswith(b"RIFF")
     assert submitted["voice_id"] == "kessya-1234"
     assert submitted["files"] == []
+
+
+
+def test_resolve_model_from_hf_snapshot_downloads_matching_language_tokenizer(
+    monkeypatch, tmp_path
+):
+    snapshot = (
+        tmp_path
+        / "models--kyutai--pocket-tts"
+        / "snapshots"
+        / "3e82814a68665eec246ff649b14c71331f955c06"
+    )
+    model_dir = snapshot / "languages" / "portuguese"
+    model_dir.mkdir(parents=True)
+    checkpoint = model_dir / "model.safetensors"
+    checkpoint.write_bytes(b"pocket-tts-model")
+    downloaded_tokenizer = model_dir / "tokenizer.json"
+    requested = {}
+
+    def fake_download(filename, revision, cache_dir):
+        requested.update(
+            filename=filename,
+            revision=revision,
+            cache_dir=cache_dir,
+        )
+        downloaded_tokenizer.write_text('{"version":"1"}', encoding="utf-8")
+        return downloaded_tokenizer
+
+    monkeypatch.setattr(colab_api, "_download_hf_tokenizer", fake_download)
+
+    resolved_checkpoint, resolved_tokenizer = colab_api._resolve_model_bundle_files(
+        model_dir, "portuguese", "portuguese"
+    )
+
+    assert resolved_checkpoint == checkpoint
+    assert resolved_tokenizer == downloaded_tokenizer
+    assert requested["filename"] == "languages/portuguese/tokenizer.json"
+    assert requested["revision"] == "3e82814a68665eec246ff649b14c71331f955c06"
+    assert requested["cache_dir"] == tmp_path
+
+
+def test_resolve_model_from_snapshot_root_finds_language_subfolder(tmp_path):
+    snapshot = tmp_path / "snapshots" / "commit123"
+    model_dir = snapshot / "languages" / "portuguese"
+    model_dir.mkdir(parents=True)
+    checkpoint = model_dir / "model.safetensors"
+    tokenizer = model_dir / "tokenizer.json"
+    checkpoint.write_bytes(b"model")
+    tokenizer.write_text('{"version":"1"}', encoding="utf-8")
+
+    resolved_checkpoint, resolved_tokenizer = colab_api._resolve_model_bundle_files(
+        snapshot, "portuguese", "portuguese"
+    )
+
+    assert resolved_checkpoint == checkpoint
+    assert resolved_tokenizer == tokenizer
+
+
+def test_resolve_model_without_hf_snapshot_requires_tokenizer(tmp_path):
+    model_dir = tmp_path / "manual-model"
+    model_dir.mkdir()
+    (model_dir / "model.safetensors").write_bytes(b"model")
+
+    try:
+        colab_api._resolve_model_bundle_files(
+            model_dir, "portuguese", "portuguese"
+        )
+    except FileNotFoundError as exc:
+        assert "tokenizer.json" in str(exc)
+        assert "snapshot do cache Hugging Face" in str(exc)
+    else:
+        raise AssertionError("A manual model without tokenizer must not be uploaded.")
