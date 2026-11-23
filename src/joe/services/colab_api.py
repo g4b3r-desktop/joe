@@ -250,15 +250,43 @@ class ColabAPIClient:
         # Avoid retransmitting and re-encoding a voice already stored with this
         # exact checkpoint/tokenizer/Pocket TTS version in the remote Drive.
         inventory = self.list_assets()
+        models = inventory.get("models", [])
+        if not isinstance(models, list):
+            raise ColabAPIError(
+                "A API do Colab retornou um inventário de modelos inválido. "
+                "Reinicie a API usando o notebook atualizado."
+            )
         model_manifest = next(
             (
-                item for item in inventory.get("models", [])
-                if item.get("model_variant") == model_variant
+                item for item in models
+                if isinstance(item, dict) and item.get("model_variant") == model_variant
             ),
             None,
         )
-        if model_manifest:
-            expected_fingerprint = self._drive_model_fingerprint(model_manifest)
+        if not model_manifest:
+            available = sorted(
+                str(item.get("model_variant"))
+                for item in models
+                if isinstance(item, dict) and item.get("model_variant")
+            )
+            invalid = inventory.get("invalid_models", [])
+            detail = (
+                "; manifestos inválidos: "
+                + ", ".join(
+                    f"{item.get('model_variant')}: {item.get('error')}"
+                    for item in invalid
+                    if isinstance(item, dict)
+                )
+                if invalid else ""
+            )
+            variants = ", ".join(available) if available else "nenhuma"
+            raise ColabAPIError(
+                f"O modelo '{model_variant}' não foi encontrado no Google Drive "
+                f"(variantes válidas: {variants}). Envie primeiro a pasta do modelo "
+                f"pela aba Google Colab / API do Joe e confirme que ela aparece em "
+                f"GET /v1/assets.{detail}"
+            )
+        expected_fingerprint = self._drive_model_fingerprint(model_manifest)
             for item in inventory.get("voices", []):
                 if (
                     item.get("model_variant") == model_variant
