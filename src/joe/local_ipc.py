@@ -1,4 +1,4 @@
-"""Single-instance local IPC used by the desktop hotkey helper."""
+"""Single-instance local IPC for hotkeys and desktop-opened projects."""
 from __future__ import annotations
 
 import logging
