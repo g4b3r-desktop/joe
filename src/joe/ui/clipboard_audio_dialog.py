@@ -28,6 +28,7 @@ from PySide6.QtWidgets import (
 )
 
 from joe.audio_performance import AudioPerformance, format_duration, wav_duration_seconds
+from joe.project_archive import JOE_AUDIO_PROJECT_EXTENSION, save_joe_audio_project
 from joe.transcript_sync import normalize_timed_segments
 
 
@@ -258,6 +259,24 @@ def _dialog_stylesheet(appearance: dict[str, object] | None = None) -> str:
             background: {p['control_hover']};
             color: {p['text']};
         }}
+        QPushButton#projectButton {{
+            min-width: 68px;
+            min-height: 34px;
+            padding: 0 9px;
+            background: {p['blue_soft']};
+            border: 0;
+            border-radius: 8px;
+            color: {p['text']};
+            font-size: {auxiliary_size}px;
+            font-weight: 600;
+        }}
+        QPushButton#projectButton:hover {{
+            background: {p['blue']};
+        }}
+        QPushButton#projectButton:disabled {{
+            color: {p['text_muted']};
+            background: {p['surface']};
+        }}
         QSlider::groove:horizontal {{
             height: 4px;
             background: {p['slider_track']};
@@ -477,8 +496,11 @@ class ClipboardAudioDialog(QDialog):
         self.audio_path: Path | None = None
         self.performance: AudioPerformance | None = None
         self.phrase_texts = list(phrases or [])
+        self.original_text = ""
+        self.recognized_text = ""
         self._recognized_segments: list[dict] = []
         self.chunk_paths: list[Path] = []
+        self.chunk_texts_by_index: dict[int, str] = {}
         self.total_chunks = len(self.phrase_texts)
         self.chunk_paths_by_index: dict[int, Path] = {}
         self.chunk_durations: dict[int, float] = {}
@@ -714,6 +736,15 @@ class ClipboardAudioDialog(QDialog):
         self.save_button.setEnabled(False)
         self.save_button.clicked.connect(self._save)
         player_row.addWidget(self.save_button, 0)
+
+        self.project_button = QPushButton("Projeto")
+        self.project_button.setObjectName("projectButton")
+        self.project_button.setToolTip(
+            "Salvar textos e áudios em um projeto compactado do Joe (.joeaudio)"
+        )
+        self.project_button.setEnabled(False)
+        self.project_button.clicked.connect(self._save_project)
+        player_row.addWidget(self.project_button, 0)
         root.addLayout(player_row)
 
         self.player.mediaStatusChanged.connect(self._on_media_status_changed)
@@ -771,7 +802,8 @@ class ClipboardAudioDialog(QDialog):
         self._shortcuts.append(shortcut)
 
     def set_text_preview(self, text: str) -> None:
-        normalized = " ".join(str(text or "").split())
+        self.original_text = str(text or "")
+        normalized = " ".join(self.original_text.split())
         preview = normalized[:80].rstrip()
         if len(normalized) > 80:
             preview += "…"
@@ -801,6 +833,7 @@ class ClipboardAudioDialog(QDialog):
         if self.is_closing:
             return
         self.chunk_paths_by_index[index] = audio_path
+        self.chunk_texts_by_index[index] = str(text)
         self.chunk_paths.append(audio_path)
         self.chunk_durations[index] = wav_duration_seconds(audio_path)
         if 1 <= index <= self.phrase_list.count():
@@ -827,7 +860,9 @@ class ClipboardAudioDialog(QDialog):
         self.generation_finished = True
         performance = result.get("performance")
         self.performance = performance if isinstance(performance, AudioPerformance) else None
-        self.save_button.setEnabled(bool(self.audio_path.is_file()))
+        audio_ready = self.audio_path.is_file()
+        self.save_button.setEnabled(audio_ready)
+        self.project_button.setEnabled(audio_ready)
         self._update_summary_progress()
         if self.performance is not None:
             elapsed = max(0.0, float(self.performance.elapsed_seconds))
@@ -921,6 +956,7 @@ class ClipboardAudioDialog(QDialog):
         data = result if isinstance(result, dict) else {}
         segments = normalize_timed_segments(list(data.get("segments", [])))
         recognized_text = str(data.get("text", "")).strip()
+        self.recognized_text = recognized_text
         backend = str(data.get("backend", "Parakeet Redux"))
         self.recognition_list.clear()
 
@@ -1377,6 +1413,67 @@ class ClipboardAudioDialog(QDialog):
             return
         self.status_label.setText(f"Cópia salva em: {destination}")
         self.saved.emit(str(destination), self.performance)
+
+    def _save_project(self) -> None:
+        """Export all available shortcut text and audio into a .joeaudio file."""
+        if not self.audio_path or not self.audio_path.is_file():
+            return
+
+        initial_directory = (
+            Path(self.output_directory).expanduser()
+            if self.output_directory.strip()
+            else Path.home()
+        )
+        if not initial_directory.is_dir():
+            initial_directory = Path.home()
+        suggested = initial_directory / f"joe_audio_project{JOE_AUDIO_PROJECT_EXTENSION}"
+        output, _ = QFileDialog.getSaveFileName(
+            self,
+            "Salvar projeto Joe",
+            str(suggested),
+            f"Projeto Joe Audio (*{JOE_AUDIO_PROJECT_EXTENSION})",
+        )
+        if not output:
+            return
+        if not output.lower().endswith(JOE_AUDIO_PROJECT_EXTENSION):
+            output += JOE_AUDIO_PROJECT_EXTENSION
+
+        performance_data = None
+        if self.performance is not None:
+            performance_data = {
+                "elapsed_seconds": float(self.performance.elapsed_seconds),
+                "audio_duration_seconds": float(self.performance.audio_duration_seconds),
+                "character_count": int(self.performance.character_count),
+                "remote": bool(self.performance.remote),
+            }
+
+        try:
+            destination = save_joe_audio_project(
+                output,
+                original_text=self.original_text,
+                phrase_texts=self.phrase_texts,
+                chunk_texts_by_index=self.chunk_texts_by_index,
+                full_audio_path=self.audio_path,
+                phrase_audio_paths=self.chunk_paths_by_index,
+                recognized_text=self.recognized_text,
+                recognized_segments=self._recognized_segments,
+                performance=performance_data,
+            )
+        except (OSError, ValueError, TypeError) as exc:
+            QMessageBox.critical(
+                self,
+                "Erro ao salvar projeto",
+                f"Não foi possível criar o projeto compactado.\\n\\n{exc}",
+            )
+            return
+
+        self.status_label.setText(f"Projeto Joe salvo: {destination}")
+        QMessageBox.information(
+            self,
+            "Projeto salvo",
+            "Textos e áudios foram compactados em um único arquivo:\\n"
+            f"{destination}",
+        )
 
     def closeEvent(self, event) -> None:
         self.is_closing = True
