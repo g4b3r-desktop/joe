@@ -8,6 +8,9 @@ DESKTOP_FILE="$APPLICATIONS_DIR/joe.desktop"
 ICON_SOURCE="$ROOT_DIR/src/joe/resources/joe.png"
 ICON_DIR="$USER_DATA_DIR/icons/hicolor/64x64/apps"
 ICON_FILE="$ICON_DIR/joe.png"
+MIME_PACKAGES_DIR="$USER_DATA_DIR/mime/packages"
+MIME_FILE="$MIME_PACKAGES_DIR/joe-audio-project.xml"
+MIME_TYPE="application/x-joe-audio-project"
 HOTKEY_PROPERTY="/commands/custom/<Primary><Shift>space"
 HOTKEY_COMMAND="/usr/bin/bash \"$ROOT_DIR/run.sh\" --clipboard-audio"
 MODE="install"
@@ -49,6 +52,10 @@ is_joe_launcher() {
   [[ -f "$1" ]] && grep -Fqx 'X-Joe-Managed=true' "$1"
 }
 
+is_joe_mime_package() {
+  [[ -f "$MIME_FILE" ]] && grep -Fqx '<!-- X-Joe-Managed=true -->' "$MIME_FILE"
+}
+
 DESKTOP_DIR="$(find_desktop_dir)"
 DESKTOP_COPY="$DESKTOP_DIR/joe.desktop"
 
@@ -68,6 +75,13 @@ if [[ "$MODE" == "uninstall" ]]; then
   fi
   rm -f "$ICON_FILE"
   rmdir "$ICON_DIR" 2>/dev/null || true
+  if is_joe_mime_package; then
+    rm -f "$MIME_FILE"
+    rmdir "$MIME_PACKAGES_DIR" 2>/dev/null || true
+    if command -v update-mime-database >/dev/null 2>&1; then
+      update-mime-database "$USER_DATA_DIR/mime" >/dev/null 2>&1 || true
+    fi
+  fi
   if command -v update-desktop-database >/dev/null 2>&1; then
     update-desktop-database "$APPLICATIONS_DIR" >/dev/null 2>&1 || true
   fi
@@ -91,6 +105,11 @@ fi
 
 if [[ -e "$DESKTOP_FILE" ]] && ! is_joe_launcher "$DESKTOP_FILE"; then
   echo "Já existe um lançador não gerenciado em $DESKTOP_FILE." >&2
+  echo "Renomeie-o ou remova-o manualmente antes de instalar o Joe." >&2
+  exit 1
+fi
+if [[ -e "$MIME_FILE" ]] && ! is_joe_mime_package; then
+  echo "Já existe um pacote MIME não gerenciado em $MIME_FILE." >&2
   echo "Renomeie-o ou remova-o manualmente antes de instalar o Joe." >&2
   exit 1
 fi
@@ -124,18 +143,44 @@ content = "\n".join([
     "Name=Joe Audio Studio",
     "GenericName=Conversor de texto e áudio",
     "Comment=Converta texto em fala e transcreva áudio",
-    f"Exec=/usr/bin/bash {quote_exec_argument(str(run_script))}",
+    f"Exec=/usr/bin/bash {quote_exec_argument(str(run_script))} %f",
     "Icon=joe",
     "Terminal=false",
     "StartupNotify=true",
     "Categories=AudioVideo;Audio;Utility;",
     "Keywords=Joe;TTS;Texto;Áudio;Transcrição;",
+    "MimeType=application/x-joe-audio-project;",
     "X-Joe-Managed=true",
     "",
 ])
 destination.write_text(content, encoding="utf-8")
 destination.chmod(0o644)
 PY
+
+mkdir -p "$MIME_PACKAGES_DIR"
+cat > "$MIME_FILE" <<'MIME'
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- X-Joe-Managed=true -->
+<mime-info xmlns="http://www.freedesktop.org/standards/shared-mime-info">
+  <mime-type type="application/x-joe-audio-project">
+    <comment>Projeto Joe Audio Studio</comment>
+    <icon name="joe"/>
+    <glob pattern="*.joeaudio"/>
+  </mime-type>
+</mime-info>
+MIME
+chmod 644 "$MIME_FILE"
+
+if command -v update-mime-database >/dev/null 2>&1; then
+  update-mime-database "$USER_DATA_DIR/mime"
+else
+  echo "Aviso: update-mime-database não encontrado; a extensão pode não aparecer até atualizar os tipos MIME."
+fi
+if command -v xdg-mime >/dev/null 2>&1; then
+  xdg-mime default joe.desktop "$MIME_TYPE"
+else
+  echo "Aviso: xdg-mime não encontrado; o Joe não foi definido como aplicativo padrão para .joeaudio."
+fi
 
 if [[ "$CREATE_DESKTOP" -eq 1 ]]; then
   mkdir -p "$DESKTOP_DIR"
@@ -169,5 +214,6 @@ fi
 
 echo "Joe instalado no menu de aplicativos:"
 echo "  $DESKTOP_FILE"
+echo "Associação de arquivos .joeaudio registrada para Joe Audio Studio."
 echo "Ícone instalado em: $ICON_FILE"
 echo "Procure por 'Joe Audio Studio' no menu."
