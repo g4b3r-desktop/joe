@@ -34,6 +34,26 @@ def test_local_command_server_receives_command(tmp_path):
 
 
 
+def test_local_command_server_receives_long_project_paths_without_trimming(tmp_path):
+    received: list[str] = []
+    event = threading.Event()
+    path = tmp_path / "joe-long-command.sock"
+    command = "open-project:" + ("directory/" * 45) + "project with spaces.joeaudio  "
+
+    def handle(value: str) -> None:
+        received.append(value)
+        event.set()
+
+    server = LocalCommandServer(handle, path=path)
+    server.start()
+    try:
+        assert send_local_command(command, path=path)
+        assert event.wait(timeout=2)
+        assert received == [command]
+    finally:
+        server.stop()
+
+
 def test_server_keeps_running_when_a_command_handler_raises(tmp_path):
     received: list[str] = []
     handled = threading.Event()
