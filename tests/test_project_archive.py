@@ -9,6 +9,7 @@ import pytest
 from joe.project_archive import (
     JOE_AUDIO_PROJECT_FORMAT,
     JOE_AUDIO_PROJECT_VERSION,
+    load_joe_audio_project,
     save_joe_audio_project,
 )
 
@@ -105,3 +106,60 @@ def test_joe_audio_project_does_not_replace_destination_if_audio_is_missing(
         )
 
     assert destination.read_bytes() == b"keep this existing file"
+
+
+def test_joe_audio_project_round_trip_loads_text_and_phrase_audio(tmp_path: Path):
+    full_audio = tmp_path / "complete.wav"
+    phrase_audio = tmp_path / "phrase.wav"
+    full_audio.write_bytes(b"full-wave")
+    phrase_audio.write_bytes(b"phrase-wave")
+    project_path = tmp_path / "roundtrip.joeaudio"
+    save_joe_audio_project(
+        project_path,
+        original_text="Texto integral.",
+        chunk_texts_by_index={1: "Primeira frase.", 2: "Segunda frase."},
+        full_audio_path=full_audio,
+        phrase_audio_paths={1: phrase_audio},
+        recognized_text="Transcrição.",
+        recognized_segments=[{"start": 0.0, "end": 1.0, "text": "Transcrição."}],
+    )
+
+    loaded = load_joe_audio_project(project_path, tmp_path / "extracted")
+    assert loaded["original_text"] == "Texto integral."
+    assert loaded["phrase_texts"] == {
+        1: "Primeira frase.",
+        2: "Segunda frase.",
+    }
+    assert loaded["full_audio_path"].read_bytes() == b"full-wave"
+    assert loaded["phrase_audio_paths"][1].read_bytes() == b"phrase-wave"
+    assert loaded["recognized_text"] == "Transcrição."
+    assert loaded["recognized_segments"][0]["text"] == "Transcrição."
+
+
+def test_joe_audio_project_loader_rejects_unsupported_version(tmp_path: Path):
+    project_path = tmp_path / "future.joeaudio"
+    with zipfile.ZipFile(project_path, "w") as archive:
+        archive.writestr("manifest.json", json.dumps({
+            "format": JOE_AUDIO_PROJECT_FORMAT,
+            "format_version": JOE_AUDIO_PROJECT_VERSION + 1,
+            "texts": {},
+            "audio": {},
+        }))
+    with pytest.raises(ValueError, match="Versão do projeto não suportada"):
+        load_joe_audio_project(project_path, tmp_path / "extracted")
+
+
+def test_joe_audio_project_loader_rejects_path_traversal(tmp_path: Path):
+    project_path = tmp_path / "unsafe.joeaudio"
+    manifest = {
+        "format": JOE_AUDIO_PROJECT_FORMAT,
+        "format_version": JOE_AUDIO_PROJECT_VERSION,
+        "texts": {"original": "../outside.txt", "phrases": "texts/phrases.json"},
+        "audio": {"full": "audio/full.wav", "phrases": []},
+    }
+    with zipfile.ZipFile(project_path, "w") as archive:
+        archive.writestr("manifest.json", json.dumps(manifest))
+        archive.writestr("texts/phrases.json", "[]")
+        archive.writestr("audio/full.wav", b"wav")
+    with pytest.raises(ValueError, match="caminho inseguro"):
+        load_joe_audio_project(project_path, tmp_path / "extracted")
