@@ -1467,12 +1467,8 @@ class ClipboardAudioDialog(QDialog):
             )
             return
 
-        self.status_label.setText(f"Projeto Joe salvo: {destination}")
-        QMessageBox.information(
-            self,
-            "Projeto salvo",
-            "Textos e áudios foram compactados em um único arquivo:\\n"
-            f"{destination}",
+        self.status_label.setText(
+            f"Projeto Joe salvo: {destination.name} — {destination.parent}"
         )
 
     def closeEvent(self, event) -> None:
