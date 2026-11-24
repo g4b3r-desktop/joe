@@ -103,7 +103,7 @@ O atalho pode ser instalado ou recriado sem reinstalar as dependências:
 bash scripts/install-desktop.sh
 ~~~
 
-Para criar também o ícone na área de trabalho, use `bash scripts/install-desktop.sh --desktop`. Para remover somente os atalhos do menu e da área de trabalho, sem apagar o programa ou os modelos:
+Para criar também o ícone na área de trabalho, use `bash scripts/install-desktop.sh --desktop`. Para remover os atalhos, a associação de arquivos `.joeaudio` e o atalho global, sem apagar o programa ou os modelos:
 
 ~~~bash
 bash scripts/install-desktop.sh --uninstall
