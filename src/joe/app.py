@@ -4090,7 +4090,7 @@ class JoeWindow(QMainWindow):
         if command == "clipboard-audio":
             self._generate_audio_from_clipboard()
         elif command.startswith("open-project:"):
-            project_path = command[len("open-project:"):].strip()
+            project_path = command[len("open-project:"):]
             if project_path:
                 self._open_joe_audio_project(project_path)
         elif command == "activate":
@@ -4261,6 +4261,7 @@ class JoeWindow(QMainWindow):
                     or project.get("recognized_segments")
                 ),
             )
+            dialog.setWindowTitle(f"Joe — {Path(filename).name}")
             dialog.temp_dir = temp_dir
             dialog.set_text_preview(str(project["original_text"]))
             phrase_paths = project["phrase_audio_paths"]
