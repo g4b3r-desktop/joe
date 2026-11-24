@@ -1410,7 +1410,7 @@ class JoeWindow(QMainWindow):
         clipboard_action.triggered.connect(self._generate_audio_from_clipboard)
         file_menu.addAction(clipboard_action)
         open_project_action = QAction("Abrir projeto Joe…", self)
-        open_project_action.triggered.connect(self._open_joe_audio_project)
+        open_project_action.triggered.connect(lambda: self._open_joe_audio_project())
         file_menu.addAction(open_project_action)
         file_menu.addSeparator()
         restart_hotkey_action = QAction("Reativar atalho global", self)
@@ -4089,6 +4089,10 @@ class JoeWindow(QMainWindow):
     def _handle_local_command(self, command: str) -> None:
         if command == "clipboard-audio":
             self._generate_audio_from_clipboard()
+        elif command.startswith("open-project:"):
+            project_path = command[len("open-project:"):].strip()
+            if project_path:
+                self._open_joe_audio_project(project_path)
         elif command == "activate":
             if self.isMinimized():
                 self.showNormal()
@@ -4212,25 +4216,32 @@ class JoeWindow(QMainWindow):
         worker.signals.failed.connect(failed)
         self.thread_pool.start(worker)
 
-    def _open_joe_audio_project(self) -> None:
+    def _open_joe_audio_project(self, filename: str | Path | None = None) -> None:
         """Open a saved .joeaudio project without regenerating its speech."""
+        if isinstance(filename, bool):
+            # QAction.triggered supplies a checked boolean when connected directly.
+            filename = None
+
         if self.clipboard_audio_window is not None:
             self.statusBar().showMessage(
-                "Feche a janela de atalho atual antes de abrir outro projeto.",
+                "Feche a janela de áudio atual antes de abrir outro projeto.",
                 5000,
             )
             self.clipboard_audio_window.raise_()
             self.clipboard_audio_window.activateWindow()
             return
 
-        filename, _ = QFileDialog.getOpenFileName(
-            self,
-            "Abrir projeto Joe",
-            str(Path.home()),
-            f"Projeto Joe Audio (*{JOE_AUDIO_PROJECT_EXTENSION});;Todos os arquivos (*)",
-        )
-        if not filename:
-            return
+        if filename is None:
+            filename, _ = QFileDialog.getOpenFileName(
+                self,
+                "Abrir projeto Joe",
+                str(Path.home()),
+                f"Projeto Joe Audio (*{JOE_AUDIO_PROJECT_EXTENSION});;Todos os arquivos (*)",
+            )
+            if not filename:
+                return
+        else:
+            filename = str(Path(filename).expanduser())
 
         temp_dir = Path(tempfile.mkdtemp(prefix="joe_project_"))
         try:
@@ -5245,14 +5256,28 @@ class JoeWindow(QMainWindow):
 
 
 def main() -> None:
-    clipboard_requested = "--clipboard-audio" in sys.argv
-    if clipboard_requested:
-        sys.argv = [arg for arg in sys.argv if arg != "--clipboard-audio"]
-    command = "clipboard-audio" if clipboard_requested else "activate"
+    arguments = list(sys.argv[1:])
+    clipboard_requested = "--clipboard-audio" in arguments
+    project_argument = next(
+        (
+            Path(argument).expanduser().resolve()
+            for argument in arguments
+            if Path(argument).suffix.lower() == JOE_AUDIO_PROJECT_EXTENSION
+        ),
+        None,
+    )
+    command = (
+        "clipboard-audio"
+        if clipboard_requested
+        else f"open-project:{project_argument}"
+        if project_argument is not None
+        else "activate"
+    )
     if send_local_command(command):
         return
 
-    app = QApplication(sys.argv)
+    # Desktop launchers pass the selected file to the application, not to Qt.
+    app = QApplication([sys.argv[0]])
     app.setApplicationName("Joe Audio Studio")
     app.setOrganizationName("g4b3r-desktop")
     icon_path = Path(__file__).resolve().parent / "resources" / "joe.png"
@@ -5278,6 +5303,11 @@ def main() -> None:
         QTimer.singleShot(250, window._generate_audio_from_clipboard)
     else:
         window.show()
+        if project_argument is not None:
+            QTimer.singleShot(
+                0,
+                lambda path=project_argument: window._open_joe_audio_project(path),
+            )
     sys.exit(app.exec())
 
 
