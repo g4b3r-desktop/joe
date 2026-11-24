@@ -122,7 +122,7 @@ PY
   if command -v update-desktop-database >/dev/null 2>&1; then
     update-desktop-database "$APPLICATIONS_DIR" >/dev/null 2>&1 || true
   fi
-  echo "Lançadores e ícone do Joe removidos (quando gerenciados pelo Joe)."
+  echo "Lançadores, associação .joeaudio e ícone do Joe removidos (quando gerenciados pelo Joe)."
   echo "O programa, as configurações e os modelos não foram removidos."
   exit 0
 fi
