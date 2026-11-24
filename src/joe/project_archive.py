@@ -284,7 +284,7 @@ def load_joe_audio_project(
 
     phrase_paths = {
         index: extracted[member]
-        for index, member, _ in phrase_audio
+        for index, member, _ in phrase_members
     }
     return {
         "manifest": manifest,
