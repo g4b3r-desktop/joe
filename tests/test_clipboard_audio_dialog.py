@@ -73,7 +73,11 @@ def test_ready_chunk_gets_checkmark_state_and_realtime_factor(qapp, tmp_path):
         "",
         phrases=["Uma frase pronta.", "Uma frase pendente."],
     )
+    assert not dialog.project_button.isEnabled()
+    dialog.set_text_preview("Texto original da área de transferência.")
     dialog.add_chunk(1, phrase_path, 2, "Uma frase pronta.")
+    assert dialog.original_text == "Texto original da área de transferência."
+    assert dialog.chunk_texts_by_index == {1: "Uma frase pronta."}
 
     first = dialog.phrase_list.item(0)
     second = dialog.phrase_list.item(1)
@@ -91,6 +95,7 @@ def test_ready_chunk_gets_checkmark_state_and_realtime_factor(qapp, tmp_path):
     })
 
     assert dialog.save_button.isEnabled()
+    assert dialog.project_button.isEnabled()
     assert "43,0 s de áudio" in dialog.summary_label.text()
     assert "2:52" in dialog.summary_label.text()
     assert "4,0× mais lento que o tempo real" == dialog.detail_values["speed"].text()
