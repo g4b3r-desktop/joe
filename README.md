@@ -72,7 +72,7 @@ Requisitos: Python 3.11, 3.12 ou 3.13, python3-venv e bibliotecas de áudio do s
 
 ~~~bash
 sudo apt update
-sudo apt install -y python3 python3-venv python3-pip libsndfile1
+sudo apt install -y python3 python3-venv python3-pip libsndfile1 shared-mime-info xdg-utils
 git clone https://github.com/g4b3r-desktop/joe.git
 cd joe
 ~~~
