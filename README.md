@@ -83,7 +83,7 @@ Crie o ambiente e instale a build CPU do PyTorch:
 bash scripts/install-linux.sh
 ~~~
 
-Ao concluir, o instalador registra automaticamente **Joe Audio Studio** no menu de aplicativos do seu usuário, criando `~/.local/share/applications/joe.desktop`. Você poderá abrir o programa pelo menu do Linux Mint, sem precisar abrir um terminal.
+Ao concluir, o instalador registra automaticamente **Joe Audio Studio** no menu de aplicativos do seu usuário, criando `~/.local/share/applications/joe.desktop`. Você poderá abrir o programa pelo menu do Linux Mint, sem precisar abrir um terminal. Ele também registra a extensão `.joeaudio`: depois da instalação, dê duplo clique em um projeto salvo para iniciar o Joe e abrir o conteúdo. Se o Joe já estiver em execução, o arquivo é encaminhado para a instância aberta.
 
 Para também criar um ícone `joe.desktop` na área de trabalho:
 
