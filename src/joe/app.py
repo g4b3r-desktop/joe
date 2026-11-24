@@ -11,6 +11,7 @@ import threading
 import time
 import traceback
 import uuid
+import zipfile
 from collections.abc import Callable
 from pathlib import Path
 
@@ -65,6 +66,7 @@ from PySide6.QtWidgets import (
 
 from joe.audio_chunks import merge_wav_files, split_text_into_chunks, split_text_into_phrases
 from joe.audio_history import AudioHistoryStore
+from joe.project_archive import JOE_AUDIO_PROJECT_EXTENSION, load_joe_audio_project
 from joe.generation_queue import GenerationQueue, GenerationTask
 from joe.system_monitor import read_hardware_metrics
 from joe.tts_profiles import build_generation_settings, performance_profile_settings
@@ -1407,6 +1409,10 @@ class JoeWindow(QMainWindow):
         )
         clipboard_action.triggered.connect(self._generate_audio_from_clipboard)
         file_menu.addAction(clipboard_action)
+        open_project_action = QAction("Abrir projeto Joe…", self)
+        open_project_action.triggered.connect(self._open_joe_audio_project)
+        file_menu.addAction(open_project_action)
+        file_menu.addSeparator()
         restart_hotkey_action = QAction("Reativar atalho global", self)
         restart_hotkey_action.triggered.connect(self._restart_global_hotkey)
         file_menu.addAction(restart_hotkey_action)
@@ -4205,6 +4211,84 @@ class JoeWindow(QMainWindow):
         worker.signals.finished.connect(completed)
         worker.signals.failed.connect(failed)
         self.thread_pool.start(worker)
+
+    def _open_joe_audio_project(self) -> None:
+        """Open a saved .joeaudio project without regenerating its speech."""
+        if self.clipboard_audio_window is not None:
+            self.statusBar().showMessage(
+                "Feche a janela de atalho atual antes de abrir outro projeto.",
+                5000,
+            )
+            self.clipboard_audio_window.raise_()
+            self.clipboard_audio_window.activateWindow()
+            return
+
+        filename, _ = QFileDialog.getOpenFileName(
+            self,
+            "Abrir projeto Joe",
+            str(Path.home()),
+            f"Projeto Joe Audio (*{JOE_AUDIO_PROJECT_EXTENSION});;Todos os arquivos (*)",
+        )
+        if not filename:
+            return
+
+        temp_dir = Path(tempfile.mkdtemp(prefix="joe_project_"))
+        try:
+            project = load_joe_audio_project(filename, temp_dir)
+            phrase_texts_by_index = project["phrase_texts"]
+            phrase_texts = [
+                phrase_texts_by_index[index]
+                for index in sorted(phrase_texts_by_index)
+            ]
+            dialog = ClipboardAudioDialog(
+                self.player,
+                self.tts_output_directory.text().strip(),
+                self,
+                phrases=phrase_texts,
+                recognition_enabled=bool(
+                    project.get("recognized_text")
+                    or project.get("recognized_segments")
+                ),
+            )
+            dialog.temp_dir = temp_dir
+            dialog.set_text_preview(str(project["original_text"]))
+            phrase_paths = project["phrase_audio_paths"]
+            for index in sorted(phrase_texts_by_index):
+                phrase_path = phrase_paths.get(index)
+                if phrase_path is not None:
+                    dialog.add_chunk(
+                        index,
+                        phrase_path,
+                        len(phrase_texts_by_index),
+                        phrase_texts_by_index[index],
+                    )
+            dialog.set_ready({"path": str(project["full_audio_path"])})
+            recognized_text = str(project.get("recognized_text") or "")
+            recognized_segments = project.get("recognized_segments") or []
+            if recognized_text or recognized_segments:
+                dialog.set_recognition_result({
+                    "text": recognized_text,
+                    "segments": recognized_segments,
+                    "backend": "Projeto salvo",
+                })
+                dialog.recognition_toggle.setVisible(True)
+                dialog.recognition_toggle.setChecked(True)
+            dialog.closed.connect(lambda: self._clipboard_dialog_closed(dialog))
+            self.clipboard_audio_window = dialog
+            self.clipboard_temp_dir = temp_dir
+            dialog.show()
+            dialog.raise_()
+            dialog.activateWindow()
+            self.statusBar().showMessage(
+                f"Projeto aberto: {Path(filename).name}", 5000
+            )
+        except (OSError, ValueError, TypeError, KeyError, zipfile.BadZipFile) as exc:
+            self._remove_clipboard_temp_dir(temp_dir)
+            QMessageBox.critical(
+                self,
+                "Não foi possível abrir o projeto",
+                f"O arquivo .joeaudio não pôde ser carregado.\\n\\n{exc}",
+            )
 
     def _generate_audio_from_clipboard(self) -> None:
         shortcut_action = decide_clipboard_shortcut_action(
