@@ -737,7 +737,7 @@ class ClipboardAudioDialog(QDialog):
         self.save_button.clicked.connect(self._save)
         player_row.addWidget(self.save_button, 0)
 
-        self.project_button = QPushButton("Projeto")
+        self.project_button = QPushButton("Salvar projeto")
         self.project_button.setObjectName("projectButton")
         self.project_button.setToolTip(
             "Salvar textos e áudios em um projeto compactado do Joe (.joeaudio)"
