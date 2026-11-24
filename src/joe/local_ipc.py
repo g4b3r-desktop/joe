@@ -99,7 +99,9 @@ class LocalCommandServer:
                 break
             with connection:
                 try:
-                    command = connection.recv(256).decode("utf-8").strip()
+                    # File-open commands can contain full paths well beyond 256 bytes.
+                    # Do not strip whitespace: it may be part of a valid filename.
+                    command = connection.recv(65536).decode("utf-8")
                     if command:
                         try:
                             self.handler(command)
