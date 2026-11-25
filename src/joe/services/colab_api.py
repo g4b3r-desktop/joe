@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import hashlib
+import io
 import time
+import zipfile
 from pathlib import Path
-from threading import Event
+from threading import Event, Lock
 from typing import Any
 
 import httpx
@@ -157,18 +159,57 @@ class ColabAPIClient:
             write=300.0,
             pool=20.0,
         )
+        self._client_lock = Lock()
+        self._http_client: httpx.Client | None = self._create_http_client()
+
+    def _create_http_client(self) -> httpx.Client:
+        return httpx.Client(
+            timeout=self.timeout,
+            follow_redirects=False,
+            limits=httpx.Limits(
+                max_connections=12,
+                max_keepalive_connections=8,
+                keepalive_expiry=45.0,
+            ),
+        )
+
+    def _get_http_client(self) -> httpx.Client:
+        with self._client_lock:
+            if self._http_client is None or self._http_client.is_closed:
+                self._http_client = self._create_http_client()
+            return self._http_client
+
+    def close(self) -> None:
+        """Close the persistent HTTP pool when its owning task/session ends."""
+        with self._client_lock:
+            client = self._http_client
+            self._http_client = None
+        if client is not None:
+            client.close()
+
+    def __enter__(self) -> "ColabAPIClient":
+        self._get_http_client()
+        return self
+
+    def __exit__(self, *_exc: object) -> None:
+        self.close()
+
+    def __del__(self) -> None:
+        try:
+            self.close()
+        except Exception:
+            pass
 
     def _request(self, method: str, endpoint: str, **kwargs: Any) -> httpx.Response:
         headers = dict(kwargs.pop("headers", {}))
         headers["Authorization"] = f"Bearer {self.token}"
         try:
-            with httpx.Client(timeout=self.timeout, follow_redirects=False) as client:
-                response = client.request(
-                    method,
-                    f"{self.base_url}{endpoint}",
-                    headers=headers,
-                    **kwargs,
-                )
+            response = self._get_http_client().request(
+                method,
+                f"{self.base_url}{endpoint}",
+                headers=headers,
+                **kwargs,
+            )
         except httpx.RequestError as exc:
             raise ColabAPIError(
                 "Não foi possível alcançar a API do Colab. Verifique se o notebook "
@@ -197,14 +238,16 @@ class ColabAPIClient:
         self,
         cpu_threads: int,
         sampler_decode_steps: int,
+        quantize_int8: bool = False,
     ) -> dict[str, Any]:
-        """Apply Pocket TTS CPU and quality settings in the active Colab runtime."""
+        """Apply CPU threads, sampler quality and CPU-only INT8 on Colab."""
         return self._request(
             "POST",
             "/v1/settings/tts",
             json={
                 "cpu_threads": int(cpu_threads),
                 "sampler_decode_steps": int(sampler_decode_steps),
+                "quantize_int8": bool(quantize_int8),
             },
         ).json()
 
@@ -250,12 +293,12 @@ class ColabAPIClient:
                 if state == "cancelled":
                     raise ColabAPIError("A tarefa remota foi cancelada.", cancelled=True)
                 transient_failures = 0
-                delay = 1.2
+                delay = 0.75
             except ColabAPIError as exc:
                 if exc.cancelled or not exc.retryable:
                     raise
                 transient_failures += 1
-                delay = min(1.2 * (2 ** (transient_failures - 1)), 8.0)
+                delay = min(0.75 * (2 ** (transient_failures - 1)), 8.0)
 
             remaining = deadline - time.monotonic()
             if remaining > 0:
@@ -452,6 +495,54 @@ class ColabAPIClient:
         """Return the models and prepared voices currently persisted in Google Drive."""
         return self._request("GET", "/v1/assets").json()
 
+    def generate_audio_batch(
+        self,
+        texts: list[str],
+        language: str,
+        cancel_event: Event | None = None,
+        model_variant: str | None = None,
+        voice_id: str | None = None,
+    ) -> list[bytes]:
+        """Generate all chunks in one remote job and download one ZIP response."""
+        normalized = [str(item).strip() for item in texts]
+        if not normalized or any(not item for item in normalized):
+            raise ValueError("O lote de áudio precisa conter textos não vazios.")
+        if len(normalized) > 128:
+            raise ValueError("O lote excede o limite de 128 segmentos.")
+        payload: dict[str, Any] = {
+            "texts": normalized,
+            "language": language,
+            "model_variant": model_variant or language,
+        }
+        if voice_id:
+            payload["voice_id"] = voice_id
+        upload = self._request("POST", "/v1/jobs/tts/batch", json=payload).json()
+        job_id = str(upload.get("job_id", ""))
+        if not job_id:
+            raise ColabAPIError("O Colab não retornou o identificador do lote de áudio.")
+        response = self._wait_for_result(job_id, cancel_event=cancel_event)
+        try:
+            with zipfile.ZipFile(io.BytesIO(response.content), mode="r") as archive:
+                names = set(archive.namelist())
+                audio_segments: list[bytes] = []
+                for index in range(1, len(normalized) + 1):
+                    name = f"segment_{index:04d}.wav"
+                    if name not in names:
+                        raise ColabAPIError(
+                            f"O pacote de áudio do Colab não contém o segmento {index}."
+                        )
+                    audio_data = archive.read(name)
+                    if not audio_data.startswith(b"RIFF") or audio_data[8:12] != b"WAVE":
+                        raise ColabAPIError(
+                            f"O segmento {index} recebido do Colab não é um WAV RIFF/WAVE válido."
+                        )
+                    audio_segments.append(audio_data)
+        except zipfile.BadZipFile as exc:
+            raise ColabAPIError(
+                "O Colab retornou um pacote de áudio em lote inválido."
+            ) from exc
+        return audio_segments
+
     def generate_audio(
         self,
         text: str,
@@ -563,6 +654,21 @@ class ColabVoiceSession:
         self._voice_id = voice_id
         self._prepared = True
         return voice_id
+
+    def generate_audio_batch(
+        self,
+        texts: list[str],
+        cancel_event: Event | None = None,
+    ) -> list[bytes]:
+        """Generate shortcut phrases in one request using the prepared Drive voice."""
+        self.prepare()
+        return self.client.generate_audio_batch(
+            texts,
+            self.language,
+            cancel_event=cancel_event,
+            model_variant=self.model_variant,
+            voice_id=self._voice_id,
+        )
 
     def generate_audio(
         self,
