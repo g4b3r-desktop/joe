@@ -1321,7 +1321,7 @@ def _transcribe_job(audio_data: bytes, suffix: str, timestamps: str) -> dict[str
 
 
 @app.post("/v1/jobs/tts/batch", status_code=202, dependencies=[Depends(require_token)])
-def submit_tts_batch_job(payload: dict[str, Any] = Body(...)) -> dict[str, str]:
+def submit_tts_batch_job(payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
     """Queue all text chunks as one remote job and return one ZIP result."""
     texts_value = payload.get("texts")
     language = str(payload.get("language", "portuguese")).strip()
