@@ -548,9 +548,29 @@ class ColabAPIClient:
 
         batches = split_tts_batches(normalized)
         all_audio_segments: list[bytes] = []
+        batch_endpoint_available = True
         for batch in batches:
             if cancel_event is not None and cancel_event.is_set():
                 raise ColabAPIError("Geração cancelada pelo Joe.", cancelled=True)
+
+            # Older Colab notebooks expose /v1/jobs/tts but not the newer
+            # /v1/jobs/tts/batch route. A 404 is definitive, so switch to the
+            # compatible one-job-per-phrase path for this and remaining batches.
+            if not batch_endpoint_available:
+                for text in batch:
+                    if cancel_event is not None and cancel_event.is_set():
+                        raise ColabAPIError("Geração cancelada pelo Joe.", cancelled=True)
+                    all_audio_segments.append(
+                        self.generate_audio(
+                            text,
+                            language,
+                            cancel_event=cancel_event,
+                            model_variant=model_variant,
+                            voice_id=voice_id,
+                        )
+                    )
+                continue
+
             payload: dict[str, Any] = {
                 "texts": batch,
                 "language": language,
@@ -558,7 +578,28 @@ class ColabAPIClient:
             }
             if voice_id:
                 payload["voice_id"] = voice_id
-            upload = self._request("POST", "/v1/jobs/tts/batch", json=payload).json()
+            try:
+                upload = self._request(
+                    "POST", "/v1/jobs/tts/batch", json=payload
+                ).json()
+            except ColabAPIError as exc:
+                if "HTTP 404" not in str(exc):
+                    raise
+                batch_endpoint_available = False
+                for text in batch:
+                    if cancel_event is not None and cancel_event.is_set():
+                        raise ColabAPIError("Geração cancelada pelo Joe.", cancelled=True)
+                    all_audio_segments.append(
+                        self.generate_audio(
+                            text,
+                            language,
+                            cancel_event=cancel_event,
+                            model_variant=model_variant,
+                            voice_id=voice_id,
+                        )
+                    )
+                continue
+
             job_id = str(upload.get("job_id", ""))
             if not job_id:
                 raise ColabAPIError("O Colab não retornou o identificador do lote de áudio.")
