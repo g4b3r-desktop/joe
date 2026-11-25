@@ -5311,6 +5311,7 @@ def main() -> None:
     if icon_path.is_file():
         app.setWindowIcon(QIcon(str(icon_path)))
     window = JoeWindow()
+    app.aboutToQuit.connect(window.clipboard_voice_cache.close)
     server = LocalCommandServer(window.hotkey_bridge.command_received.emit)
     try:
         server.start()
