@@ -4347,6 +4347,15 @@ class JoeWindow(QMainWindow):
 
         self._run_task("Comparando o Pocket TTS em CPU e CUDA…", benchmark, completed)
 
+    def _save_tts_chunk_size(self, *_args) -> None:
+        """Persist the shared normal-generation and shortcut text split size."""
+        if not hasattr(self, "tts_chunk_size"):
+            return
+        value = int(self.tts_chunk_size.currentData() or 0)
+        self.app_settings.setValue("tts_chunk_size", value)
+        # Keep the legacy key in sync for existing installations and settings.
+        self.app_settings.setValue("clipboard_chunk_size", value)
+
     def _save_tts_output_settings(self, *_args) -> None:
         if not hasattr(self, "tts_output_directory"):
             return
