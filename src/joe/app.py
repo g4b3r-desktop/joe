@@ -64,7 +64,11 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from joe.audio_chunks import merge_wav_files, split_text_into_chunks, split_text_into_phrases
+from joe.audio_chunks import (
+    merge_wav_files,
+    prepare_clipboard_chunks,
+    split_text_into_chunks,
+)
 from joe.audio_history import AudioHistoryStore
 from joe.project_archive import JOE_AUDIO_PROJECT_EXTENSION, load_joe_audio_project
 from joe.generation_queue import GenerationQueue, GenerationTask
@@ -95,10 +99,10 @@ from joe.pronunciation_dictionary import (
     merge_pronunciation_entries,
 )
 from joe.services.colab_api import (
+    MAX_TTS_TEXT_CHARS,
     ColabAPIClient,
     ColabAPIError,
     ColabVoiceSession,
-    split_tts_batches,
 )
 from joe.model_discovery import LocalModel, default_model_search_roots, discover_local_models
 from joe.services.parakeet import ParakeetReduxService
@@ -201,36 +205,33 @@ class ClipboardChunkWorker(QRunnable):
                 self.prepare()
 
             if self.batch_generator is not None:
-                # Small batches keep phrases available progressively while reducing HTTP overhead.
-                batch_size = 4
-                for batch_start in range(0, total, batch_size):
+                if self.cancel_event.is_set():
+                    self.signals.cancelled.emit()
+                    return
+                self.signals.progress.emit(
+                    f"Enviando as {total} frases clicáveis em uma única tarefa ao Colab…"
+                )
+                audio_batch = self.batch_generator(self.chunks, self.cancel_event)
+                if len(audio_batch) != total:
+                    raise RuntimeError(
+                        "O Colab retornou uma quantidade inesperada de segmentos de áudio."
+                    )
+                # The ZIP is downloaded once; after that, preserve each WAV as
+                # an independent clickable phrase in the shortcut window.
+                for index, (text, audio_data) in enumerate(
+                    zip(self.chunks, audio_batch), start=1
+                ):
                     if self.cancel_event.is_set():
                         self.signals.cancelled.emit()
                         return
-                    batch_texts = self.chunks[batch_start:batch_start + batch_size]
-                    first_index = batch_start + 1
-                    last_index = batch_start + len(batch_texts)
-                    self.signals.progress.emit(
-                        f"Gerando trechos {first_index}–{last_index} de {total} no Colab…"
-                    )
-                    audio_batch = self.batch_generator(batch_texts, self.cancel_event)
-                    if len(audio_batch) != len(batch_texts):
+                    destination = self.output_directory / f"part_{index:03d}.wav"
+                    write_bytes_atomically(destination, audio_data)
+                    if not destination.is_file() or destination.stat().st_size == 0:
                         raise RuntimeError(
-                            "O Colab retornou uma quantidade inesperada de segmentos de áudio."
+                            f"O Colab não produziu um WAV válido para o trecho {index}."
                         )
-                    for offset, (text, audio_data) in enumerate(zip(batch_texts, audio_batch)):
-                        if self.cancel_event.is_set():
-                            self.signals.cancelled.emit()
-                            return
-                        index = first_index + offset
-                        destination = self.output_directory / f"part_{index:03d}.wav"
-                        write_bytes_atomically(destination, audio_data)
-                        if not destination.is_file() or destination.stat().st_size == 0:
-                            raise RuntimeError(
-                                f"O Colab não produziu um WAV válido para o trecho {index}."
-                            )
-                        generated.append(destination)
-                        self.signals.chunk_ready.emit(index, str(destination), total, text)
+                    generated.append(destination)
+                    self.signals.chunk_ready.emit(index, str(destination), total, text)
             else:
                 for index, text in enumerate(self.chunks, start=1):
                     if self.cancel_event.is_set():
@@ -337,9 +338,18 @@ class TTSGenerationWorker(QRunnable):
         backend = "Google Colab" if self.task.remote else "Pocket TTS local"
         remote: ColabAPIClient | None = None
         try:
-            chunks = split_text_into_chunks(self.task.speech_text, max_chars=280)
-            if not chunks:
+            speech_text = str(self.task.speech_text or "").strip()
+            if not speech_text:
                 raise ValueError("O texto preparado para fala está vazio.")
+            if self.task.remote and len(speech_text) > MAX_TTS_TEXT_CHARS:
+                # The Colab API accepts up to 20k characters per job. Larger
+                # documents are split only at that hard API boundary.
+                chunks = split_text_into_chunks(
+                    speech_text, max_chars=MAX_TTS_TEXT_CHARS
+                )
+            else:
+                # Pocket TTS already chunks long text internally by tokens.
+                chunks = [speech_text]
 
             remote = (
                 ColabAPIClient(self.task.remote_url, self.task.remote_token)
@@ -366,39 +376,6 @@ class TTSGenerationWorker(QRunnable):
             with tempfile.TemporaryDirectory(prefix="joe-tts-queue-") as temp_dir:
                 temporary_root = Path(temp_dir)
                 generated: list[Path] = []
-                remote_audio_chunks: list[bytes] | None = None
-                if remote is not None:
-                    remote_audio_chunks = []
-                    remote_batches = split_tts_batches(chunks)
-                    for batch_index, remote_batch in enumerate(remote_batches, start=1):
-                        self.signals.progress.emit(
-                            self.task.task_id,
-                            f"Enviando lote {batch_index} de {len(remote_batches)} "
-                            f"({len(remote_batch)} trechos) para o Google Colab…",
-                        )
-                        try:
-                            batch_audio = remote.generate_audio_batch(
-                                remote_batch,
-                                self.task.language,
-                                cancel_event=self.cancel_event,
-                                model_variant=self.task.model_variant,
-                                voice_id=remote_voice_id,
-                            )
-                        except ColabAPIError as batch_error:
-                            # Keep compatibility with API versions before the batch endpoint.
-                            if batch_index == 1 and "HTTP 404" in str(batch_error):
-                                remote_audio_chunks = None
-                                self.signals.progress.emit(
-                                    self.task.task_id,
-                                    "API antiga detectada; usando geração remota compatível por trecho…",
-                                )
-                                break
-                            raise
-                        remote_audio_chunks.extend(batch_audio)
-                    if remote_audio_chunks is not None and len(remote_audio_chunks) != len(chunks):
-                        raise ColabAPIError(
-                            "O Colab retornou uma quantidade inesperada de segmentos no lote."
-                        )
 
                 for index, chunk_text in enumerate(chunks, start=1):
                     if self.cancel_event.is_set():
@@ -420,17 +397,14 @@ class TTSGenerationWorker(QRunnable):
                         chunk_path.unlink(missing_ok=True)
                         try:
                             if remote is not None:
-                                if remote_audio_chunks is not None:
-                                    audio_data = remote_audio_chunks[index - 1]
-                                else:
-                                    audio_data = remote.generate_audio(
-                                        chunk_text,
-                                        self.task.language,
-                                        self.task.voice_path,
-                                        cancel_event=self.cancel_event,
-                                        model_variant=self.task.model_variant,
-                                        voice_id=remote_voice_id,
-                                    )
+                                audio_data = remote.generate_audio(
+                                    chunk_text,
+                                    self.task.language,
+                                    self.task.voice_path,
+                                    cancel_event=self.cancel_event,
+                                    model_variant=self.task.model_variant,
+                                    voice_id=remote_voice_id,
+                                )
                                 if self.cancel_event.is_set():
                                     self.signals.cancelled.emit(self.task.task_id)
                                     return
@@ -2823,10 +2797,21 @@ class JoeWindow(QMainWindow):
         self.tts_auto_filename.toggled.connect(self._save_tts_output_settings)
 
         self.clipboard_chunk_size = QComboBox()
-        for size in (180, 280, 420, 560):
-            self.clipboard_chunk_size.addItem(f"{size} caracteres", size)
+        for label, size in (
+            ("280 caracteres", 280),
+            ("420 caracteres", 420),
+            ("560 caracteres", 560),
+            ("Texto completo (até 20.000)", MAX_TTS_TEXT_CHARS),
+        ):
+            self.clipboard_chunk_size.addItem(label, size)
+        self.clipboard_chunk_size.setToolTip(
+            "Com frases clicáveis, define o limite de cada WAV. "
+            "Texto completo mantém cada sentença inteira (até 20.000 caracteres). "
+            "Sem frases clicáveis, o Joe envia o texto inteiro ao Pocket TTS "
+            "e deixa o modelo cuidar da divisão interna."
+        )
         saved_chunk_size = self.app_settings.value(
-            "clipboard_chunk_size", 280, type=int
+            "clipboard_chunk_size", 560, type=int
         )
         chunk_size_index = self.clipboard_chunk_size.findData(saved_chunk_size)
         self.clipboard_chunk_size.setCurrentIndex(max(0, chunk_size_index))
@@ -2840,11 +2825,12 @@ class JoeWindow(QMainWindow):
             "Ativar frases clicáveis no atalho (ouvir cada frase separadamente)"
         )
         self.clipboard_interactive_phrases.setToolTip(
-            "Gera cada frase em um WAV separado dentro da sessão temporária, "
-            "permitindo clicar nela para ouvir somente aquele trecho."
+            "Opcional. Gera cada frase em um WAV separado para reprodução individual. "
+            "No Colab, todas as frases são enviadas juntas em uma única tarefa; "
+            "a janela disponibiliza os WAVs depois que o ZIP completo é recebido."
         )
         self.clipboard_interactive_phrases.setChecked(
-            self.app_settings.value("clipboard_interactive_phrases", True, type=bool)
+            self.app_settings.value("clipboard_interactive_phrases", False, type=bool)
         )
         self.clipboard_interactive_phrases.toggled.connect(
             lambda checked: self.app_settings.setValue(
@@ -4742,10 +4728,11 @@ class JoeWindow(QMainWindow):
             recognition_enabled = bool(
                 self.clipboard_recognize_generated_audio.isChecked()
             )
-            chunks = (
-                split_text_into_phrases(speech_text, max_chars=chunk_size)
-                if interactive_phrases
-                else split_text_into_chunks(speech_text, max_chars=chunk_size)
+            chunks = prepare_clipboard_chunks(
+                speech_text,
+                interactive_phrases=interactive_phrases,
+                max_phrase_chars=chunk_size,
+                max_text_chars=MAX_TTS_TEXT_CHARS if remote is not None else None,
             )
             if not chunks:
                 raise ValueError("Não há texto para converter em áudio.")
@@ -4813,7 +4800,8 @@ class JoeWindow(QMainWindow):
 
         batch_generator = None
         if remote_voice_session is not None:
-            batch_generator = remote_voice_session.generate_audio_batch
+            if interactive_phrases:
+                batch_generator = remote_voice_session.generate_audio_batch
 
             def generate_clipboard_chunk(chunk_text: str, output_path: Path) -> Path:
                 audio_data = remote_voice_session.generate_audio(chunk_text)
