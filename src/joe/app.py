@@ -2325,26 +2325,41 @@ class JoeWindow(QMainWindow):
         tts_steps = data.get("tts_sampler_decode_steps", "—")
         tts_int8 = bool(data.get("tts_quantize_int8"))
         tts_int8_requested = bool(data.get("tts_quantize_int8_requested"))
-        tts_int8_status = (
-            "INT8 configurado para a próxima carga (CPU)"
-            if tts_int8 and not (data.get("tts_loaded_model_diagnostics") or {})
-            else "INT8 ativo (CPU)"
-            if tts_int8 else
-            str(data.get("tts_quantization_disabled_reason") or "INT8 desativado")
-            if tts_int8_requested else "INT8 desativado"
+        pocket_tts_version = data.get("pocket_tts_version", "N/D")
+        loaded_model_diagnostics = data.get("tts_loaded_model_diagnostics") or {}
+        quantized_linear_layers = sum(
+            int(details.get("quantized_linear_layers", 0) or 0)
+            for details in loaded_model_diagnostics.values()
+            if isinstance(details, dict)
         )
+        if not tts_int8_requested:
+            tts_int8_status = "INT8 desativado"
+        elif data.get("tts_quantization_disabled_reason"):
+            tts_int8_status = str(data["tts_quantization_disabled_reason"])
+        elif not tts_int8:
+            tts_int8_status = "INT8 solicitado, mas não ativado no servidor"
+        elif not loaded_model_diagnostics:
+            tts_int8_status = "INT8 configurado para a próxima carga (CPU)"
+        elif quantized_linear_layers > 0:
+            tts_int8_status = (
+                f"INT8 ativo na CPU ({quantized_linear_layers} camadas quantizadas)"
+            )
+        else:
+            tts_int8_status = (
+                "INT8 solicitado na CPU, mas nenhuma camada quantizada foi detectada"
+            )
+
         last_tts = data.get("last_tts_generation") or {}
         last_tts_status = (
             f"Última síntese: {last_tts.get('device')} | "
             f"fluxo: {last_tts.get('flow_type', 'N/D')} | "
             f"sampler: {last_tts.get('sampler_decode_steps', 'N/D')} passo(s) | "
-            f"INT8: {'sim' if last_tts.get('quantize_int8') else 'não'} | "
+            f"INT8: {'sim' if last_tts.get('quantize_int8') else 'não'} "
+            f"({last_tts.get('quantized_linear_layers', 'N/D')} camadas) | "
             f"RTF {float(last_tts.get('realtime_factor', 0)):.2f} | "
             f"{float(last_tts.get('duration_seconds', 0)):.2f}s de áudio."
             if last_tts else "Ainda não há síntese TTS nesta sessão."
         )
-        pocket_tts_version = data.get("pocket_tts_version", "N/D")
-        loaded_model_diagnostics = data.get("tts_loaded_model_diagnostics") or {}
         loaded_model_summary = ", ".join(
             f"{variant}: fluxo {details.get('flow_type', 'N/D')} / "
             f"{details.get('sampler_decode_steps', 'N/D')} passo(s) / "
