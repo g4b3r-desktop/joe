@@ -4428,7 +4428,7 @@ class JoeWindow(QMainWindow):
         remote_voice_session = (
             ColabVoiceSession(
                 remote,
-                voice,
+                voice_source,
                 language,
                 model_variant,
                 name=Path(voice_source).stem if voice_source else None,
