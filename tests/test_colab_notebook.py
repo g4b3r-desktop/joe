@@ -78,3 +78,73 @@ def test_desktop_opens_colab_notebook_from_matching_optimization_branch():
 
     assert "blob/feature/colab-performance-optimizations/colab/Joe_Colab_API.ipynb" in source
     assert "blob/feature/clipboard-dialog-appearance-settings/colab/Joe_Colab_API.ipynb" not in source
+
+
+
+def test_colab_job_queue_rolls_back_when_executor_cannot_start_worker():
+    import logging
+    import threading
+    import time
+
+    import pytest
+
+    api_path = NOTEBOOK_PATH.parent / "api_server.py"
+    api_source = api_path.read_text(encoding="utf-8")
+    tree = ast.parse(api_source)
+    submit_function = next(
+        node
+        for node in tree.body
+        if isinstance(node, ast.FunctionDef) and node.name == "_submit_job"
+    )
+    isolated = ast.Module(
+        body=[
+            ast.ImportFrom(
+                module="__future__",
+                names=[ast.alias(name="annotations")],
+                level=0,
+            ),
+            submit_function,
+        ],
+        type_ignores=[],
+    )
+
+    class FailingExecutor:
+        def submit(self, *_args, **_kwargs):
+            raise RuntimeError("worker thread unavailable")
+
+    jobs = {}
+    namespace = {
+        "threading": threading,
+        "time": time,
+        "logger": logging.getLogger("test.joe.colab"),
+        "_JOB_LOCK": threading.Lock(),
+        "_JOBS": jobs,
+        "_JOB_TTL_SECONDS": 1800,
+        "_MAX_STORED_JOBS": 8,
+        "_MAX_ACTIVE_JOBS": 2,
+        "_JOB_EXECUTOR": FailingExecutor(),
+        "_run_job": lambda *_args: None,
+    }
+    exec(compile(isolated, str(api_path), "exec"), namespace)
+
+    with pytest.raises(RuntimeError, match="Não foi possível iniciar o worker"):
+        namespace["_submit_job"](
+            "tts_batch",
+            lambda *_args: None,
+            ["texto"],
+            _pass_cancel_event=True,
+        )
+
+    assert jobs == {}
+
+
+def test_colab_batch_route_exposes_unexpected_enqueue_errors():
+    api_source = (NOTEBOOK_PATH.parent / "api_server.py").read_text(encoding="utf-8")
+    route_start = api_source.index('@app.post("/v1/jobs/tts/batch"')
+    route_end = api_source.index('@app.post("/v1/jobs/tts"', route_start)
+    route = api_source[route_start:route_end]
+
+    assert "except Exception as exc:" in route
+    assert "logger.exception(" in route
+    assert "status_code=503" in route
+    assert "type(exc).__name__" in route
