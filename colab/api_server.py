@@ -45,6 +45,7 @@ from drive_assets import (
     voice_state_for_safetensors_export,
 )
 from tts_runtime import (
+    available_cpu_count,
     configure_torch_threads,
     ensure_supported_torch,
     inspect_audio_samples,
@@ -958,6 +959,95 @@ def health(_: None = Depends(require_token)) -> dict[str, Any]:
         "tts_threads_error": TTS_THREADS_ERROR,
         "tts_device_fallback_reason": _tts_device_fallback_reason,
         "last_tts_generation": dict(_last_tts_metrics) if _last_tts_metrics else None,
+        "tts_available_cpu_threads": available_cpu_count(),
+    }
+
+
+@app.post("/v1/settings/tts", dependencies=[Depends(require_token)])
+def update_tts_settings(payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
+    """Apply Colab TTS settings without restarting the API process."""
+    global TTS_CPU_THREADS, TTS_SAMPLER_DECODE_STEPS
+    global TTS_THREADS_ERROR, TTS_SAMPLER_ERROR
+
+    try:
+        requested_threads = int(payload.get("cpu_threads", TTS_CPU_THREADS))
+        requested_steps = int(
+            payload.get("sampler_decode_steps", TTS_SAMPLER_DECODE_STEPS)
+        )
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(
+            status_code=422,
+            detail="Threads CPU e Qualidade precisam ser números inteiros.",
+        ) from exc
+
+    if not 1 <= requested_threads <= 64:
+        raise HTTPException(
+            status_code=422,
+            detail="Threads CPU deve ficar entre 1 e 64.",
+        )
+    if not 1 <= requested_steps <= 16:
+        raise HTTPException(
+            status_code=422,
+            detail="Qualidade deve ficar entre 1 e 16.",
+        )
+
+    # Serialize with TTS inference and prevent settings from changing while any
+    # queued/running job is using PyTorch (TTS or ASR).
+    with _tts_lock:
+        with _JOB_LOCK:
+            active_jobs = [
+                job for job in _JOBS.values()
+                if job["status"] in {"queued", "running", "cancelling"}
+            ]
+            if active_jobs:
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        "Há uma tarefa de inferência em andamento ou na fila. "
+                        "Aguarde terminar e aplique as configurações novamente."
+                    ),
+                )
+
+            previous_steps = TTS_SAMPLER_DECODE_STEPS
+            try:
+                applied_threads = configure_torch_threads(torch, requested_threads)
+            except (TypeError, ValueError, RuntimeError) as exc:
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"Não foi possível aplicar Threads CPU: {exc}",
+                ) from exc
+
+            TTS_CPU_THREADS = applied_threads
+            TTS_THREADS_ERROR = None
+            TTS_SAMPLER_DECODE_STEPS = requested_steps
+            TTS_SAMPLER_ERROR = None
+            os.environ["JOE_TTS_CPU_THREADS"] = str(applied_threads)
+            os.environ["JOE_TTS_SAMPLER_DECODE_STEPS"] = str(requested_steps)
+
+            sampler_changed = requested_steps != previous_steps
+            if sampler_changed:
+                # These are process-memory caches only. Drive models and voice
+                # assets remain untouched and will be loaded on the next request.
+                _tts_models.clear()
+                _tts_loaded_devices.clear()
+                _tts_voice_states.clear()
+
+    if sampler_changed:
+        gc.collect()
+        if torch.cuda.is_available():
+            try:
+                torch.cuda.empty_cache()
+            except Exception:
+                pass
+
+    return {
+        "ok": True,
+        "tts_cpu_threads": TTS_CPU_THREADS,
+        "tts_requested_cpu_threads": requested_threads,
+        "tts_available_cpu_threads": available_cpu_count(),
+        "tts_sampler_decode_steps": TTS_SAMPLER_DECODE_STEPS,
+        "tts_model_reloaded_on_next_generation": sampler_changed,
+        "tts_loaded_model_variants": sorted(_tts_models),
     }
 
 
