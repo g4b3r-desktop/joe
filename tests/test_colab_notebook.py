@@ -48,3 +48,17 @@ def test_colab_api_url_accepts_domain_without_scheme_and_rejects_invalid_urls():
     assert parse_domain("https://api.example.com:8443") == ""
     assert parse_domain("https://api.example.com/v1") == ""
     assert parse_domain("https://api.example.com?token=secret") == ""
+
+
+def test_colab_notebook_delegates_runtime_settings_to_desktop_joe():
+    notebook = json.loads(NOTEBOOK_PATH.read_text(encoding="utf-8"))
+    startup = "".join(notebook["cells"][12]["source"])
+    diagnostics = "".join(notebook["cells"][14]["source"])
+
+    assert "JOE_TTS_CPU_THREADS', '2')" in startup
+    assert "JOE_TTS_SAMPLER_DECODE_STEPS', '4')" in startup
+    assert "JOE_TTS_QUANTIZE_INT8', '0')" in startup
+    assert "os.environ['JOE_TTS_CPU_THREADS'] = '2'" not in startup
+    assert "tts_quantize_int8" in startup
+    assert "tts_quantize_int8_requested" in diagnostics
+    assert "INT8 usado:" in diagnostics
