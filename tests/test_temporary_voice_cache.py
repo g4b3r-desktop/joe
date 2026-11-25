@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from pathlib import Path
-
 import pytest
 
 from joe.temporary_voice_cache import TemporaryVoiceFileCache
@@ -20,6 +18,7 @@ def test_cache_copies_voice_once_and_reuses_it_until_selection_changes(tmp_path)
 
         # Editing the source file does not change the active temporary snapshot.
         source.write_bytes(b"voice-version-two")
+        source.unlink()
         second_copy = cache.get(source)
         assert second_copy == first_copy
         assert second_copy.read_bytes() == b"voice-version-one"
