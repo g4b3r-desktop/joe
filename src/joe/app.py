@@ -259,9 +259,12 @@ class ClipboardChunkWorker(QRunnable):
                 {"path": str(merged), "performance": performance}
             )
         except Exception as exc:  # noqa: BLE001
-            self.signals.failed.emit(
-                f"{exc}\n\nTraceback técnico:\n{traceback.format_exc()}"
-            )
+            if self.cancel_event.is_set() or getattr(exc, "cancelled", False):
+                self.signals.cancelled.emit()
+            else:
+                self.signals.failed.emit(
+                    f"{exc}\\n\\nTraceback técnico:\\n{traceback.format_exc()}"
+                )
 
     def _generate_chunk(
         self,
