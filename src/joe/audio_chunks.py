@@ -93,6 +93,29 @@ def split_text_into_chunks(text: str, max_chars: int = 280) -> list[str]:
     return chunks
 
 
+def prepare_clipboard_chunks(
+    text: str,
+    *,
+    interactive_phrases: bool,
+    max_phrase_chars: int = 560,
+    max_text_chars: int | None = None,
+) -> list[str]:
+    """Prepare shortcut TTS input without arbitrary short chunks by default.
+
+    Interactive mode keeps one item per sentence (splitting only sentences
+    that exceed max_phrase_chars). Non-interactive mode sends the full text
+    in one call unless a remote API character limit requires safe splitting.
+    """
+    cleaned = str(text or "").strip()
+    if not cleaned:
+        return []
+    if interactive_phrases:
+        return split_text_into_phrases(cleaned, max_chars=max_phrase_chars)
+    if max_text_chars is not None and len(cleaned) > max_text_chars:
+        return split_text_into_chunks(cleaned, max_chars=max_text_chars)
+    return [cleaned]
+
+
 def merge_wav_files(
     input_paths: Iterable[str | Path],
     output_path: str | Path,
