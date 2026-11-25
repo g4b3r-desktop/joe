@@ -31,6 +31,7 @@ class TemporaryVoiceFileCache:
         self._cached_path: Path | None = None
         self._retired_paths: set[Path] = set()
         self._load_existing_cache()
+        self._cleanup_orphaned_files()
 
     @staticmethod
     def _canonical_source(source: str | Path) -> Path:
@@ -55,6 +56,21 @@ class TemporaryVoiceFileCache:
                 self._cached_path = cached_path
         except (OSError, ValueError, TypeError, KeyError):
             return
+
+    def _cleanup_orphaned_files(self) -> None:
+        """Remove interrupted-copy remnants without touching the active snapshot."""
+        if not self._directory.is_dir():
+            return
+        for path in self._directory.iterdir():
+            if path == self._cached_path or path.name == self.MANIFEST_NAME:
+                continue
+            is_cache_file = (
+                path.name.startswith("voice-")
+                or path.name.startswith(".voice-")
+                or path.name.startswith(f".{self.MANIFEST_NAME}.")
+            )
+            if is_cache_file and path.is_file():
+                path.unlink(missing_ok=True)
 
     def _write_manifest(self, source_key: str, cached_path: Path) -> None:
         self._directory.mkdir(parents=True, exist_ok=True)
