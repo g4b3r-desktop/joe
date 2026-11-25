@@ -114,6 +114,7 @@ from joe.voice_favorites import (
     serialize_voice_favorites,
 )
 from joe.voice_profiles import load_voice_profiles, serialize_voice_profiles
+from joe.temporary_voice_cache import TemporaryVoiceFileCache
 from joe.utils import build_srt, build_audio_output_path, write_bytes_atomically
 from joe.transcript_sync import active_segment_index, normalize_timed_segments
 
@@ -1305,6 +1306,7 @@ class JoeWindow(QMainWindow):
         self.clipboard_recognition_worker: FunctionWorker | None = None
         self.clipboard_audio_window: ClipboardAudioDialog | None = None
         self.clipboard_temp_dir: Path | None = None
+        self.clipboard_voice_cache = TemporaryVoiceFileCache()
         self._replacing_clipboard_dialog = False
         self.hotkey_listener = None
         self.local_command_server: LocalCommandServer | None = None
@@ -2245,6 +2247,7 @@ class JoeWindow(QMainWindow):
             lambda value: self._save_text_setting("voice_path", value)
         )
         self.voice_path.textChanged.connect(self._sync_favorite_editor)
+        self.voice_path.textChanged.connect(self._on_clipboard_voice_source_changed)
 
         self.voice_library_directory = QLineEdit(
             str(self.app_settings.value("voice_library_directory", ""))
@@ -4136,6 +4139,12 @@ class JoeWindow(QMainWindow):
         if directory is not None:
             shutil.rmtree(directory, ignore_errors=True)
 
+    def _on_clipboard_voice_source_changed(self, _value: str = "") -> None:
+        """Invalidate the shortcut's voice snapshot when the selected voice changes."""
+        self.clipboard_voice_cache.invalidate()
+        if self.clipboard_generation_worker is None:
+            self.clipboard_voice_cache.cleanup_retired()
+
     def _clipboard_dialog_closed(self, dialog: ClipboardAudioDialog) -> None:
         if self.clipboard_audio_window is dialog:
             self.clipboard_audio_window = None
@@ -4391,7 +4400,20 @@ class JoeWindow(QMainWindow):
             return
 
         destination = temp_dir / "clipboard_audio.wav"
-        voice = self.voice_path.text().strip() or None
+        voice_source = self.voice_path.text().strip() or None
+        try:
+            cached_voice_path = self.clipboard_voice_cache.get(voice_source)
+            voice = str(cached_voice_path) if cached_voice_path is not None else None
+        except OSError as exc:
+            self._remove_clipboard_temp_dir(temp_dir)
+            self.statusBar().showMessage(
+                f"Não foi possível preparar a voz temporária do atalho: {exc}",
+                8000,
+            )
+            if self.clipboard_only_mode:
+                QTimer.singleShot(0, QApplication.quit)
+            return
+
         tts_device = str(self.tts_device.currentData() or "cpu")
         cpu_threads = int(self.tts_cpu_threads.value())
         tts_quantization = bool(self.tts_quantization.isChecked())
@@ -4479,7 +4501,7 @@ class JoeWindow(QMainWindow):
                 performance,
                 copied_text,
                 language,
-                voice,
+                voice_source,
                 remote is not None,
                 model_variant,
                 generation_settings,
@@ -4522,6 +4544,7 @@ class JoeWindow(QMainWindow):
 
         def finished(result: object) -> None:
             self.clipboard_generation_worker = None
+            self.clipboard_voice_cache.cleanup_retired()
             result_data = result if isinstance(result, dict) else {"path": str(result)}
             if dialog_state["closed"]:
                 cleanup_closed_dialog()
@@ -4539,6 +4562,7 @@ class JoeWindow(QMainWindow):
 
         def failed(message: str) -> None:
             self.clipboard_generation_worker = None
+            self.clipboard_voice_cache.cleanup_retired()
             parts = message.split("\n\n", 1)
             detail = parts[0].strip() or "Erro desconhecido"
             technical_details = parts[1] if len(parts) > 1 else ""
@@ -4552,6 +4576,7 @@ class JoeWindow(QMainWindow):
 
         def cancelled() -> None:
             self.clipboard_generation_worker = None
+            self.clipboard_voice_cache.cleanup_retired()
             cleanup_closed_dialog()
             if self.clipboard_only_mode and self.clipboard_recognition_worker is None:
                 QTimer.singleShot(0, QApplication.quit)
@@ -5250,6 +5275,7 @@ class JoeWindow(QMainWindow):
             self.thread_pool.waitForDone(-1)
         self._remove_clipboard_temp_dir(self.clipboard_temp_dir)
         self.clipboard_temp_dir = None
+        self.clipboard_voice_cache.close()
         self.player.stop()
         self.asr.close()
         self.tts.close()
