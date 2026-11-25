@@ -2036,7 +2036,7 @@ class JoeWindow(QMainWindow):
     def _colab_tts_settings_failed(self, message: str) -> None:
         self.colab_tts_settings_worker = None
         self.colab_tts_apply_button.setEnabled(True)
-        detail = str(message).split("\\n\\n", 1)[0].strip()
+        detail = str(message).split("\n\n", 1)[0].strip()
         self.colab_tts_settings_status.setText(
             f"Não foi possível aplicar as configurações: {detail}"
         )
