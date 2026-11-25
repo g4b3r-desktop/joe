@@ -193,6 +193,21 @@ class ColabAPIClient:
     def test_connection(self) -> dict[str, Any]:
         return self._request("GET", "/health").json()
 
+    def update_tts_settings(
+        self,
+        cpu_threads: int,
+        sampler_decode_steps: int,
+    ) -> dict[str, Any]:
+        """Apply Pocket TTS CPU and quality settings in the active Colab runtime."""
+        return self._request(
+            "POST",
+            "/v1/settings/tts",
+            json={
+                "cpu_threads": int(cpu_threads),
+                "sampler_decode_steps": int(sampler_decode_steps),
+            },
+        ).json()
+
     def cancel_job(self, job_id: str) -> dict[str, Any]:
         """Ask the Colab runtime to stop waiting work or discard a running result."""
         return self._request("DELETE", f"/v1/jobs/{job_id}").json()
