@@ -11,11 +11,15 @@ from typing import Any
 import httpx
 
 
+MAX_TTS_TEXT_CHARS = 20_000
+MAX_TTS_BATCH_SEGMENTS = 512
+
+
 def split_tts_batches(
     texts: list[str],
     *,
-    max_characters: int = 18_000,
-    max_segments: int = 128,
+    max_characters: int = MAX_TTS_TEXT_CHARS,
+    max_segments: int = MAX_TTS_BATCH_SEGMENTS,
 ) -> list[list[str]]:
     """Split TTS text chunks into requests within the Colab API batch limits."""
     if max_characters < 1 or max_segments < 1:
@@ -537,47 +541,50 @@ class ColabAPIClient:
         model_variant: str | None = None,
         voice_id: str | None = None,
     ) -> list[bytes]:
-        """Generate all chunks in one remote job and download one ZIP response."""
+        """Generate all phrases in as few remote jobs as the API limits allow."""
         normalized = [str(item).strip() for item in texts]
         if not normalized or any(not item for item in normalized):
             raise ValueError("O lote de áudio precisa conter textos não vazios.")
-        if len(normalized) > 128:
-            raise ValueError("O lote excede o limite de 128 segmentos.")
-        if sum(len(item) for item in normalized) > 20_000:
-            raise ValueError("O lote excede o limite total de 20.000 caracteres do Colab.")
-        payload: dict[str, Any] = {
-            "texts": normalized,
-            "language": language,
-            "model_variant": model_variant or language,
-        }
-        if voice_id:
-            payload["voice_id"] = voice_id
-        upload = self._request("POST", "/v1/jobs/tts/batch", json=payload).json()
-        job_id = str(upload.get("job_id", ""))
-        if not job_id:
-            raise ColabAPIError("O Colab não retornou o identificador do lote de áudio.")
-        response = self._wait_for_result(job_id, cancel_event=cancel_event)
-        try:
-            with zipfile.ZipFile(io.BytesIO(response.content), mode="r") as archive:
-                names = set(archive.namelist())
-                audio_segments: list[bytes] = []
-                for index in range(1, len(normalized) + 1):
-                    name = f"segment_{index:04d}.wav"
-                    if name not in names:
-                        raise ColabAPIError(
-                            f"O pacote de áudio do Colab não contém o segmento {index}."
-                        )
-                    audio_data = archive.read(name)
-                    if not audio_data.startswith(b"RIFF") or audio_data[8:12] != b"WAVE":
-                        raise ColabAPIError(
-                            f"O segmento {index} recebido do Colab não é um WAV RIFF/WAVE válido."
-                        )
-                    audio_segments.append(audio_data)
-        except zipfile.BadZipFile as exc:
-            raise ColabAPIError(
-                "O Colab retornou um pacote de áudio em lote inválido."
-            ) from exc
-        return audio_segments
+
+        batches = split_tts_batches(normalized)
+        all_audio_segments: list[bytes] = []
+        for batch in batches:
+            if cancel_event is not None and cancel_event.is_set():
+                raise ColabAPIError("Geração cancelada pelo Joe.", cancelled=True)
+            payload: dict[str, Any] = {
+                "texts": batch,
+                "language": language,
+                "model_variant": model_variant or language,
+            }
+            if voice_id:
+                payload["voice_id"] = voice_id
+            upload = self._request("POST", "/v1/jobs/tts/batch", json=payload).json()
+            job_id = str(upload.get("job_id", ""))
+            if not job_id:
+                raise ColabAPIError("O Colab não retornou o identificador do lote de áudio.")
+            response = self._wait_for_result(job_id, cancel_event=cancel_event)
+            try:
+                with zipfile.ZipFile(io.BytesIO(response.content), mode="r") as archive:
+                    names = set(archive.namelist())
+                    batch_audio_segments: list[bytes] = []
+                    for index in range(1, len(batch) + 1):
+                        name = f"segment_{index:04d}.wav"
+                        if name not in names:
+                            raise ColabAPIError(
+                                f"O pacote de áudio do Colab não contém o segmento {index}."
+                            )
+                        audio_data = archive.read(name)
+                        if not audio_data.startswith(b"RIFF") or audio_data[8:12] != b"WAVE":
+                            raise ColabAPIError(
+                                f"O segmento {index} recebido do Colab não é um WAV RIFF/WAVE válido."
+                            )
+                        batch_audio_segments.append(audio_data)
+            except zipfile.BadZipFile as exc:
+                raise ColabAPIError(
+                    "O Colab retornou um pacote de áudio em lote inválido."
+                ) from exc
+            all_audio_segments.extend(batch_audio_segments)
+        return all_audio_segments
 
     def generate_audio(
         self,
