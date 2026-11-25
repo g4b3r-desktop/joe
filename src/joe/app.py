@@ -1684,9 +1684,28 @@ class JoeWindow(QMainWindow):
 
     def _build_colab_tab(self) -> QWidget:
         page = QWidget()
-        layout = QVBoxLayout(page)
-        layout.setContentsMargins(24, 22, 24, 22)
-        layout.setSpacing(14)
+        page_layout = QVBoxLayout(page)
+        page_layout.setContentsMargins(0, 0, 0, 0)
+        page_layout.setSpacing(0)
+
+        scroll_area = QScrollArea(page)
+        scroll_area.setObjectName("colabScrollArea")
+        scroll_area.setWidgetResizable(True)
+        scroll_area.setFrameShape(QFrame.Shape.NoFrame)
+        scroll_area.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+        )
+        scroll_area.setVerticalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAsNeeded
+        )
+
+        content = QWidget()
+        content.setObjectName("colabScrollContent")
+        layout = QVBoxLayout(content)
+        layout.setContentsMargins(24, 22, 24, 28)
+        layout.setSpacing(20)
+        scroll_area.setWidget(content)
+        page_layout.addWidget(scroll_area)
 
         title = QLabel("Onde executar os modelos?")
         title.setObjectName("pageTitle")
@@ -1721,6 +1740,14 @@ class JoeWindow(QMainWindow):
         self.colab_token.editingFinished.connect(self._update_colab_monitoring)
 
         form = QFormLayout()
+        form.setFieldGrowthPolicy(
+            QFormLayout.FieldGrowthPolicy.ExpandingFieldsGrow
+        )
+        form.setLabelAlignment(
+            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
+        )
+        form.setHorizontalSpacing(18)
+        form.setVerticalSpacing(14)
         form.addRow("Modo de execução", self.processing_mode)
         form.addRow("URL da API", self.colab_url)
         form.addRow("Token de acesso", self.colab_token)
@@ -1780,6 +1807,8 @@ class JoeWindow(QMainWindow):
 
         self.colab_tts_group = QGroupBox("Desempenho e qualidade do Pocket TTS no Colab")
         colab_tts_layout = QVBoxLayout(self.colab_tts_group)
+        colab_tts_layout.setContentsMargins(18, 26, 18, 18)
+        colab_tts_layout.setSpacing(14)
         colab_tts_layout.addLayout(colab_tts_form)
         colab_tts_note = QLabel(
             "Threads CPU é limitado automaticamente à quantidade disponível no Colab. "
@@ -1834,15 +1863,32 @@ class JoeWindow(QMainWindow):
         self.colab_info.setObjectName("muted")
         self.colab_info.setWordWrap(True)
 
+        self.colab_runtime_group = QGroupBox("Estado e informações da API")
+        colab_runtime_layout = QVBoxLayout(self.colab_runtime_group)
+        colab_runtime_layout.setContentsMargins(18, 26, 18, 18)
+        colab_runtime_layout.setSpacing(12)
+        colab_runtime_layout.addWidget(self.colab_status)
+        colab_runtime_layout.addWidget(self.colab_info)
+
         self.colab_url.editingFinished.connect(self._save_colab_settings)
 
         buttons = QHBoxLayout()
+        buttons.setSpacing(12)
         buttons.addWidget(self.colab_test_button)
         buttons.addWidget(self.colab_open_button)
         buttons.addStretch(1)
 
+        connection_group = QGroupBox("Conexão com o Google Colab")
+        connection_layout = QVBoxLayout(connection_group)
+        connection_layout.setContentsMargins(18, 26, 18, 18)
+        connection_layout.setSpacing(16)
+        connection_layout.addLayout(form)
+        connection_layout.addLayout(buttons)
+
         model_upload_group = QGroupBox("Modelos no Google Drive — sem ZIP")
         model_upload_layout = QVBoxLayout(model_upload_group)
+        model_upload_layout.setContentsMargins(18, 26, 18, 18)
+        model_upload_layout.setSpacing(14)
         model_upload_description = QLabel(
             "O Joe identifica automaticamente os modelos Pocket TTS no cache local. "
             "Na janela seguinte, marque apenas as variantes que deseja enviar. "
@@ -1856,12 +1902,10 @@ class JoeWindow(QMainWindow):
 
         layout.addWidget(title)
         layout.addWidget(description)
-        layout.addLayout(form)
-        layout.addLayout(buttons)
+        layout.addWidget(connection_group)
         layout.addWidget(self.colab_tts_group)
         layout.addWidget(model_upload_group)
-        layout.addWidget(self.colab_status)
-        layout.addWidget(self.colab_info)
+        layout.addWidget(self.colab_runtime_group)
         layout.addStretch(1)
 
         self._update_mode_widgets()
@@ -3192,6 +3236,32 @@ class JoeWindow(QMainWindow):
             border: 1px solid #343946;
             border-radius: 8px;
             top: -1px;
+        }
+        QScrollArea#colabScrollArea {
+            border: none;
+            background: transparent;
+        }
+        QScrollArea#colabScrollArea QScrollBar:vertical {
+            background: #20242d;
+            width: 12px;
+            margin: 2px;
+            border-radius: 6px;
+        }
+        QScrollArea#colabScrollArea QScrollBar::handle:vertical {
+            background: #56647a;
+            min-height: 34px;
+            border-radius: 6px;
+        }
+        QScrollArea#colabScrollArea QScrollBar::handle:vertical:hover {
+            background: #7185a4;
+        }
+        QScrollArea#colabScrollArea QScrollBar::add-line:vertical,
+        QScrollArea#colabScrollArea QScrollBar::sub-line:vertical {
+            height: 0;
+        }
+        QScrollArea#colabScrollArea QScrollBar::add-page:vertical,
+        QScrollArea#colabScrollArea QScrollBar::sub-page:vertical {
+            background: transparent;
         }
         QTabBar::tab {
             background: #20232b;
