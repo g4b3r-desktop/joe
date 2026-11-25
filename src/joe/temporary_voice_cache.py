@@ -9,6 +9,25 @@ import uuid
 from pathlib import Path
 
 
+def resolve_shortcut_voice_paths(
+    cache: TemporaryVoiceFileCache,
+    selected_voice: str | Path | None,
+    *,
+    remote: bool,
+) -> tuple[Path | None, str | Path | None]:
+    """Route a selected voice to local cache or remote reference-audio upload.
+
+    The local shortcut uses a stable cached snapshot. Colab receives the
+    original selected audio path so it can prepare its own cloned voice; the
+    local snapshot is never used as a remote upload source.
+    """
+    if remote:
+        if selected_voice is None or not str(selected_voice).strip():
+            cache.get(None)
+        return None, selected_voice
+    return cache.get(selected_voice), None
+
+
 class TemporaryVoiceFileCache:
     """Keep a selected voice snapshot until the user chooses a different voice.
 
