@@ -16,6 +16,7 @@ from drive_assets import (
     replace_directory_atomically,
     resolve_voice_state,
     safe_asset_name,
+    voice_state_matches_sha256,
     validate_model_files,
     voice_state_for_safetensors_export,
 )
@@ -214,3 +215,32 @@ def test_replace_directory_atomically_replaces_previous_contents(tmp_path):
     assert not (destination / "old.txt").exists()
     assert (destination / "new.txt").read_text(encoding="utf-8") == "new"
     assert not staging.exists()
+
+
+def test_voice_state_sha256_validation_is_cached_and_invalidated_by_file_change(
+    tmp_path, monkeypatch
+):
+    import drive_assets
+
+    state_file = tmp_path / "voice_state.safetensors"
+    state_file.write_bytes(b"first-state")
+    first_digest = hashlib.sha256(state_file.read_bytes()).hexdigest()
+    original_hash = drive_assets.sha256_file
+    calls = []
+
+    def counted_hash(path):
+        calls.append(Path(path))
+        return original_hash(path)
+
+    monkeypatch.setattr(drive_assets, "sha256_file", counted_hash)
+
+    assert voice_state_matches_sha256(state_file, first_digest) is True
+    assert voice_state_matches_sha256(state_file, first_digest) is True
+    assert len(calls) == 1
+
+    state_file.write_bytes(b"other-state")
+    second_digest = hashlib.sha256(state_file.read_bytes()).hexdigest()
+    assert voice_state_matches_sha256(state_file, second_digest) is True
+    assert len(calls) == 2
+    assert voice_state_matches_sha256(state_file, first_digest) is False
+    assert len(calls) == 3
