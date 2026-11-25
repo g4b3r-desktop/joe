@@ -148,3 +148,19 @@ def test_local_shortcut_uses_temporary_snapshot_and_does_not_set_remote_referenc
         assert remote_reference is None
     finally:
         cache.close()
+
+
+
+def test_remote_default_voice_does_not_access_local_cache():
+    class CacheSpy:
+        def get(self, source):
+            raise AssertionError("O modo Colab não pode acessar o cache local.")
+
+    local_voice, remote_reference = resolve_shortcut_voice_paths(
+        CacheSpy(),
+        None,
+        remote=True,
+    )
+
+    assert local_voice is None
+    assert remote_reference is None
