@@ -125,6 +125,7 @@ def test_colab_job_queue_rolls_back_when_executor_cannot_start_worker():
         "_JOB_EXECUTOR": FailingExecutor(),
         "_run_job": lambda *_args: None,
     }
+    isolated = ast.fix_missing_locations(isolated)
     exec(compile(isolated, str(api_path), "exec"), namespace)
 
     with pytest.raises(RuntimeError, match="Não foi possível iniciar o worker"):
