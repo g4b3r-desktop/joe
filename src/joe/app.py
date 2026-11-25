@@ -2191,10 +2191,20 @@ class JoeWindow(QMainWindow):
         last_tts = data.get("last_tts_generation") or {}
         last_tts_status = (
             f"Última síntese: {last_tts.get('device')} | "
+            f"fluxo: {last_tts.get('flow_type', 'N/D')} | "
+            f"sampler: {last_tts.get('sampler_decode_steps', 'N/D')} passo(s) | "
             f"RTF {float(last_tts.get('realtime_factor', 0)):.2f} | "
             f"{float(last_tts.get('duration_seconds', 0)):.2f}s de áudio."
             if last_tts else "Ainda não há síntese TTS nesta sessão."
         )
+        pocket_tts_version = data.get("pocket_tts_version", "N/D")
+        loaded_model_diagnostics = data.get("tts_loaded_model_diagnostics") or {}
+        loaded_model_summary = ", ".join(
+            f"{variant}: fluxo {details.get('flow_type', 'N/D')} / "
+            f"{details.get('sampler_decode_steps', 'N/D')} passo(s)"
+            for variant, details in loaded_model_diagnostics.items()
+            if isinstance(details, dict)
+        ) or "nenhum modelo carregado"
         checked_at = QTime.currentTime().toString("HH:mm:ss")
         self.colab_status.setText(f"API online — última verificação às {checked_at}.")
         direct_drive = bool(data.get("direct_drive_assets_enabled"))
@@ -2211,7 +2221,9 @@ class JoeWindow(QMainWindow):
             f"Conexão confirmada. Servidor: {data.get('service', 'Joe Colab API')}\n"
             f"ASR: {data.get('asr', 'Parakeet Redux')}\n"
             f"GPU disponível: {gpu}\n"
-            f"TTS Pocket TTS: {tts_device} (modo {tts_mode}) | threads CPU: {tts_threads}/{tts_available_threads} | qualidade: {tts_steps}\n"
+            f"Pocket TTS: versão {pocket_tts_version} | {tts_device} (modo {tts_mode}) | "
+            f"threads CPU: {tts_threads}/{tts_available_threads} | qualidade configurada: {tts_steps}\n"
+            f"Modelos carregados: {loaded_model_summary}\n"
             f"{last_tts_status}\n"
             f"Parakeet carregado: {'sim' if data.get('asr_loaded') else 'ainda não'}\n"
             f"{storage_status}\n\n"
