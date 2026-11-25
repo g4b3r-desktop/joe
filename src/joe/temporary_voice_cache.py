@@ -22,8 +22,6 @@ def resolve_shortcut_voice_paths(
     local snapshot is never used as a remote upload source.
     """
     if remote:
-        if selected_voice is None or not str(selected_voice).strip():
-            cache.get(None)
         return None, selected_voice
     return cache.get(selected_voice), None
 
