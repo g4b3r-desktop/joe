@@ -1730,6 +1730,12 @@ class JoeWindow(QMainWindow):
         self.colab_tts_cpu_threads.setValue(
             self.app_settings.value("colab_tts_cpu_threads", 2, type=int)
         )
+        self.colab_tts_cpu_threads.setFixedWidth(132)
+        self.colab_tts_cpu_threads.setMinimumHeight(36)
+        self.colab_tts_cpu_threads.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.colab_tts_cpu_threads.setButtonSymbols(
+            QSpinBox.ButtonSymbols.UpDownArrows
+        )
         self.colab_tts_cpu_threads.setToolTip(
             "Número de threads CPU usadas pelo Pocket TTS no runtime do Google Colab."
         )
@@ -1738,6 +1744,12 @@ class JoeWindow(QMainWindow):
         self.colab_tts_sampler_steps.setValue(
             self.app_settings.value("colab_tts_sampler_steps", 4, type=int)
         )
+        self.colab_tts_sampler_steps.setFixedWidth(132)
+        self.colab_tts_sampler_steps.setMinimumHeight(36)
+        self.colab_tts_sampler_steps.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.colab_tts_sampler_steps.setButtonSymbols(
+            QSpinBox.ButtonSymbols.UpDownArrows
+        )
         self.colab_tts_sampler_steps.setToolTip(
             "Mais passos podem melhorar a qualidade da fala, mas aumentam o tempo de síntese."
         )
@@ -1745,6 +1757,14 @@ class JoeWindow(QMainWindow):
         self.colab_tts_sampler_steps.valueChanged.connect(self._save_colab_tts_settings)
 
         colab_tts_form = QFormLayout()
+        colab_tts_form.setFieldGrowthPolicy(
+            QFormLayout.FieldGrowthPolicy.FieldsStayAtSizeHint
+        )
+        colab_tts_form.setFormAlignment(
+            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop
+        )
+        colab_tts_form.setHorizontalSpacing(18)
+        colab_tts_form.setVerticalSpacing(10)
         colab_tts_form.addRow("Threads CPU:", self.colab_tts_cpu_threads)
         colab_tts_form.addRow("Qualidade (passos):", self.colab_tts_sampler_steps)
         self.colab_tts_settings_status = QLabel(
@@ -1754,6 +1774,8 @@ class JoeWindow(QMainWindow):
         self.colab_tts_settings_status.setWordWrap(True)
         self.colab_tts_apply_button = QPushButton("Aplicar configurações no Colab")
         self.colab_tts_apply_button.setObjectName("primaryButton")
+        self.colab_tts_apply_button.setFixedWidth(260)
+        self.colab_tts_apply_button.setMinimumHeight(36)
         self.colab_tts_apply_button.clicked.connect(self._apply_colab_tts_settings)
 
         self.colab_tts_group = QGroupBox("Desempenho e qualidade do Pocket TTS no Colab")
@@ -1768,7 +1790,10 @@ class JoeWindow(QMainWindow):
         colab_tts_note.setObjectName("muted")
         colab_tts_note.setWordWrap(True)
         colab_tts_layout.addWidget(colab_tts_note)
-        colab_tts_layout.addWidget(self.colab_tts_apply_button)
+        colab_tts_actions = QHBoxLayout()
+        colab_tts_actions.addWidget(self.colab_tts_apply_button)
+        colab_tts_actions.addStretch(1)
+        colab_tts_layout.addLayout(colab_tts_actions)
         colab_tts_layout.addWidget(self.colab_tts_settings_status)
 
         self.colab_test_button = QPushButton("Testar conexão com o Colab")
@@ -3201,13 +3226,19 @@ class JoeWindow(QMainWindow):
             padding: 0 5px;
             color: #cbd1dc;
         }
-        QTextEdit, QLineEdit, QComboBox {
+        QTextEdit, QLineEdit, QComboBox, QSpinBox {
             background: #20242d;
             color: #f1f3f8;
             border: 1px solid #3a4150;
             border-radius: 7px;
-            padding: 9px;
+            padding: 7px 9px;
             selection-background-color: #52678e;
+        }
+        QSpinBox {
+            min-height: 24px;
+        }
+        QSpinBox:focus {
+            border: 1px solid #7697d4;
         }
         QTextEdit:focus, QLineEdit:focus, QComboBox:focus {
             border: 1px solid #7697d4;
