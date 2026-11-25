@@ -991,9 +991,10 @@ def update_tts_settings(payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
             detail="Qualidade deve ficar entre 1 e 16.",
         )
 
-    # Serialize with TTS inference and prevent settings from changing while any
-    # queued/running job is using PyTorch (TTS or ASR).
-    with _tts_lock:
+    # Serialize with both TTS and ASR inference because torch.set_num_threads()
+    # affects PyTorch process-wide. Jobs submitted after this section will wait
+    # on the relevant inference lock and therefore start with the new settings.
+    with _tts_lock, _asr_lock:
         with _JOB_LOCK:
             active_jobs = [
                 job for job in _JOBS.values()
