@@ -1,14 +1,26 @@
 from __future__ import annotations
 
 import hashlib
+import hmac
 import json
 import os
 import re
 import shutil
+import threading
+import time
+from collections import OrderedDict
 from pathlib import Path
 from typing import Any
 
 VOICE_AUDIO_SUFFIXES = {".wav", ".flac", ".mp3", ".ogg"}
+
+# Google Drive is mounted through FUSE in Colab. Reading a multi-megabyte
+# Safetensors file for every text chunk is expensive, so cache successful and
+# failed integrity checks while the file metadata remains unchanged.
+_VOICE_HASH_CACHE_TTL_SECONDS = 300.0
+_VOICE_HASH_CACHE_MAX_ENTRIES = 512
+_VOICE_HASH_CACHE: OrderedDict[tuple[str, int, int, int, str], tuple[float, bool]] = OrderedDict()
+_VOICE_HASH_CACHE_LOCK = threading.Lock()
 
 
 def safe_asset_name(value: str, *, fallback: str = "voice") -> str:
@@ -24,6 +36,41 @@ def sha256_file(path: str | Path) -> str:
         for chunk in iter(lambda: stream.read(8 * 1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def voice_state_matches_sha256(path: str | Path, expected_hash: str) -> bool:
+    """Validate a Drive voice-state file without re-reading it for every chunk.
+
+    The cache key includes file size and nanosecond mtime/ctime plus the expected
+    digest. A five-minute TTL also bounds stale results on Drive/FUSE mounts whose
+    metadata timestamps may be coarse or delayed.
+    """
+    file_path = Path(path)
+    expected = str(expected_hash or "").strip().lower()
+    if not expected:
+        return False
+    stat = file_path.stat()
+    key = (
+        str(file_path),
+        int(stat.st_size),
+        int(stat.st_mtime_ns),
+        int(getattr(stat, "st_ctime_ns", 0)),
+        expected,
+    )
+    now = time.monotonic()
+    with _VOICE_HASH_CACHE_LOCK:
+        cached = _VOICE_HASH_CACHE.get(key)
+        if cached is not None and cached[0] > now:
+            _VOICE_HASH_CACHE.move_to_end(key)
+            return cached[1]
+
+    valid = hmac.compare_digest(sha256_file(file_path), expected)
+    with _VOICE_HASH_CACHE_LOCK:
+        _VOICE_HASH_CACHE[key] = (now + _VOICE_HASH_CACHE_TTL_SECONDS, valid)
+        _VOICE_HASH_CACHE.move_to_end(key)
+        while len(_VOICE_HASH_CACHE) > _VOICE_HASH_CACHE_MAX_ENTRIES:
+            _VOICE_HASH_CACHE.popitem(last=False)
+    return valid
 
 
 def atomic_write_json(path: str | Path, payload: dict[str, Any]) -> None:
@@ -80,14 +127,14 @@ def resolve_voice_state(
         raise ValueError("A voz foi preparada para outra variante de modelo.")
     if metadata.get("voice_id") != voice_id:
         raise ValueError("O arquivo de metadados não corresponde ao identificador da voz.")
-    expected_state_hash = str(metadata.get("voice_state_sha256", ""))
-    if not expected_state_hash or sha256_file(state_path) != expected_state_hash:
-        raise ValueError("O estado de voz no Google Drive está corrompido ou incompleto.")
     if metadata.get("model_fingerprint") != expected_fingerprint:
         raise ValueError(
             "A voz foi preparada com outros pesos/tokenizer. Reenvie o áudio original "
             "para prepará-la novamente com o modelo atual do Google Drive."
         )
+    expected_state_hash = str(metadata.get("voice_state_sha256", ""))
+    if not expected_state_hash or not voice_state_matches_sha256(state_path, expected_state_hash):
+        raise ValueError("O estado de voz no Google Drive está corrompido ou incompleto.")
     return state_path, metadata
 
 
