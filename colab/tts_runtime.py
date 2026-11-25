@@ -15,6 +15,18 @@ def available_cpu_count() -> int:
     return max(1, int(count))
 
 
+def resolve_int8_quantization(enabled: bool, selected_device: str) -> bool:
+    """Enable dynamic INT8 only for CPU inference; PyTorch quantized ops are not CUDA ops."""
+    if not enabled:
+        return False
+    device = str(selected_device).strip().lower()
+    if device == "cuda":
+        return False
+    if device != "cpu":
+        raise ValueError("O dispositivo da quantização INT8 deve ser CPU ou CUDA.")
+    return True
+
+
 def resolve_tts_device(mode: str, cuda_available: bool) -> str:
     """Resolve auto/cpu/cuda without silently ignoring an explicit CUDA request."""
     normalized = str(mode or "auto").strip().lower()
