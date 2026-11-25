@@ -1,6 +1,6 @@
 import pytest
 
-from joe.services.colab_api import ColabAPIClient
+from joe.services.colab_api import ColabAPIClient, split_tts_batches
 
 
 def test_colab_client_requires_https_url():
@@ -297,3 +297,20 @@ def test_colab_client_reuses_persistent_httpx_pool(monkeypatch):
     assert {call[2] for call in calls} == {id(pool)}
     client.close()
     assert pool.is_closed
+
+
+def test_split_tts_batches_respects_character_and_segment_limits():
+    texts = ["a" * 8_000, "b" * 8_000, "c" * 8_000]
+
+    batches = split_tts_batches(texts, max_characters=18_000, max_segments=2)
+
+    assert batches == [[texts[0], texts[1]], [texts[2]]]
+    assert all(sum(map(len, batch)) <= 18_000 for batch in batches)
+    assert all(len(batch) <= 2 for batch in batches)
+
+
+def test_split_tts_batches_rejects_segment_larger_than_batch_limit():
+    import pytest
+
+    with pytest.raises(ValueError, match="excede o limite"):
+        split_tts_batches(["texto muito longo"], max_characters=4)
