@@ -5,6 +5,8 @@ import soundfile as sf
 
 from joe.audio_chunks import (
     merge_wav_files,
+    prepare_clipboard_chunks,
+    prepare_tts_chunks,
     split_text_into_chunks,
     split_text_into_phrases,
 )
@@ -107,3 +109,74 @@ def test_split_text_into_phrases_rejects_small_limit():
         assert "pelo menos 40" in str(exc)
     else:
         raise AssertionError("Era esperado um ValueError")
+
+
+
+def test_clipboard_non_interactive_respects_selected_character_limit():
+    text = "Primeira frase. Segunda frase. " + ("Texto longo. " * 80)
+
+    chunks = prepare_clipboard_chunks(
+        text,
+        interactive_phrases=False,
+        max_phrase_chars=280,
+    )
+
+    assert len(chunks) > 1
+    assert all(len(chunk) <= 280 for chunk in chunks)
+    assert " ".join(chunks) == text.strip()
+
+
+def test_tts_full_text_option_keeps_one_chunk_when_api_limit_allows():
+    text = "Primeira frase. " + ("Texto longo. " * 80)
+
+    chunks = prepare_tts_chunks(
+        text,
+        max_chunk_chars=0,
+    )
+
+    assert chunks == [text.strip()]
+
+
+def test_tts_full_text_option_still_respects_remote_api_character_limit():
+    text = "palavra " * 3_000
+
+    chunks = prepare_tts_chunks(
+        text,
+        max_chunk_chars=0,
+        max_text_chars=20_000,
+    )
+
+    assert len(chunks) > 1
+    assert all(len(chunk) <= 20_000 for chunk in chunks)
+    assert " ".join(chunks) == text.strip()
+
+
+def test_clipboard_interactive_preserves_individual_sentences():
+    text = "Primeira frase. Segunda frase. Terceira frase."
+
+    chunks = prepare_clipboard_chunks(
+        text,
+        interactive_phrases=True,
+        max_phrase_chars=560,
+    )
+
+    assert chunks == [
+        "Primeira frase.",
+        "Segunda frase.",
+        "Terceira frase.",
+    ]
+
+
+def test_clipboard_remote_text_over_api_limit_is_split_only_at_limit():
+    text = "palavra " * 3_000
+
+    chunks = prepare_clipboard_chunks(
+        text,
+        interactive_phrases=False,
+        max_phrase_chars=0,
+        max_text_chars=20_000,
+    )
+
+    assert len(chunks) > 1
+    assert all(len(chunk) <= 20_000 for chunk in chunks)
+    assert " ".join(chunks) == text.strip()

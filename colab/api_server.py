@@ -4,7 +4,9 @@ import gc
 import hmac
 import hashlib
 import importlib.metadata
+import io
 import json
+import logging
 import math
 import os
 import re
@@ -13,6 +15,7 @@ import tempfile
 import threading
 import time
 import uuid
+import zipfile
 from datetime import datetime, timezone
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -41,6 +44,7 @@ from drive_assets import (
     resolve_voice_state,
     safe_asset_name,
     sha256_file,
+    voice_state_matches_sha256,
     validate_model_files,
     voice_state_for_safetensors_export,
 )
@@ -50,7 +54,10 @@ from tts_runtime import (
     ensure_supported_torch,
     inspect_audio_samples,
     resolve_tts_device,
+    resolve_int8_quantization,
 )
+
+logger = logging.getLogger("joe.colab_api")
 
 API_TOKEN = os.environ.get("JOE_API_TOKEN", "")
 if len(API_TOKEN) < 32:
@@ -58,6 +65,7 @@ if len(API_TOKEN) < 32:
 
 MAX_AUDIO_BYTES = 80 * 1024 * 1024
 MAX_TEXT_CHARS = 20_000
+MAX_BATCH_SEGMENTS = 512
 PARAKEET_MODEL_ID = "moondream/parakeet-redux"
 DEFAULT_VOICE = os.environ.get("JOE_TTS_DEFAULT_VOICE") or None
 USE_DRIVE_MODELS = os.environ.get("JOE_TTS_USE_DRIVE_MODELS") == "1"
@@ -101,6 +109,16 @@ try:
 except (RuntimeError, ValueError) as exc:
     TTS_DEVICE_ERROR = str(exc)
     TTS_DEVICE_SELECTED = "cpu"
+
+TTS_QUANTIZE_INT8_REQUESTED = os.environ.get("JOE_TTS_QUANTIZE_INT8", "0").strip() == "1"
+TTS_QUANTIZE_INT8 = resolve_int8_quantization(
+    TTS_QUANTIZE_INT8_REQUESTED, TTS_DEVICE_SELECTED
+)
+TTS_QUANTIZATION_DISABLED_REASON = (
+    "INT8 desativado automaticamente porque o dispositivo selecionado é CUDA."
+    if TTS_QUANTIZE_INT8_REQUESTED and TTS_DEVICE_SELECTED == "cuda"
+    else None
+)
 
 app = FastAPI(
     title="Joe Colab Inference API",
@@ -193,8 +211,27 @@ def _load_tts_model_for_inference(loader: Any, model_variant: str) -> Any:
     return model
 
 
+def _count_quantized_linear_layers(model: Any) -> int:
+    """Count quantized Linear modules present in the loaded Pocket TTS model."""
+    modules = getattr(model, "modules", None)
+    if not callable(modules):
+        return 0
+    count = 0
+    try:
+        for module in modules():
+            module_type = type(module)
+            qualified_type = (
+                f"{module_type.__module__}.{module_type.__name__}".lower()
+            )
+            if "linear" in module_type.__name__.lower() and "quant" in qualified_type:
+                count += 1
+    except Exception:
+        return 0
+    return count
+
+
 def _tts_model_diagnostics(model: Any) -> dict[str, Any]:
-    """Read the actual sampler and flow implementation from a loaded Pocket TTS model."""
+    """Read the actual sampler, flow and quantized layers from a loaded model."""
     flow_lm = getattr(model, "flow_lm", None)
     flow_type = getattr(flow_lm, "flow_type", None)
 
@@ -225,6 +262,8 @@ def _tts_model_diagnostics(model: Any) -> dict[str, Any]:
     return {
         "flow_type": str(flow_type) if flow_type is not None else "não informado pelo modelo",
         "sampler_decode_steps": sampler_steps,
+        "quantize_int8": TTS_QUANTIZE_INT8,
+        "quantized_linear_layers": _count_quantized_linear_layers(model),
     }
 
 
@@ -245,7 +284,7 @@ def _get_tts_model(language: str, model_variant: str) -> Any:
                 )
             loader = lambda: TTSModel.load_model(
                 config=str(drive_config),
-                quantize=False,
+                quantize=TTS_QUANTIZE_INT8,
                 sampler_decode_steps=TTS_SAMPLER_DECODE_STEPS,
             )
         else:
@@ -279,7 +318,7 @@ def _get_tts_model(language: str, model_variant: str) -> Any:
                 config_path = Path(selected_local_config).expanduser()
                 loader = lambda: TTSModel.load_model(
                     config=str(config_path),
-                    quantize=False,
+                    quantize=TTS_QUANTIZE_INT8,
                     sampler_decode_steps=TTS_SAMPLER_DECODE_STEPS,
                 )
             else:
@@ -287,7 +326,7 @@ def _get_tts_model(language: str, model_variant: str) -> Any:
                     TTSModel,
                     language,
                     model_variant,
-                    quantize=False,
+                    quantize=TTS_QUANTIZE_INT8,
                     sampler_decode_steps=TTS_SAMPLER_DECODE_STEPS,
                 )
 
@@ -303,6 +342,7 @@ def _generate_tts(
     voice_name: str | None = None,
     voice_id: str | None = None,
 ) -> bytes:
+    voice_metadata: dict[str, Any] | None = None
     if voice_id:
         if not DIRECT_DRIVE_ASSETS:
             raise RuntimeError("IDs de voz do Google Drive exigem o modo de armazenamento direto.")
@@ -335,11 +375,20 @@ def _generate_tts(
     else:
         voice_label = "voz predefinida"
 
-    voice_identity = (
-        hashlib.sha256(Path(voice_source).read_bytes()).hexdigest()
-        if isinstance(voice_source, str) and Path(voice_source).is_file()
-        else str(voice_source)
-    )
+    if voice_id and voice_metadata is not None:
+        # resolve_voice_state() has already checked the cached Drive digest.
+        # Reuse the trusted digest as the identity instead of reading the full
+        # Safetensors file again for every text segment in the same batch.
+        voice_identity = (
+            f"drive:{model_variant}:{voice_id}:"
+            f"{voice_metadata.get('voice_state_sha256', '')}"
+        )
+    else:
+        voice_identity = (
+            hashlib.sha256(Path(voice_source).read_bytes()).hexdigest()
+            if isinstance(voice_source, str) and Path(voice_source).is_file()
+            else str(voice_source)
+        )
     with _tts_lock:
         try:
             model = _get_tts_model(language, model_variant)
@@ -413,6 +462,7 @@ def _generate_tts(
             "realtime_factor": signal_metrics["duration_seconds"] / elapsed_seconds,
             "device": effective_device,
             "cpu_threads": TTS_CPU_THREADS,
+            "quantize_int8": TTS_QUANTIZE_INT8,
             "language": language,
             "model_variant": model_variant,
             "voice": voice_label,
@@ -941,7 +991,7 @@ def list_drive_assets() -> dict[str, Any]:
                 voice_metadata["state_valid"] = bool(
                     state_path.is_file()
                     and expected_hash
-                    and hmac.compare_digest(sha256_file(state_path), expected_hash)
+                    and voice_state_matches_sha256(state_path, expected_hash)
                 )
                 voices.append(voice_metadata)
             except (OSError, ValueError):
@@ -997,6 +1047,9 @@ def health(_: None = Depends(require_token)) -> dict[str, Any]:
         "tts_loaded_devices": dict(_tts_loaded_devices),
         "tts_cpu_threads": TTS_CPU_THREADS,
         "tts_sampler_decode_steps": TTS_SAMPLER_DECODE_STEPS,
+        "tts_quantize_int8_requested": TTS_QUANTIZE_INT8_REQUESTED,
+        "tts_quantize_int8": TTS_QUANTIZE_INT8,
+        "tts_quantization_disabled_reason": TTS_QUANTIZATION_DISABLED_REASON,
         "tts_sampler_error": TTS_SAMPLER_ERROR,
         "tts_device_error": TTS_DEVICE_ERROR,
         "tts_runtime_version_error": TTS_VERSION_ERROR,
@@ -1012,6 +1065,8 @@ def update_tts_settings(payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
     """Apply Colab TTS settings without restarting the API process."""
     global TTS_CPU_THREADS, TTS_SAMPLER_DECODE_STEPS
     global TTS_THREADS_ERROR, TTS_SAMPLER_ERROR
+    global TTS_QUANTIZE_INT8_REQUESTED, TTS_QUANTIZE_INT8
+    global TTS_QUANTIZATION_DISABLED_REASON
 
     try:
         requested_threads = int(payload.get("cpu_threads", TTS_CPU_THREADS))
@@ -1034,6 +1089,21 @@ def update_tts_settings(payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
             status_code=422,
             detail="Qualidade deve ficar entre 1 e 16.",
         )
+    requested_quantize = payload.get("quantize_int8", TTS_QUANTIZE_INT8_REQUESTED)
+    if not isinstance(requested_quantize, bool):
+        raise HTTPException(
+            status_code=422,
+            detail="quantize_int8 precisa ser true ou false.",
+        )
+
+    applied_quantize = resolve_int8_quantization(
+        requested_quantize, TTS_DEVICE_SELECTED
+    )
+    quantization_disabled_reason = (
+        "INT8 desativado automaticamente porque o dispositivo selecionado é CUDA."
+        if requested_quantize and TTS_DEVICE_SELECTED == "cuda"
+        else None
+    )
 
     # Serialize with both TTS and ASR inference because torch.set_num_threads()
     # affects PyTorch process-wide. Jobs submitted after this section will wait
@@ -1054,6 +1124,7 @@ def update_tts_settings(payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
                 )
 
             previous_steps = TTS_SAMPLER_DECODE_STEPS
+            previous_quantize = TTS_QUANTIZE_INT8
             try:
                 applied_threads = configure_torch_threads(torch, requested_threads)
             except (TypeError, ValueError, RuntimeError) as exc:
@@ -1066,18 +1137,23 @@ def update_tts_settings(payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
             TTS_THREADS_ERROR = None
             TTS_SAMPLER_DECODE_STEPS = requested_steps
             TTS_SAMPLER_ERROR = None
+            TTS_QUANTIZE_INT8_REQUESTED = requested_quantize
+            TTS_QUANTIZE_INT8 = applied_quantize
+            TTS_QUANTIZATION_DISABLED_REASON = quantization_disabled_reason
             os.environ["JOE_TTS_CPU_THREADS"] = str(applied_threads)
             os.environ["JOE_TTS_SAMPLER_DECODE_STEPS"] = str(requested_steps)
+            os.environ["JOE_TTS_QUANTIZE_INT8"] = "1" if requested_quantize else "0"
 
             sampler_changed = requested_steps != previous_steps
-            if sampler_changed:
+            quantization_changed = applied_quantize != previous_quantize
+            if sampler_changed or quantization_changed:
                 # These are process-memory caches only. Drive models and voice
                 # assets remain untouched and will be loaded on the next request.
                 _tts_models.clear()
                 _tts_loaded_devices.clear()
                 _tts_voice_states.clear()
 
-    if sampler_changed:
+    if sampler_changed or quantization_changed:
         gc.collect()
         if torch.cuda.is_available():
             try:
@@ -1091,7 +1167,10 @@ def update_tts_settings(payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
         "tts_requested_cpu_threads": requested_threads,
         "tts_available_cpu_threads": available_cpu_count(),
         "tts_sampler_decode_steps": TTS_SAMPLER_DECODE_STEPS,
-        "tts_model_reloaded_on_next_generation": sampler_changed,
+        "tts_quantize_int8_requested": TTS_QUANTIZE_INT8_REQUESTED,
+        "tts_quantize_int8": TTS_QUANTIZE_INT8,
+        "tts_quantization_disabled_reason": TTS_QUANTIZATION_DISABLED_REASON,
+        "tts_model_reloaded_on_next_generation": sampler_changed or quantization_changed,
         "tts_loaded_model_variants": sorted(_tts_models),
     }
 
@@ -1127,7 +1206,9 @@ def _run_job(job_id: str, function: Any, args: tuple[Any, ...]) -> None:
                 job["result"] = result
 
 
-def _submit_job(kind: str, function: Any, *args: Any) -> str:
+def _submit_job(
+    kind: str, function: Any, *args: Any, _pass_cancel_event: bool = False
+) -> str:
     now = time.monotonic()
     with _JOB_LOCK:
         expired = [
@@ -1154,6 +1235,7 @@ def _submit_job(kind: str, function: Any, *args: Any) -> str:
         if active >= _MAX_ACTIVE_JOBS:
             raise HTTPException(status_code=429, detail="Fila de inferência cheia. Tente novamente mais tarde.")
         job_id = uuid.uuid4().hex
+        cancel_event = threading.Event()
         _JOBS[job_id] = {
             "kind": kind,
             "status": "queued",
@@ -1161,9 +1243,21 @@ def _submit_job(kind: str, function: Any, *args: Any) -> str:
             "result": None,
             "error": None,
             "cancel_requested": False,
+            "cancel_event": cancel_event,
             "future": None,
         }
-    future = _JOB_EXECUTOR.submit(_run_job, job_id, function, args)
+    task_args = (*args, cancel_event) if _pass_cancel_event else args
+    try:
+        future = _JOB_EXECUTOR.submit(_run_job, job_id, function, task_args)
+    except Exception as exc:
+        # Do not leave a phantom queued job when the executor cannot create a worker.
+        with _JOB_LOCK:
+            _JOBS.pop(job_id, None)
+        logger.exception("Falha ao iniciar worker para tarefa %s (%s).", kind, job_id)
+        raise RuntimeError(
+            f"Não foi possível iniciar o worker de inferência ({type(exc).__name__}: {exc}). "
+            "Confira os recursos do runtime do Colab e reinicie a sessão se necessário."
+        ) from exc
     with _JOB_LOCK:
         if job_id in _JOBS:
             _JOBS[job_id]["future"] = future
@@ -1194,11 +1288,108 @@ def _generate_tts_job(
         )
 
 
+def _generate_tts_batch_job(
+    texts: list[str],
+    language: str,
+    model_variant: str,
+    voice_id: str | None,
+    cancel_event: threading.Event,
+) -> bytes:
+    """Generate multiple text segments in one server task and package WAVs once."""
+    package = io.BytesIO()
+    with zipfile.ZipFile(package, mode="w", compression=zipfile.ZIP_STORED) as archive:
+        for index, text in enumerate(texts, start=1):
+            if cancel_event.is_set():
+                raise RuntimeError("Geração em lote cancelada pelo Joe.")
+            audio_data = _generate_tts(
+                text,
+                language,
+                model_variant,
+                None,
+                voice_name=None,
+                voice_id=voice_id,
+            )
+            archive.writestr(f"segment_{index:04d}.wav", audio_data)
+    return package.getvalue()
+
+
 def _transcribe_job(audio_data: bytes, suffix: str, timestamps: str) -> dict[str, Any]:
     with tempfile.TemporaryDirectory(prefix="joe-asr-job-") as temp_dir:
         audio_path = Path(temp_dir) / f"input{suffix}"
         audio_path.write_bytes(audio_data)
         return _transcribe(str(audio_path), timestamps)
+
+
+@app.post("/v1/jobs/tts/batch", status_code=202, dependencies=[Depends(require_token)])
+def submit_tts_batch_job(payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
+    """Queue all text chunks as one remote job and return one ZIP result."""
+    texts_value = payload.get("texts")
+    language = str(payload.get("language", "portuguese")).strip()
+    selected_model = str(payload.get("model_variant") or language).strip()
+    voice_id_value = payload.get("voice_id")
+    voice_id = str(voice_id_value).strip() if voice_id_value else None
+
+    if not isinstance(texts_value, list) or not texts_value:
+        raise HTTPException(status_code=422, detail="texts precisa ser uma lista não vazia.")
+    if len(texts_value) > MAX_BATCH_SEGMENTS:
+        raise HTTPException(
+            status_code=413,
+            detail=f"O lote excede o limite de {MAX_BATCH_SEGMENTS} segmentos.",
+        )
+    if any(not isinstance(item, str) for item in texts_value):
+        raise HTTPException(status_code=422, detail="Todos os segmentos precisam ser textos.")
+    texts = [item.strip() for item in texts_value]
+    if any(not item for item in texts):
+        raise HTTPException(status_code=422, detail="O lote contém segmentos vazios.")
+    if sum(len(item) for item in texts) > MAX_TEXT_CHARS:
+        raise HTTPException(
+            status_code=413,
+            detail=f"O texto total excede o limite de {MAX_TEXT_CHARS} caracteres.",
+        )
+    if language not in SUPPORTED_TTS_MODEL_VARIANTS:
+        raise HTTPException(status_code=422, detail="Idioma não suportado pelo Pocket TTS.")
+    if selected_model not in SUPPORTED_TTS_MODEL_VARIANTS[language]:
+        raise HTTPException(
+            status_code=422,
+            detail="A versão selecionada não está disponível para o idioma informado.",
+        )
+    if voice_id and not DIRECT_DRIVE_ASSETS:
+        raise HTTPException(
+            status_code=409,
+            detail="IDs de voz exigem armazenamento direto no Google Drive.",
+        )
+
+    try:
+        job_id = _submit_job(
+            "tts_batch",
+            _generate_tts_batch_job,
+            texts,
+            language,
+            selected_model,
+            voice_id,
+            _pass_cancel_event=True,
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        # Surface the enqueue failure to the authenticated desktop client instead
+        # of returning FastAPI's opaque "Internal Server Error" response.
+        logger.exception(
+            "Falha ao enfileirar lote TTS: segmentos=%d, caracteres=%d, "
+            "idioma=%s, modelo=%s.",
+            len(texts),
+            sum(len(item) for item in texts),
+            language,
+            selected_model,
+        )
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "O servidor não conseguiu criar a tarefa de geração em lote. "
+                f"{type(exc).__name__}: {exc}"
+            ),
+        ) from exc
+    return {"job_id": job_id, "status": "queued", "segments": len(texts)}
 
 
 @app.post("/v1/jobs/tts", status_code=202, dependencies=[Depends(require_token)])
@@ -1273,6 +1464,9 @@ def cancel_job(job_id: str) -> dict[str, str]:
         if job["status"] in {"completed", "failed", "cancelled"}:
             return {"job_id": job_id, "status": job["status"]}
         job["cancel_requested"] = True
+        cancel_event = job.get("cancel_event")
+        if cancel_event is not None:
+            cancel_event.set()
         future = job.get("future")
         if future is not None and future.cancel():
             job["status"] = "cancelled"
@@ -1317,5 +1511,11 @@ def get_job_result(job_id: str) -> Any:
             content=result,
             media_type="audio/wav",
             headers={"Content-Disposition": 'attachment; filename="joe-generated.wav"'},
+        )
+    if kind == "tts_batch":
+        return Response(
+            content=result,
+            media_type="application/zip",
+            headers={"Content-Disposition": 'attachment; filename="joe-generated-batch.zip"'},
         )
     return result

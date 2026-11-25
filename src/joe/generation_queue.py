@@ -17,6 +17,7 @@ class GenerationTask:
     model_variant: str = ""
     tts_device: str = "cpu"
     cpu_threads: int = 2
+    chunk_size: int = 560
     tts_quantization: bool = True
     tts_profile: str = "custom"
     voice_path: str | None = None
@@ -58,6 +59,7 @@ class GenerationQueue:
         model_variant: str | None = None,
         tts_device: str = "cpu",
         cpu_threads: int = 2,
+        chunk_size: int = 560,
         tts_quantization: bool = True,
         tts_profile: str = "custom",
         voice_path: str | None = None,
@@ -75,6 +77,8 @@ class GenerationQueue:
             raise ValueError("Dispositivo TTS inválido. Escolha cpu ou cuda.")
         if int(cpu_threads) < 1:
             raise ValueError("A quantidade de threads da CPU precisa ser maior que zero.")
+        if int(chunk_size) != 0 and int(chunk_size) < 40:
+            raise ValueError("O limite de caracteres deve ser zero (texto completo) ou pelo menos 40.")
         task = GenerationTask(
             text=text,
             speech_text=speech_text,
@@ -83,6 +87,7 @@ class GenerationQueue:
             model_variant=model_variant or language,
             tts_device=tts_device,
             cpu_threads=int(cpu_threads),
+            chunk_size=int(chunk_size),
             tts_quantization=bool(tts_quantization),
             tts_profile=str(tts_profile or "custom"),
             voice_path=voice_path,

@@ -14,6 +14,7 @@ from tts_runtime import (
     ensure_supported_torch,
     inspect_audio_samples,
     resolve_cpu_threads,
+    resolve_int8_quantization,
     resolve_tts_device,
     voice_state_for_safetensors_export,
 )
@@ -126,3 +127,14 @@ def test_voice_state_export_copies_tensors_to_cpu_and_contiguous():
 def test_voice_state_export_rejects_non_tensor_values():
     with pytest.raises(TypeError, match="não é tensor PyTorch"):
         voice_state_for_safetensors_export({"flow_lm": {"cache": [1, 2, 3]}})
+
+
+def test_int8_quantization_is_cpu_only_and_disabled_for_cuda():
+    assert resolve_int8_quantization(False, "cpu") is False
+    assert resolve_int8_quantization(True, "cpu") is True
+    assert resolve_int8_quantization(True, "cuda") is False
+
+
+def test_int8_quantization_rejects_unknown_device():
+    with pytest.raises(ValueError, match="CPU ou CUDA"):
+        resolve_int8_quantization(True, "mps")

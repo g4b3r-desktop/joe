@@ -1,6 +1,6 @@
 import pytest
 
-from joe.services.colab_api import ColabAPIClient
+from joe.services.colab_api import ColabAPIClient, split_tts_batches
 
 
 def test_colab_client_requires_https_url():
@@ -208,3 +208,181 @@ def test_colab_client_sends_selected_pocket_tts_model_variant(monkeypatch):
 
     assert submitted["language"] == "portuguese"
     assert submitted["model_variant"] == "portuguese_24l"
+
+
+def test_colab_tts_settings_send_cpu_int8_flag(monkeypatch):
+    client = ColabAPIClient("https://example.trycloudflare.com", "x" * 40)
+    submitted = {}
+
+    def request(method, endpoint, **kwargs):
+        submitted.update(method=method, endpoint=endpoint, json=kwargs.get("json"))
+        import httpx
+        return httpx.Response(200, json={"ok": True, "tts_quantize_int8": True})
+
+    monkeypatch.setattr(client, "_request", request)
+    result = client.update_tts_settings(2, 4, quantize_int8=True)
+
+    assert result["tts_quantize_int8"] is True
+    assert submitted["method"] == "POST"
+    assert submitted["endpoint"] == "/v1/settings/tts"
+    assert submitted["json"] == {
+        "cpu_threads": 2,
+        "sampler_decode_steps": 4,
+        "quantize_int8": True,
+    }
+    client.close()
+
+
+def test_colab_batch_downloads_one_zip_for_all_segments(monkeypatch):
+    import io
+    import zipfile
+
+    import httpx
+
+    client = ColabAPIClient("https://example.trycloudflare.com", "x" * 40)
+    archive_buffer = io.BytesIO()
+    wav_one = b"RIFF" + bytes(4) + b"WAVE" + b"first"
+    wav_two = b"RIFF" + bytes(4) + b"WAVE" + b"second"
+    with zipfile.ZipFile(archive_buffer, "w", compression=zipfile.ZIP_STORED) as archive:
+        archive.writestr("segment_0001.wav", wav_one)
+        archive.writestr("segment_0002.wav", wav_two)
+    submitted = {}
+
+    def request(method, endpoint, **kwargs):
+        submitted.update(method=method, endpoint=endpoint, json=kwargs.get("json"))
+        return httpx.Response(202, json={"job_id": "batch-123"})
+
+    monkeypatch.setattr(client, "_request", request)
+    monkeypatch.setattr(
+        client,
+        "_wait_for_result",
+        lambda job_id, **kwargs: httpx.Response(200, content=archive_buffer.getvalue()),
+    )
+
+    result = client.generate_audio_batch(
+        ["Olá.", "Tudo bem?"],
+        "portuguese",
+        model_variant="portuguese_24l",
+        voice_id="voice-123",
+    )
+
+    assert result == [wav_one, wav_two]
+    assert submitted["method"] == "POST"
+    assert submitted["endpoint"] == "/v1/jobs/tts/batch"
+    assert submitted["json"] == {
+        "texts": ["Olá.", "Tudo bem?"],
+        "language": "portuguese",
+        "model_variant": "portuguese_24l",
+        "voice_id": "voice-123",
+    }
+    client.close()
+
+
+def test_colab_client_reuses_persistent_httpx_pool(monkeypatch):
+    import httpx
+
+    client = ColabAPIClient("https://example.trycloudflare.com", "x" * 40)
+    pool = client._get_http_client()
+    calls = []
+
+    def request(method, url, **kwargs):
+        calls.append((method, url, id(pool)))
+        return httpx.Response(200, json={"ok": True})
+
+    monkeypatch.setattr(pool, "request", request)
+    assert client.test_connection()["ok"] is True
+    assert client.test_connection()["ok"] is True
+    assert client._get_http_client() is pool
+    assert len(calls) == 2
+    assert {call[2] for call in calls} == {id(pool)}
+    client.close()
+    assert pool.is_closed
+
+
+def test_split_tts_batches_respects_character_and_segment_limits():
+    texts = ["a" * 8_000, "b" * 8_000, "c" * 8_000]
+
+    batches = split_tts_batches(texts, max_characters=18_000, max_segments=2)
+
+    assert batches == [[texts[0], texts[1]], [texts[2]]]
+    assert all(sum(map(len, batch)) <= 18_000 for batch in batches)
+    assert all(len(batch) <= 2 for batch in batches)
+
+
+def test_split_tts_batches_rejects_segment_larger_than_batch_limit():
+    import pytest
+
+    with pytest.raises(ValueError, match="excede o limite"):
+        split_tts_batches(["texto muito longo"], max_characters=4)
+
+
+
+def test_split_tts_batches_supports_full_20k_request_and_512_phrases():
+    texts = ["frase"] * 513
+
+    batches = split_tts_batches(texts)
+
+    assert [len(batch) for batch in batches] == [512, 1]
+    assert all(sum(map(len, batch)) <= 20_000 for batch in batches)
+
+    full_limit = split_tts_batches(["a" * 20_000])
+    assert full_limit == [["a" * 20_000]]
+
+
+
+def test_colab_batch_falls_back_to_legacy_tts_route_on_404(monkeypatch):
+    from joe.services.colab_api import ColabAPIError
+
+    client = ColabAPIClient("https://example.trycloudflare.com", "x" * 40)
+    batch_requests = []
+    legacy_requests = []
+
+    def request(method, endpoint, **_kwargs):
+        batch_requests.append((method, endpoint))
+        raise ColabAPIError("API do Colab respondeu HTTP 404: Not Found")
+
+    def legacy_generate(
+        text,
+        language,
+        voice_path=None,
+        cancel_event=None,
+        model_variant=None,
+        voice_id=None,
+    ):
+        legacy_requests.append(
+            {
+                "text": text,
+                "language": language,
+                "voice_path": voice_path,
+                "model_variant": model_variant,
+                "voice_id": voice_id,
+            }
+        )
+        return b"RIFF" + bytes(4) + b"WAVE" + text.encode("utf-8")
+
+    monkeypatch.setattr(client, "_request", request)
+    monkeypatch.setattr(client, "generate_audio", legacy_generate)
+
+    result = client.generate_audio_batch(
+        ["Primeira frase.", "Segunda frase.", "Terceira frase."],
+        "portuguese",
+        model_variant="portuguese_24l",
+        voice_id="voice-prepared-in-drive",
+    )
+
+    assert len(batch_requests) == 1
+    assert batch_requests == [("POST", "/v1/jobs/tts/batch")]
+    assert len(result) == 3
+    assert [item["text"] for item in legacy_requests] == [
+        "Primeira frase.",
+        "Segunda frase.",
+        "Terceira frase.",
+    ]
+    assert all(item["language"] == "portuguese" for item in legacy_requests)
+    assert all(item["model_variant"] == "portuguese_24l" for item in legacy_requests)
+    assert all(
+        item["voice_id"] == "voice-prepared-in-drive"
+        and item["voice_path"] is None
+        for item in legacy_requests
+    )
+    client.close()

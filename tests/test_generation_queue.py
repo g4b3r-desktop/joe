@@ -177,3 +177,30 @@ def test_queue_snapshots_tts_compute_device_and_cpu_threads():
     assert task.cpu_threads == 4
     assert task.tts_quantization is False
     assert task.tts_profile == "performance"
+
+
+
+def test_queue_snapshots_selected_tts_chunk_size():
+    queue = GenerationQueue()
+    task = queue.enqueue(
+        text="Texto longo",
+        speech_text="Texto longo",
+        language="portuguese",
+        output_path="/tmp/long.wav",
+        chunk_size=420,
+    )
+
+    assert task.chunk_size == 420
+
+
+def test_queue_accepts_full_text_chunk_size_option():
+    queue = GenerationQueue()
+    task = queue.enqueue(
+        text="Texto completo",
+        speech_text="Texto completo",
+        language="portuguese",
+        output_path="/tmp/full.wav",
+        chunk_size=0,
+    )
+
+    assert task.chunk_size == 0

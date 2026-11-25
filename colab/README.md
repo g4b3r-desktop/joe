@@ -32,6 +32,7 @@ Authorization: Bearer <JOE_API_TOKEN>
 
 - GET /health: status do servidor, GPU e estado dos modelos.
 - POST /v1/jobs/tts: multipart com text, language, model_variant e voice_id opcional; no modo Drive direto, a voz deve estar preparada no Drive.
+- POST /v1/jobs/tts/batch: JSON com vários textos, idioma, variante e voice_id; cria uma única tarefa e devolve um ZIP com todos os WAVs.
 - POST /v1/assets/uploads: inicia upload em blocos de um modelo (checkpoint + tokenizer) ou áudio de referência.
 - PUT /v1/assets/uploads/{upload_id}/{asset_key}/{chunk_index}: recebe um bloco de até 8 MiB.
 - POST /v1/assets/uploads/{upload_id}/commit: valida e instala o modelo ou prepara/persiste a voz no Google Drive.
@@ -41,11 +42,11 @@ Authorization: Bearer <JOE_API_TOKEN>
 - GET /v1/jobs/{job_id}/result: baixa o WAV ou recebe o JSON quando completed.
 - DELETE /v1/jobs/{job_id}: cancela uma tarefa aguardando execução ou solicita o descarte do resultado quando a inferência já começou.
 
-Todas as rotas são autenticadas. A inferência roda em um worker sequencial e suporta até duas tarefas ativas (uma em execução e uma aguardando). O cliente usa polling para evitar manter chamadas abertas durante o tempo de inferência e contornar o limite de leitura de resposta do túnel Cloudflare. O cancelamento interrompe imediatamente tarefas ainda na fila; uma inferência em execução não pode ser interrompida com segurança no meio do kernel/modelo, então o servidor marca a tarefa para cancelamento e descarta o resultado assim que a chamada termina. Os resultados expiram em 30 minutos se não forem retirados. Swagger, ReDoc e OpenAPI foram desativados.
+Todas as rotas são autenticadas. A inferência roda em um worker sequencial e suporta até duas tarefas ativas (uma em execução e uma aguardando). O cliente reutiliza um pool HTTP persistente (keep-alive/TLS) e faz polling adaptativo a cada 0,75 s, evitando recriar conexões por chamada. O Joe oferece limites de 180, 280, 420 e 560 caracteres ou texto completo. Quando a divisão está ativa, o desktop sintetiza cada bloco e une os WAVs no arquivo final. No Colab, todos os blocos cabíveis em 20.000 caracteres são enviados juntos para uma única tarefa em lote, com um ZIP de retorno; textos maiores são divididos automaticamente no limite da API. Isso reduz requisições HTTP sem forçar o Pocket TTS a sintetizar um documento longo como uma única chamada. Com frases clicáveis ativadas, o atalho mantém um WAV por frase e também envia a lista em lote. A lista de frases só aparece depois que o ZIP completo é recebido, em vez de liberar pequenos lotes progressivamente. O cancelamento interrompe imediatamente tarefas ainda na fila e é verificado entre os segmentos de um lote; uma inferência já dentro do modelo não pode ser interrompida com segurança no meio do kernel, então seu resultado é descartado assim que a chamada termina. Os resultados expiram em 30 minutos se não forem retirados. Swagger, ReDoc e OpenAPI foram desativados.
 
 ## Segurança e configuração persistente
 
-O backend Colab instala `pocket-tts>=4.0.1` e `torch>=2.5`. Não instala o extra `[quantize]`, pois a API usa pesos float32 e precisa permitir CUDA. O projeto Pocket TTS registra que PyTorch 2.4.0 produz áudio incorreto; o servidor bloqueia versões anteriores a 2.5 para evitar WAVs defeituosos.
+O backend Colab instala `pocket-tts>=4.0.1` e `torch>=2.5`. A API usa `quantize=True` apenas quando o desktop solicita INT8 e o dispositivo efetivo é CPU; em CUDA, a quantização é automaticamente desativada. O suporte básico usa `torch.ao` incluído no PyTorch 2.5–2.9; o extra opcional `[quantize]` instala `torchao` para kernels otimizados em PyTorch 2.10+. O projeto Pocket TTS registra que PyTorch 2.4.0 produz áudio incorreto; o servidor bloqueia versões anteriores a 2.5 para evitar WAVs defeituosos.
 
 Para não redigitar URL e token a cada sessão, configure uma vez estes Secrets no painel de chave do Google Colab e habilite **Notebook access**:
 
@@ -61,17 +62,19 @@ Não grave os segredos diretamente em células, arquivos do repositório, variá
 
 ### Dispositivo, threads e qualidade da síntese
 
-A célula **Configurar desempenho e qualidade do Pocket TTS** controla a inferência:
+O notebook seleciona o dispositivo antes da inicialização. Depois de iniciar a API, o Joe desktop controla threads CPU, passos de qualidade e quantização INT8 (salvos localmente na configuração do aplicativo):
 
 - **Automático:** usa CUDA quando `torch.cuda.is_available()` é verdadeiro; caso contrário, usa CPU.
 - **Somente CPU:** mantém o modelo na CPU.
 - **Forçar GPU CUDA:** exige CUDA disponível e informa erro explícito se o runtime não tiver GPU.
-- **Threads CPU:** configurável entre 1 e o número de CPUs disponíveis no container. O padrão é 1, seguindo a recomendação de desempenho do projeto Pocket TTS.
-- **Passos de qualidade:** o padrão é 5 (`sampler_decode_steps=5`). O padrão upstream é 1; mais passos aumentam o tempo de geração e podem melhorar a qualidade. Ajuste para 1 quando priorizar velocidade.
+- **Threads CPU:** configurável entre 1 e o número de CPUs disponíveis no container. O Joe limita automaticamente valores acima do número real de CPUs visíveis.
+- **Passos de qualidade:** configurável pelo Joe. Alterar os passos descarrega apenas o cache do modelo em memória; o modelo é recarregado na próxima síntese.
+- **INT8 dinâmico:** opção independente salva no Joe. Pode reduzir memória e acelerar CPU x86; o servidor informa se foi realmente ativado e o desativa automaticamente quando a inferência usa CUDA.
 
-As opções são aplicadas na próxima inicialização do servidor. Depois de alterá-las, execute novamente a célula **Iniciar a API do Joe e publicar o túnel**. O modo Automático só faz fallback para CPU quando o carregamento/movimentação para CUDA falhar; os modos explícitos não trocam silenciosamente de dispositivo.
+As configurações são enviadas à API em runtime, sem reiniciar o notebook. O modo Automático seleciona CUDA quando disponível e usa CPU quando não; o Joe mostra o dispositivo efetivo e as CPUs disponíveis no `/health`.
 
-O endpoint `/health` informa versão do PyTorch, dispositivo selecionado e realmente carregado, threads, passos e métricas da última síntese (tempo, duração, RTF, pico e RMS). Os logs do servidor também imprimem uma linha `[JOE_TTS]` por geração.
+O endpoint `/health` informa versão do PyTorch, dispositivo selecionado e realmente carregado, threads, passos, INT8 solicitado/ativo, diagnóstico do modelo carregado, contagem de CPUs e métricas da última síntese (tempo, duração, RTF, pico e RMS). A verificação SHA-256 dos estados de voz do Drive é armazenada em cache por tamanho, timestamps do arquivo e fingerprint esperado, com TTL de cinco minutos; isso evita reler o mesmo `.safetensors` a cada trecho sem remover a validação de integridade.
+ Os logs do servidor também imprimem uma linha `[JOE_TTS]` por geração.
 
 Na instalação de um modelo no Drive, além de conferir Safetensors e JSON, o backend carrega o checkpoint e o tokenizer pelo próprio `TTSModel.load_model()` usando o YAML da variante. O upload é recusado se o checkpoint não for compatível com a arquitetura ou não oferecer clonagem de voz. Isso verifica a compatibilidade estrutural, mas não substitui uma audição humana para avaliar pronúncia.
 

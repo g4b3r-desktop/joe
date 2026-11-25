@@ -93,6 +93,78 @@ def split_text_into_chunks(text: str, max_chars: int = 280) -> list[str]:
     return chunks
 
 
+def prepare_tts_chunks(
+    text: str,
+    *,
+    max_chunk_chars: int = 560,
+    max_text_chars: int | None = None,
+) -> list[str]:
+    """Split text into the selected generation size, or keep it whole when zero.
+
+    The optional API cap is applied after the user's preference so remote requests
+    never exceed the server limit. A zero chunk size explicitly means full text.
+    """
+    cleaned = str(text or "").strip()
+    if not cleaned:
+        return []
+
+    if max_chunk_chars > 0:
+        chunks = split_text_into_chunks(cleaned, max_chars=max_chunk_chars)
+    else:
+        chunks = [cleaned]
+
+    if max_text_chars is None:
+        return chunks
+
+    result: list[str] = []
+    for chunk in chunks:
+        if len(chunk) <= max_text_chars:
+            result.append(chunk)
+        else:
+            result.extend(
+                split_text_into_chunks(chunk, max_chars=max_text_chars)
+            )
+    return result
+
+
+def prepare_clipboard_chunks(
+    text: str,
+    *,
+    interactive_phrases: bool,
+    max_phrase_chars: int = 560,
+    max_text_chars: int | None = None,
+) -> list[str]:
+    """Prepare shortcut text using the same character limit as normal TTS.
+
+    Interactive mode preserves one WAV per sentence. Otherwise the selected
+    limit is actually applied; zero means complete text (subject to API cap).
+    """
+    cleaned = str(text or "").strip()
+    if not cleaned:
+        return []
+    if interactive_phrases:
+        phrase_limit = max_phrase_chars if max_phrase_chars > 0 else (
+            max_text_chars or 20_000
+        )
+        phrases = split_text_into_phrases(cleaned, max_chars=phrase_limit)
+        if max_text_chars is None:
+            return phrases
+        result: list[str] = []
+        for phrase in phrases:
+            if len(phrase) <= max_text_chars:
+                result.append(phrase)
+            else:
+                result.extend(
+                    split_text_into_chunks(phrase, max_chars=max_text_chars)
+                )
+        return result
+    return prepare_tts_chunks(
+        cleaned,
+        max_chunk_chars=max_phrase_chars,
+        max_text_chars=max_text_chars,
+    )
+
+
 def merge_wav_files(
     input_paths: Iterable[str | Path],
     output_path: str | Path,

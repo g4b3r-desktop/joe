@@ -64,7 +64,12 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from joe.audio_chunks import merge_wav_files, split_text_into_chunks, split_text_into_phrases
+from joe.audio_chunks import (
+    merge_wav_files,
+    prepare_clipboard_chunks,
+    prepare_tts_chunks,
+    split_text_into_chunks,
+)
 from joe.audio_history import AudioHistoryStore
 from joe.project_archive import JOE_AUDIO_PROJECT_EXTENSION, load_joe_audio_project
 from joe.generation_queue import GenerationQueue, GenerationTask
@@ -94,7 +99,12 @@ from joe.pronunciation_dictionary import (
     load_pronunciation_dictionary_json,
     merge_pronunciation_entries,
 )
-from joe.services.colab_api import ColabAPIClient, ColabAPIError, ColabVoiceSession
+from joe.services.colab_api import (
+    MAX_TTS_TEXT_CHARS,
+    ColabAPIClient,
+    ColabAPIError,
+    ColabVoiceSession,
+)
 from joe.model_discovery import LocalModel, default_model_search_roots, discover_local_models
 from joe.services.parakeet import ParakeetReduxService
 from joe.services.pocket_tts import PocketTTSService
@@ -162,6 +172,7 @@ class ClipboardChunkWorker(QRunnable):
         final_path: Path,
         remote: bool = False,
         prepare: Callable[[], object] | None = None,
+        batch_generator: Callable[[list[str], threading.Event], list[bytes]] | None = None,
     ):
         super().__init__()
         import threading
@@ -172,6 +183,7 @@ class ClipboardChunkWorker(QRunnable):
         self.final_path = final_path
         self.remote = remote
         self.prepare = prepare
+        self.batch_generator = batch_generator
         self.cancel_event = threading.Event()
         self.signals = ChunkWorkerSignals()
 
@@ -193,21 +205,50 @@ class ClipboardChunkWorker(QRunnable):
                 )
                 self.prepare()
 
-            for index, text in enumerate(self.chunks, start=1):
+            if self.batch_generator is not None:
                 if self.cancel_event.is_set():
                     self.signals.cancelled.emit()
                     return
+                self.signals.progress.emit(
+                    f"Enviando as {total} frases clicáveis em uma única tarefa ao Colab…"
+                )
+                audio_batch = self.batch_generator(self.chunks, self.cancel_event)
+                if len(audio_batch) != total:
+                    raise RuntimeError(
+                        "O Colab retornou uma quantidade inesperada de segmentos de áudio."
+                    )
+                # The ZIP is downloaded once; after that, preserve each WAV as
+                # an independent clickable phrase in the shortcut window.
+                for index, (text, audio_data) in enumerate(
+                    zip(self.chunks, audio_batch), start=1
+                ):
+                    if self.cancel_event.is_set():
+                        self.signals.cancelled.emit()
+                        return
+                    destination = self.output_directory / f"part_{index:03d}.wav"
+                    write_bytes_atomically(destination, audio_data)
+                    if not destination.is_file() or destination.stat().st_size == 0:
+                        raise RuntimeError(
+                            f"O Colab não produziu um WAV válido para o trecho {index}."
+                        )
+                    generated.append(destination)
+                    self.signals.chunk_ready.emit(index, str(destination), total, text)
+            else:
+                for index, text in enumerate(self.chunks, start=1):
+                    if self.cancel_event.is_set():
+                        self.signals.cancelled.emit()
+                        return
 
-                destination = self.output_directory / f"part_{index:03d}.wav"
-                self.signals.progress.emit(f"Gerando trecho {index} de {total}…")
-                result = self._generate_chunk(index, total, text, destination)
+                    destination = self.output_directory / f"part_{index:03d}.wav"
+                    self.signals.progress.emit(f"Gerando trecho {index} de {total}…")
+                    result = self._generate_chunk(index, total, text, destination)
 
-                if self.cancel_event.is_set():
-                    self.signals.cancelled.emit()
-                    return
+                    if self.cancel_event.is_set():
+                        self.signals.cancelled.emit()
+                        return
 
-                generated.append(result)
-                self.signals.chunk_ready.emit(index, str(result), total, text)
+                    generated.append(result)
+                    self.signals.chunk_ready.emit(index, str(result), total, text)
 
             if self.cancel_event.is_set():
                 self.signals.cancelled.emit()
@@ -225,9 +266,12 @@ class ClipboardChunkWorker(QRunnable):
                 {"path": str(merged), "performance": performance}
             )
         except Exception as exc:  # noqa: BLE001
-            self.signals.failed.emit(
-                f"{exc}\n\nTraceback técnico:\n{traceback.format_exc()}"
-            )
+            if self.cancel_event.is_set() or getattr(exc, "cancelled", False):
+                self.signals.cancelled.emit()
+            else:
+                self.signals.failed.emit(
+                    f"{exc}\\n\\nTraceback técnico:\\n{traceback.format_exc()}"
+                )
 
     def _generate_chunk(
         self,
@@ -293,10 +337,16 @@ class TTSGenerationWorker(QRunnable):
         attempt_diagnostics: list[str] = []
         current_stage = "Preparando o texto"
         backend = "Google Colab" if self.task.remote else "Pocket TTS local"
+        remote: ColabAPIClient | None = None
         try:
-            chunks = split_text_into_chunks(self.task.speech_text, max_chars=280)
-            if not chunks:
+            speech_text = str(self.task.speech_text or "").strip()
+            if not speech_text:
                 raise ValueError("O texto preparado para fala está vazio.")
+            chunks = prepare_tts_chunks(
+                speech_text,
+                max_chunk_chars=int(self.task.chunk_size),
+                max_text_chars=MAX_TTS_TEXT_CHARS if self.task.remote else None,
+            )
 
             remote = (
                 ColabAPIClient(self.task.remote_url, self.task.remote_token)
@@ -323,6 +373,38 @@ class TTSGenerationWorker(QRunnable):
             with tempfile.TemporaryDirectory(prefix="joe-tts-queue-") as temp_dir:
                 temporary_root = Path(temp_dir)
                 generated: list[Path] = []
+                remote_audio_chunks: list[bytes] | None = None
+
+                if remote is not None:
+                    self.signals.progress.emit(
+                        self.task.task_id,
+                        f"Enviando {len(chunks)} bloco(s) em lote para o Google Colab…",
+                    )
+                    try:
+                        remote_audio_chunks = remote.generate_audio_batch(
+                            chunks,
+                            self.task.language,
+                            cancel_event=self.cancel_event,
+                            model_variant=self.task.model_variant,
+                            voice_id=remote_voice_id,
+                        )
+                    except ColabAPIError as batch_error:
+                        # Keep compatibility with Colab notebooks without the batch route.
+                        if "HTTP 404" in str(batch_error):
+                            self.signals.progress.emit(
+                                self.task.task_id,
+                                "API antiga detectada; usando envio compatível por bloco…",
+                            )
+                            remote_audio_chunks = None
+                        else:
+                            raise
+                    if (
+                        remote_audio_chunks is not None
+                        and len(remote_audio_chunks) != len(chunks)
+                    ):
+                        raise ColabAPIError(
+                            "O Colab retornou uma quantidade inesperada de WAVs no lote."
+                        )
 
                 for index, chunk_text in enumerate(chunks, start=1):
                     if self.cancel_event.is_set():
@@ -344,14 +426,17 @@ class TTSGenerationWorker(QRunnable):
                         chunk_path.unlink(missing_ok=True)
                         try:
                             if remote is not None:
-                                audio_data = remote.generate_audio(
-                                    chunk_text,
-                                    self.task.language,
-                                    self.task.voice_path,
-                                    cancel_event=self.cancel_event,
-                                    model_variant=self.task.model_variant,
-                                    voice_id=remote_voice_id,
-                                )
+                                if remote_audio_chunks is not None:
+                                    audio_data = remote_audio_chunks[index - 1]
+                                else:
+                                    audio_data = remote.generate_audio(
+                                        chunk_text,
+                                        self.task.language,
+                                        self.task.voice_path,
+                                        cancel_event=self.cancel_event,
+                                        model_variant=self.task.model_variant,
+                                        voice_id=remote_voice_id,
+                                    )
                                 if self.cancel_event.is_set():
                                     self.signals.cancelled.emit(self.task.task_id)
                                     return
@@ -453,6 +538,10 @@ class TTSGenerationWorker(QRunnable):
                         + "\n\n".join(attempt_diagnostics)
                     )
                 self.signals.failed.emit(self.task.task_id, report)
+
+        finally:
+            if remote is not None:
+                remote.close()
 
 
 class ColabModelSelectionDialog(QDialog):
@@ -1780,8 +1869,19 @@ class JoeWindow(QMainWindow):
         self.colab_tts_sampler_steps.setToolTip(
             "Mais passos podem melhorar a qualidade da fala, mas aumentam o tempo de síntese."
         )
+        self.colab_tts_quantize_int8 = QCheckBox("Ativar INT8 dinâmico na CPU")
+        self.colab_tts_quantize_int8.setChecked(
+            self.app_settings.value("colab_tts_quantize_int8", False, type=bool)
+        )
+        self.colab_tts_quantize_int8.setToolTip(
+            "Ao marcar ou desmarcar, o Joe envia a alteração automaticamente ao Colab. "
+            "Só funciona quando o Pocket TTS está executando na CPU; CUDA desativa INT8."
+        )
         self.colab_tts_cpu_threads.valueChanged.connect(self._save_colab_tts_settings)
         self.colab_tts_sampler_steps.valueChanged.connect(self._save_colab_tts_settings)
+        self.colab_tts_quantize_int8.toggled.connect(
+            self._on_colab_quantize_int8_toggled
+        )
 
         colab_tts_form = QFormLayout()
         colab_tts_form.setFieldGrowthPolicy(
@@ -1794,6 +1894,7 @@ class JoeWindow(QMainWindow):
         colab_tts_form.setVerticalSpacing(10)
         colab_tts_form.addRow("Threads CPU:", self.colab_tts_cpu_threads)
         colab_tts_form.addRow("Qualidade (passos):", self.colab_tts_sampler_steps)
+        colab_tts_form.addRow("Quantização:", self.colab_tts_quantize_int8)
         self.colab_tts_settings_status = QLabel(
             "Padrão: 2 threads CPU e qualidade 4. Ajuste aqui e aplique no runtime conectado."
         )
@@ -2044,11 +2145,55 @@ class JoeWindow(QMainWindow):
             self.app_settings.setValue(
                 "colab_tts_sampler_steps", int(self.colab_tts_sampler_steps.value())
             )
+        if hasattr(self, "colab_tts_quantize_int8"):
+            self.app_settings.setValue(
+                "colab_tts_quantize_int8", bool(self.colab_tts_quantize_int8.isChecked())
+            )
         if hasattr(self, "colab_tts_settings_status"):
             self.colab_tts_settings_status.setText(
-                "Configurações salvas localmente. Clique em 'Aplicar configurações no Colab' "
-                "para enviá-las ao runtime conectado."
+                "Configurações salvas localmente. INT8 é sincronizado automaticamente "
+                "quando a opção muda e quando o Joe se reconecta ao Colab. "
+                "Use o botão para aplicar também Threads e Qualidade imediatamente."
             )
+
+    def _on_colab_quantize_int8_toggled(self, *_args) -> None:
+        """Persist and immediately synchronize the CPU-only INT8 preference."""
+        self._save_colab_tts_settings()
+        if not (
+            self.colab_url.text().strip()
+            and self.colab_token.text().strip()
+        ):
+            self.colab_tts_settings_status.setText(
+                "Preferência INT8 salva. Será sincronizada automaticamente "
+                "quando a API do Colab estiver configurada e conectada."
+            )
+            return
+        self._apply_colab_tts_settings()
+
+    def _sync_colab_tts_settings_if_needed(self, health: dict[str, object]) -> None:
+        """Restore local runtime preferences after a Colab restart."""
+        if getattr(self, "colab_tts_settings_worker", None) is not None:
+            return
+        try:
+            remote_quantize = bool(
+                health.get(
+                    "tts_quantize_int8_requested",
+                    health.get("tts_quantize_int8", False),
+                )
+            )
+            remote_steps = int(
+                health.get("tts_sampler_decode_steps", self.colab_tts_sampler_steps.value())
+            )
+        except (TypeError, ValueError):
+            return
+
+        local_quantize = bool(self.colab_tts_quantize_int8.isChecked())
+        local_steps = int(self.colab_tts_sampler_steps.value())
+        if remote_quantize != local_quantize or remote_steps != local_steps:
+            self.colab_tts_settings_status.setText(
+                "Runtime do Colab diferente das preferências locais; sincronizando INT8/Qualidade…"
+            )
+            self._apply_colab_tts_settings()
 
     def _apply_colab_tts_settings(self) -> None:
         if getattr(self, "colab_tts_settings_worker", None) is not None:
@@ -2064,13 +2209,16 @@ class JoeWindow(QMainWindow):
 
         cpu_threads = int(self.colab_tts_cpu_threads.value())
         sampler_steps = int(self.colab_tts_sampler_steps.value())
+        quantize_int8 = bool(self.colab_tts_quantize_int8.isChecked())
         self._save_colab_tts_settings()
         self.colab_tts_apply_button.setEnabled(False)
         self.colab_tts_settings_status.setText(
             "Enviando as configurações para o Google Colab…"
         )
         worker = FunctionWorker(
-            lambda: client.update_tts_settings(cpu_threads, sampler_steps)
+            lambda: client.update_tts_settings(
+                cpu_threads, sampler_steps, quantize_int8=quantize_int8
+            )
         )
         self.colab_tts_settings_worker = worker
         worker.signals.finished.connect(self._colab_tts_settings_applied)
@@ -2087,9 +2235,17 @@ class JoeWindow(QMainWindow):
         sampler_steps = data.get(
             "tts_sampler_decode_steps", self.colab_tts_sampler_steps.value()
         )
+        quantize_active = bool(data.get("tts_quantize_int8"))
+        quantize_requested = bool(data.get("tts_quantize_int8_requested"))
+        quantize_note = (
+            "INT8 configurado para a próxima síntese na CPU."
+            if quantize_active else
+            str(data.get("tts_quantization_disabled_reason") or "INT8 desativado.")
+            if quantize_requested else "INT8 desativado."
+        )
         message = (
             f"Aplicado no Colab: {applied_threads} thread(s) CPU "
-            f"(de {available_threads} disponível(is)) e qualidade {sampler_steps}."
+            f"(de {available_threads} disponível(is)), qualidade {sampler_steps}; {quantize_note}"
         )
         if requested_threads != applied_threads:
             message += (
@@ -2124,7 +2280,18 @@ class JoeWindow(QMainWindow):
             self.asr_device.setEnabled(self.processing_mode.currentData() == "local")
 
     def _colab_client(self) -> ColabAPIClient:
-        return ColabAPIClient(self.colab_url.text(), self.colab_token.text())
+        base_url = self.colab_url.text().strip().rstrip("/")
+        token = self.colab_token.text().strip()
+        key = (base_url, token)
+        clients = getattr(self, "_colab_api_clients", None)
+        if clients is None:
+            clients = {}
+            self._colab_api_clients = clients
+        client = clients.get(key)
+        if client is None:
+            client = ColabAPIClient(base_url, token)
+            clients[key] = client
+        return client
 
     def _update_colab_monitoring(self, *_args) -> None:
         if not hasattr(self, "processing_mode") or not hasattr(self, "colab_status"):
@@ -2188,20 +2355,48 @@ class JoeWindow(QMainWindow):
         tts_threads = data.get("tts_cpu_threads", "—")
         tts_available_threads = data.get("tts_available_cpu_threads", "—")
         tts_steps = data.get("tts_sampler_decode_steps", "—")
+        tts_int8 = bool(data.get("tts_quantize_int8"))
+        tts_int8_requested = bool(data.get("tts_quantize_int8_requested"))
+        pocket_tts_version = data.get("pocket_tts_version", "N/D")
+        loaded_model_diagnostics = data.get("tts_loaded_model_diagnostics") or {}
+        quantized_linear_layers = sum(
+            int(details.get("quantized_linear_layers", 0) or 0)
+            for details in loaded_model_diagnostics.values()
+            if isinstance(details, dict)
+        )
+        if not tts_int8_requested:
+            tts_int8_status = "INT8 desativado"
+        elif data.get("tts_quantization_disabled_reason"):
+            tts_int8_status = str(data["tts_quantization_disabled_reason"])
+        elif not tts_int8:
+            tts_int8_status = "INT8 solicitado, mas não ativado no servidor"
+        elif not loaded_model_diagnostics:
+            tts_int8_status = "INT8 configurado para a próxima carga (CPU)"
+        elif quantized_linear_layers > 0:
+            tts_int8_status = (
+                f"INT8 ativo na CPU ({quantized_linear_layers} camadas quantizadas)"
+            )
+        else:
+            tts_int8_status = (
+                "INT8 solicitado na CPU, mas nenhuma camada quantizada foi detectada"
+            )
+
         last_tts = data.get("last_tts_generation") or {}
         last_tts_status = (
             f"Última síntese: {last_tts.get('device')} | "
             f"fluxo: {last_tts.get('flow_type', 'N/D')} | "
             f"sampler: {last_tts.get('sampler_decode_steps', 'N/D')} passo(s) | "
+            f"INT8: {'sim' if last_tts.get('quantize_int8') else 'não'} "
+            f"({last_tts.get('quantized_linear_layers', 'N/D')} camadas) | "
             f"RTF {float(last_tts.get('realtime_factor', 0)):.2f} | "
             f"{float(last_tts.get('duration_seconds', 0)):.2f}s de áudio."
             if last_tts else "Ainda não há síntese TTS nesta sessão."
         )
-        pocket_tts_version = data.get("pocket_tts_version", "N/D")
-        loaded_model_diagnostics = data.get("tts_loaded_model_diagnostics") or {}
         loaded_model_summary = ", ".join(
             f"{variant}: fluxo {details.get('flow_type', 'N/D')} / "
-            f"{details.get('sampler_decode_steps', 'N/D')} passo(s)"
+            f"{details.get('sampler_decode_steps', 'N/D')} passo(s) / "
+            f"INT8 {'sim' if details.get('quantize_int8') else 'não'} "
+            f"({details.get('quantized_linear_layers', 'N/D')} camadas detectadas)"
             for variant, details in loaded_model_diagnostics.items()
             if isinstance(details, dict)
         ) or "nenhum modelo carregado"
@@ -2222,13 +2417,14 @@ class JoeWindow(QMainWindow):
             f"ASR: {data.get('asr', 'Parakeet Redux')}\n"
             f"GPU disponível: {gpu}\n"
             f"Pocket TTS: versão {pocket_tts_version} | {tts_device} (modo {tts_mode}) | "
-            f"threads CPU: {tts_threads}/{tts_available_threads} | qualidade configurada: {tts_steps}\n"
+            f"threads CPU: {tts_threads}/{tts_available_threads} | qualidade configurada: {tts_steps} | {tts_int8_status}\n"
             f"Modelos carregados: {loaded_model_summary}\n"
             f"{last_tts_status}\n"
             f"Parakeet carregado: {'sim' if data.get('asr_loaded') else 'ainda não'}\n"
             f"{storage_status}\n\n"
             "O monitoramento confirma conectividade, mas não mantém o runtime do Colab ativo."
         )
+        self._sync_colab_tts_settings_if_needed(data)
         self.statusBar().showMessage("API do Google Colab conectada.", 5000)
 
     def _colab_monitor_failed(self, message: str) -> None:
@@ -2254,7 +2450,7 @@ class JoeWindow(QMainWindow):
     def _open_colab_notebook(self) -> None:
         url = (
             "https://colab.research.google.com/github/g4b3r-desktop/joe/"
-            "blob/feature/clipboard-dialog-appearance-settings/colab/Joe_Colab_API.ipynb"
+            "blob/feature/colab-performance-optimizations/colab/Joe_Colab_API.ipynb"
         )
         QDesktopServices.openUrl(QUrl(url))
 
@@ -2335,9 +2531,19 @@ class JoeWindow(QMainWindow):
 
         self._build_tts_settings_dialog()
 
+        chunk_settings_row = QHBoxLayout()
+        chunk_settings_row.addWidget(QLabel("Limite por bloco:"))
+        chunk_settings_row.addWidget(self.tts_chunk_size)
+        chunk_settings_note = QLabel(
+            "Os blocos são unidos automaticamente em um único WAV."
+        )
+        chunk_settings_note.setObjectName("muted")
+        chunk_settings_row.addWidget(chunk_settings_note, 1)
+
         layout.addWidget(title)
         layout.addWidget(description)
         layout.addWidget(self.tts_text, 1)
+        layout.addLayout(chunk_settings_row)
         layout.addLayout(action_row)
         layout.addWidget(self.tts_info)
         layout.addWidget(self.tts_speed_info)
@@ -2696,29 +2902,45 @@ class JoeWindow(QMainWindow):
         )
         self.tts_auto_filename.toggled.connect(self._save_tts_output_settings)
 
-        self.clipboard_chunk_size = QComboBox()
-        for size in (180, 280, 420, 560):
-            self.clipboard_chunk_size.addItem(f"{size} caracteres", size)
+        self.tts_chunk_size = QComboBox()
+        self.clipboard_chunk_size = self.tts_chunk_size  # Backward-compatible UI alias.
+        for label, size in (
+            ("180 caracteres", 180),
+            ("280 caracteres", 280),
+            ("420 caracteres", 420),
+            ("560 caracteres", 560),
+            ("Texto completo", 0),
+        ):
+            self.tts_chunk_size.addItem(label, size)
+        self.tts_chunk_size.setToolTip(
+            "Aplica-se à geração normal e ao atalho. 280/420/560 dividem o texto "
+            "em blocos que são unidos em um único WAV. Texto completo desativa "
+            "essa divisão, respeitando o limite de 20.000 caracteres por tarefa do Colab."
+        )
+        legacy_chunk_size = self.app_settings.value(
+            "clipboard_chunk_size", 560, type=int
+        )
         saved_chunk_size = self.app_settings.value(
-            "clipboard_chunk_size", 280, type=int
+            "tts_chunk_size", legacy_chunk_size, type=int
         )
-        chunk_size_index = self.clipboard_chunk_size.findData(saved_chunk_size)
-        self.clipboard_chunk_size.setCurrentIndex(max(0, chunk_size_index))
-        self.clipboard_chunk_size.currentIndexChanged.connect(
-            lambda: self.app_settings.setValue(
-                "clipboard_chunk_size", self.clipboard_chunk_size.currentData()
-            )
+        if saved_chunk_size >= MAX_TTS_TEXT_CHARS:
+            saved_chunk_size = 0
+        chunk_size_index = self.tts_chunk_size.findData(saved_chunk_size)
+        self.tts_chunk_size.setCurrentIndex(
+            chunk_size_index if chunk_size_index >= 0 else self.tts_chunk_size.findData(560)
         )
+        self.tts_chunk_size.currentIndexChanged.connect(self._save_tts_chunk_size)
 
         self.clipboard_interactive_phrases = QCheckBox(
             "Ativar frases clicáveis no atalho (ouvir cada frase separadamente)"
         )
         self.clipboard_interactive_phrases.setToolTip(
-            "Gera cada frase em um WAV separado dentro da sessão temporária, "
-            "permitindo clicar nela para ouvir somente aquele trecho."
+            "Opcional. Gera cada frase em um WAV separado para reprodução individual. "
+            "No Colab, todas as frases são enviadas juntas em uma única tarefa; "
+            "a janela disponibiliza os WAVs depois que o ZIP completo é recebido."
         )
         self.clipboard_interactive_phrases.setChecked(
-            self.app_settings.value("clipboard_interactive_phrases", True, type=bool)
+            self.app_settings.value("clipboard_interactive_phrases", False, type=bool)
         )
         self.clipboard_interactive_phrases.toggled.connect(
             lambda checked: self.app_settings.setValue(
@@ -2762,7 +2984,6 @@ class JoeWindow(QMainWindow):
         output_form.addRow("Pasta para salvar", output_folder_row)
         output_form.addRow("", self.tts_auto_filename)
         output_form.addRow("Privacidade do histórico", self.history_save_text_check)
-        output_form.addRow("Tamanho dos blocos do atalho", self.clipboard_chunk_size)
         output_form.addRow("", self.clipboard_interactive_phrases)
         output_form.addRow("", self.clipboard_recognize_generated_audio)
         settings_layout.addWidget(output_group)
@@ -4097,7 +4318,10 @@ class JoeWindow(QMainWindow):
                     f"Revise as opções de pronúncia antes de comparar o desempenho.\n\n{exc}",
                 )
                 return
-            chunks = split_text_into_chunks(prepared_text, max_chars=280)
+            chunks = prepare_tts_chunks(
+                prepared_text,
+                max_chunk_chars=int(self.tts_chunk_size.currentData() or 0),
+            )
             sample_text = chunks[0] if chunks else ""
         else:
             sample_text = (
@@ -4125,6 +4349,15 @@ class JoeWindow(QMainWindow):
             )
 
         self._run_task("Comparando o Pocket TTS em CPU e CUDA…", benchmark, completed)
+
+    def _save_tts_chunk_size(self, *_args) -> None:
+        """Persist the shared normal-generation and shortcut text split size."""
+        if not hasattr(self, "tts_chunk_size"):
+            return
+        value = int(self.tts_chunk_size.currentData() or 0)
+        self.app_settings.setValue("tts_chunk_size", value)
+        # Keep the legacy key in sync for existing installations and settings.
+        self.app_settings.setValue("clipboard_chunk_size", value)
 
     def _save_tts_output_settings(self, *_args) -> None:
         if not hasattr(self, "tts_output_directory"):
@@ -4616,10 +4849,11 @@ class JoeWindow(QMainWindow):
             recognition_enabled = bool(
                 self.clipboard_recognize_generated_audio.isChecked()
             )
-            chunks = (
-                split_text_into_phrases(speech_text, max_chars=chunk_size)
-                if interactive_phrases
-                else split_text_into_chunks(speech_text, max_chars=chunk_size)
+            chunks = prepare_clipboard_chunks(
+                speech_text,
+                interactive_phrases=interactive_phrases,
+                max_phrase_chars=chunk_size,
+                max_text_chars=MAX_TTS_TEXT_CHARS if remote is not None else None,
             )
             if not chunks:
                 raise ValueError("Não há texto para converter em áudio.")
@@ -4685,7 +4919,12 @@ class JoeWindow(QMainWindow):
             if remote_voice_session is not None:
                 remote_voice_session.prepare()
 
+        batch_generator = None
         if remote_voice_session is not None:
+            # One remote task for all configured chunks, regardless of whether
+            # the shortcut exposes clickable phrases.
+            batch_generator = remote_voice_session.generate_audio_batch
+
             def generate_clipboard_chunk(chunk_text: str, output_path: Path) -> Path:
                 audio_data = remote_voice_session.generate_audio(chunk_text)
                 write_bytes_atomically(output_path, audio_data)
@@ -4769,6 +5008,7 @@ class JoeWindow(QMainWindow):
                 if remote_voice_session is not None and remote_reference_audio
                 else None
             ),
+            batch_generator=batch_generator,
         )
         self.clipboard_generation_worker = worker
 
@@ -4935,6 +5175,7 @@ class JoeWindow(QMainWindow):
                 model_variant=model_variant,
                 tts_device=str(self.tts_device.currentData() or "cpu"),
                 cpu_threads=int(self.tts_cpu_threads.value()),
+                chunk_size=int(self.tts_chunk_size.currentData() or 0),
                 tts_quantization=bool(self.tts_quantization.isChecked()),
                 tts_profile=str(self.tts_performance_profile.currentData() or "custom"),
                 voice_path=selected_voice,
@@ -5524,6 +5765,8 @@ class JoeWindow(QMainWindow):
         self.player.stop()
         self.asr.close()
         self.tts.close()
+        for client in getattr(self, "_colab_api_clients", {}).values():
+            client.close()
         super().closeEvent(event)
 
 
