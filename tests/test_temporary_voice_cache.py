@@ -79,6 +79,25 @@ def test_cache_clears_active_snapshot_when_default_voice_is_selected(tmp_path):
         cache.close()
 
 
+def test_cache_removes_leftovers_from_interrupted_shortcut_runs(tmp_path):
+    cache_directory = tmp_path / "joe-cache"
+    cache_directory.mkdir()
+    orphaned_voice = cache_directory / "voice-interrupted.wav"
+    partial_copy = cache_directory / ".voice-interrupted.part"
+    unrelated_file = cache_directory / "keep-this.txt"
+    orphaned_voice.write_bytes(b"orphan")
+    partial_copy.write_bytes(b"partial")
+    unrelated_file.write_text("keep", encoding="utf-8")
+
+    cache = TemporaryVoiceFileCache(cache_directory)
+    try:
+        assert not orphaned_voice.exists()
+        assert not partial_copy.exists()
+        assert unrelated_file.is_file()
+    finally:
+        cache.close()
+
+
 def test_cache_rejects_missing_voice_file_when_no_snapshot_exists(tmp_path):
     cache = TemporaryVoiceFileCache(tmp_path / "joe-cache")
     try:
