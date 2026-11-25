@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import pytest
 
-from joe.temporary_voice_cache import TemporaryVoiceFileCache
+from joe.temporary_voice_cache import (
+    TemporaryVoiceFileCache,
+    resolve_shortcut_voice_paths,
+)
 
 
 def test_cache_reuses_snapshot_across_shortcut_processes_until_voice_changes(tmp_path):
@@ -103,5 +106,45 @@ def test_cache_rejects_missing_voice_file_when_no_snapshot_exists(tmp_path):
     try:
         with pytest.raises(FileNotFoundError, match="Arquivo de voz não encontrado"):
             cache.get(tmp_path / "missing.wav")
+    finally:
+        cache.close()
+
+
+
+def test_remote_shortcut_uses_original_reference_without_creating_local_snapshot(tmp_path):
+    source = tmp_path / "selected-reference.wav"
+    source.write_bytes(b"reference audio")
+    cache_directory = tmp_path / "joe-cache"
+    cache = TemporaryVoiceFileCache(cache_directory)
+    try:
+        local_voice, remote_reference = resolve_shortcut_voice_paths(
+            cache,
+            source,
+            remote=True,
+        )
+
+        assert local_voice is None
+        assert remote_reference == source
+        assert cache.cached_path is None
+        assert not cache_directory.exists()
+    finally:
+        cache.close()
+
+
+def test_local_shortcut_uses_temporary_snapshot_and_does_not_set_remote_reference(tmp_path):
+    source = tmp_path / "selected-reference.wav"
+    source.write_bytes(b"reference audio")
+    cache = TemporaryVoiceFileCache(tmp_path / "joe-cache")
+    try:
+        local_voice, remote_reference = resolve_shortcut_voice_paths(
+            cache,
+            source,
+            remote=False,
+        )
+
+        assert local_voice is not None
+        assert local_voice != source
+        assert local_voice.read_bytes() == b"reference audio"
+        assert remote_reference is None
     finally:
         cache.close()
