@@ -1842,11 +1842,14 @@ class JoeWindow(QMainWindow):
             self.app_settings.value("colab_tts_quantize_int8", False, type=bool)
         )
         self.colab_tts_quantize_int8.setToolTip(
-            "Reduz o uso de memória e pode acelerar a CPU x86. É desativado automaticamente quando o Colab usa CUDA."
+            "Ao marcar ou desmarcar, o Joe envia a alteração automaticamente ao Colab. "
+            "Só funciona quando o Pocket TTS está executando na CPU; CUDA desativa INT8."
         )
         self.colab_tts_cpu_threads.valueChanged.connect(self._save_colab_tts_settings)
         self.colab_tts_sampler_steps.valueChanged.connect(self._save_colab_tts_settings)
-        self.colab_tts_quantize_int8.toggled.connect(self._save_colab_tts_settings)
+        self.colab_tts_quantize_int8.toggled.connect(
+            self._on_colab_quantize_int8_toggled
+        )
 
         colab_tts_form = QFormLayout()
         colab_tts_form.setFieldGrowthPolicy(
@@ -2116,9 +2119,49 @@ class JoeWindow(QMainWindow):
             )
         if hasattr(self, "colab_tts_settings_status"):
             self.colab_tts_settings_status.setText(
-                "Configurações salvas localmente. Clique em 'Aplicar configurações no Colab' "
-                "para enviá-las ao runtime conectado."
+                "Configurações salvas localmente. INT8 é sincronizado automaticamente "
+                "quando a opção muda e quando o Joe se reconecta ao Colab. "
+                "Use o botão para aplicar também Threads e Qualidade imediatamente."
             )
+
+    def _on_colab_quantize_int8_toggled(self, *_args) -> None:
+        """Persist and immediately synchronize the CPU-only INT8 preference."""
+        self._save_colab_tts_settings()
+        if not (
+            self.colab_url.text().strip()
+            and self.colab_token.text().strip()
+        ):
+            self.colab_tts_settings_status.setText(
+                "Preferência INT8 salva. Será sincronizada automaticamente "
+                "quando a API do Colab estiver configurada e conectada."
+            )
+            return
+        self._apply_colab_tts_settings()
+
+    def _sync_colab_tts_settings_if_needed(self, health: dict[str, object]) -> None:
+        """Restore local runtime preferences after a Colab restart."""
+        if getattr(self, "colab_tts_settings_worker", None) is not None:
+            return
+        try:
+            remote_quantize = bool(
+                health.get(
+                    "tts_quantize_int8_requested",
+                    health.get("tts_quantize_int8", False),
+                )
+            )
+            remote_steps = int(
+                health.get("tts_sampler_decode_steps", self.colab_tts_sampler_steps.value())
+            )
+        except (TypeError, ValueError):
+            return
+
+        local_quantize = bool(self.colab_tts_quantize_int8.isChecked())
+        local_steps = int(self.colab_tts_sampler_steps.value())
+        if remote_quantize != local_quantize or remote_steps != local_steps:
+            self.colab_tts_settings_status.setText(
+                "Runtime do Colab diferente das preferências locais; sincronizando INT8/Qualidade…"
+            )
+            self._apply_colab_tts_settings()
 
     def _apply_colab_tts_settings(self) -> None:
         if getattr(self, "colab_tts_settings_worker", None) is not None:
@@ -2282,7 +2325,10 @@ class JoeWindow(QMainWindow):
         tts_int8 = bool(data.get("tts_quantize_int8"))
         tts_int8_requested = bool(data.get("tts_quantize_int8_requested"))
         tts_int8_status = (
-            "INT8 ativo (CPU)" if tts_int8 else
+            "INT8 configurado para a próxima carga (CPU)"
+            if tts_int8 and not (data.get("tts_loaded_model_diagnostics") or {})
+            else "INT8 ativo (CPU)"
+            if tts_int8 else
             str(data.get("tts_quantization_disabled_reason") or "INT8 desativado")
             if tts_int8_requested else "INT8 desativado"
         )
@@ -2301,7 +2347,8 @@ class JoeWindow(QMainWindow):
         loaded_model_summary = ", ".join(
             f"{variant}: fluxo {details.get('flow_type', 'N/D')} / "
             f"{details.get('sampler_decode_steps', 'N/D')} passo(s) / "
-            f"INT8 {'sim' if details.get('quantize_int8') else 'não'}"
+            f"INT8 {'sim' if details.get('quantize_int8') else 'não'} "
+            f"({details.get('quantized_linear_layers', 'N/D')} camadas detectadas)"
             for variant, details in loaded_model_diagnostics.items()
             if isinstance(details, dict)
         ) or "nenhum modelo carregado"
@@ -2329,6 +2376,7 @@ class JoeWindow(QMainWindow):
             f"{storage_status}\n\n"
             "O monitoramento confirma conectividade, mas não mantém o runtime do Colab ativo."
         )
+        self._sync_colab_tts_settings_if_needed(data)
         self.statusBar().showMessage("API do Google Colab conectada.", 5000)
 
     def _colab_monitor_failed(self, message: str) -> None:
