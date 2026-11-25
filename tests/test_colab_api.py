@@ -327,3 +327,62 @@ def test_split_tts_batches_supports_full_20k_request_and_512_phrases():
 
     full_limit = split_tts_batches(["a" * 20_000])
     assert full_limit == [["a" * 20_000]]
+
+
+
+def test_colab_batch_falls_back_to_legacy_tts_route_on_404(monkeypatch):
+    from joe.services.colab_api import ColabAPIError
+
+    client = ColabAPIClient("https://example.trycloudflare.com", "x" * 40)
+    batch_requests = []
+    legacy_requests = []
+
+    def request(method, endpoint, **_kwargs):
+        batch_requests.append((method, endpoint))
+        raise ColabAPIError("API do Colab respondeu HTTP 404: Not Found")
+
+    def legacy_generate(
+        text,
+        language,
+        voice_path=None,
+        cancel_event=None,
+        model_variant=None,
+        voice_id=None,
+    ):
+        legacy_requests.append(
+            {
+                "text": text,
+                "language": language,
+                "voice_path": voice_path,
+                "model_variant": model_variant,
+                "voice_id": voice_id,
+            }
+        )
+        return b"RIFF" + bytes(4) + b"WAVE" + text.encode("utf-8")
+
+    monkeypatch.setattr(client, "_request", request)
+    monkeypatch.setattr(client, "generate_audio", legacy_generate)
+
+    result = client.generate_audio_batch(
+        ["Primeira frase.", "Segunda frase.", "Terceira frase."],
+        "portuguese",
+        model_variant="portuguese_24l",
+        voice_id="voice-prepared-in-drive",
+    )
+
+    assert len(batch_requests) == 1
+    assert batch_requests == [("POST", "/v1/jobs/tts/batch")]
+    assert len(result) == 3
+    assert [item["text"] for item in legacy_requests] == [
+        "Primeira frase.",
+        "Segunda frase.",
+        "Terceira frase.",
+    ]
+    assert all(item["language"] == "portuguese" for item in legacy_requests)
+    assert all(item["model_variant"] == "portuguese_24l" for item in legacy_requests)
+    assert all(
+        item["voice_id"] == "voice-prepared-in-drive"
+        and item["voice_path"] is None
+        for item in legacy_requests
+    )
+    client.close()
