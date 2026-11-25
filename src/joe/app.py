@@ -4431,6 +4431,7 @@ class JoeWindow(QMainWindow):
                 voice,
                 language,
                 model_variant,
+                name=Path(voice_source).stem if voice_source else None,
             )
             if remote is not None
             else None
