@@ -2450,7 +2450,7 @@ class JoeWindow(QMainWindow):
     def _open_colab_notebook(self) -> None:
         url = (
             "https://colab.research.google.com/github/g4b3r-desktop/joe/"
-            "blob/feature/clipboard-dialog-appearance-settings/colab/Joe_Colab_API.ipynb"
+            "blob/feature/colab-performance-optimizations/colab/Joe_Colab_API.ipynb"
         )
         QDesktopServices.openUrl(QUrl(url))
 
