@@ -193,6 +193,41 @@ def _load_tts_model_for_inference(loader: Any, model_variant: str) -> Any:
     return model
 
 
+def _tts_model_diagnostics(model: Any) -> dict[str, Any]:
+    """Read the actual sampler and flow implementation from a loaded Pocket TTS model."""
+    flow_lm = getattr(model, "flow_lm", None)
+    flow_type = getattr(flow_lm, "flow_type", None)
+
+    if not flow_type:
+        config = getattr(model, "config", None)
+        flow_lm_config = (
+            config.get("flow_lm")
+            if isinstance(config, dict)
+            else getattr(config, "flow_lm", None)
+        )
+        flow_config = (
+            flow_lm_config.get("flow")
+            if isinstance(flow_lm_config, dict)
+            else getattr(flow_lm_config, "flow", None)
+        )
+        flow_type = (
+            flow_config.get("type")
+            if isinstance(flow_config, dict)
+            else getattr(flow_config, "type", None)
+        )
+
+    sampler_steps = getattr(model, "sampler_decode_steps", None)
+    try:
+        sampler_steps = int(sampler_steps) if sampler_steps is not None else None
+    except (TypeError, ValueError):
+        sampler_steps = None
+
+    return {
+        "flow_type": str(flow_type) if flow_type is not None else "não informado pelo modelo",
+        "sampler_decode_steps": sampler_steps,
+    }
+
+
 def _get_tts_model(language: str, model_variant: str) -> Any:
     model = _tts_models.get(model_variant)
     if model is None:
@@ -370,8 +405,10 @@ def _generate_tts(
         samples = audio.detach().to("cpu").float().numpy()
         sample_rate = int(model.sample_rate)
         signal_metrics = inspect_audio_samples(samples, sample_rate)
+        model_diagnostics = _tts_model_diagnostics(model)
         _last_tts_metrics = {
             **signal_metrics,
+            **model_diagnostics,
             "elapsed_seconds": elapsed_seconds,
             "realtime_factor": signal_metrics["duration_seconds"] / elapsed_seconds,
             "device": effective_device,
@@ -386,6 +423,8 @@ def _generate_tts(
         print(
             "[JOE_TTS] "
             f"device={effective_device} threads={TTS_CPU_THREADS} "
+            f"flow={model_diagnostics['flow_type']} "
+            f"sampler_steps={model_diagnostics['sampler_decode_steps']} "
             f"variant={model_variant} audio={signal_metrics['duration_seconds']:.2f}s "
             f"elapsed={elapsed_seconds:.2f}s "
             f"RTF={_last_tts_metrics['realtime_factor']:.2f} "
@@ -932,6 +971,11 @@ def health(_: None = Depends(require_token)) -> dict[str, Any]:
         "asr_backend": _asr_backend,
         "tts_loaded_languages": sorted(_tts_models.keys()),
         "tts_loaded_model_variants": sorted(_tts_models.keys()),
+        "tts_loaded_model_diagnostics": {
+            variant: _tts_model_diagnostics(model)
+            for variant, model in _tts_models.items()
+        },
+        "pocket_tts_version": importlib.metadata.version("pocket-tts"),
         "tts_local_drive_config": bool(os.environ.get("JOE_TTS_CONFIG_PATH")),
         "tts_local_drive_24l_config": bool(os.environ.get("JOE_TTS_24L_CONFIG_PATH")),
         "tts_drive_models_required": USE_DRIVE_MODELS,
