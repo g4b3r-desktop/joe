@@ -120,7 +120,7 @@ def test_clipboard_non_interactive_sends_complete_text_as_one_chunk():
         max_phrase_chars=280,
     )
 
-    assert chunks == [text]
+    assert chunks == [text.strip()]
 
 
 def test_clipboard_interactive_preserves_individual_sentences():
