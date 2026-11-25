@@ -314,3 +314,16 @@ def test_split_tts_batches_rejects_segment_larger_than_batch_limit():
 
     with pytest.raises(ValueError, match="excede o limite"):
         split_tts_batches(["texto muito longo"], max_characters=4)
+
+
+
+def test_split_tts_batches_supports_full_20k_request_and_512_phrases():
+    texts = ["frase"] * 513
+
+    batches = split_tts_batches(texts)
+
+    assert [len(batch) for batch in batches] == [512, 1]
+    assert all(sum(map(len, batch)) <= 20_000 for batch in batches)
+
+    full_limit = split_tts_batches(["a" * 20_000])
+    assert full_limit == [["a" * 20_000]]
