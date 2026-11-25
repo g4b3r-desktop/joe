@@ -114,7 +114,10 @@ from joe.voice_favorites import (
     serialize_voice_favorites,
 )
 from joe.voice_profiles import load_voice_profiles, serialize_voice_profiles
-from joe.temporary_voice_cache import TemporaryVoiceFileCache
+from joe.temporary_voice_cache import (
+    TemporaryVoiceFileCache,
+    resolve_shortcut_voice_paths,
+)
 from joe.utils import build_srt, build_audio_output_path, write_bytes_atomically
 from joe.transcript_sync import active_segment_index, normalize_timed_segments
 
@@ -4402,8 +4405,12 @@ class JoeWindow(QMainWindow):
         destination = temp_dir / "clipboard_audio.wav"
         voice_source = self.voice_path.text().strip() or None
         try:
-            cached_voice_path = self.clipboard_voice_cache.get(voice_source)
-            voice = str(cached_voice_path) if cached_voice_path is not None else None
+            local_voice_path, remote_reference_audio = resolve_shortcut_voice_paths(
+                self.clipboard_voice_cache,
+                voice_source,
+                remote=remote is not None,
+            )
+            voice = str(local_voice_path) if local_voice_path is not None else None
         except OSError as exc:
             self._remove_clipboard_temp_dir(temp_dir)
             self.statusBar().showMessage(
@@ -4428,10 +4435,10 @@ class JoeWindow(QMainWindow):
         remote_voice_session = (
             ColabVoiceSession(
                 remote,
-                voice_source,
+                remote_reference_audio,
                 language,
                 model_variant,
-                name=Path(voice_source).stem if voice_source else None,
+                name=(Path(remote_reference_audio).stem if remote_reference_audio else None),
             )
             if remote is not None
             else None
@@ -4522,7 +4529,7 @@ class JoeWindow(QMainWindow):
             remote=remote is not None,
             prepare=(
                 prepare_clipboard_voice
-                if remote_voice_session is not None and voice
+                if remote_voice_session is not None and remote_reference_audio
                 else None
             ),
         )
