@@ -2305,6 +2305,7 @@ class JoeWindow(QMainWindow):
             f"Última síntese: {last_tts.get('device')} | "
             f"fluxo: {last_tts.get('flow_type', 'N/D')} | "
             f"sampler: {last_tts.get('sampler_decode_steps', 'N/D')} passo(s) | "
+            f"INT8: {'sim' if last_tts.get('quantize_int8') else 'não'} | "
             f"RTF {float(last_tts.get('realtime_factor', 0)):.2f} | "
             f"{float(last_tts.get('duration_seconds', 0)):.2f}s de áudio."
             if last_tts else "Ainda não há síntese TTS nesta sessão."
@@ -2313,7 +2314,8 @@ class JoeWindow(QMainWindow):
         loaded_model_diagnostics = data.get("tts_loaded_model_diagnostics") or {}
         loaded_model_summary = ", ".join(
             f"{variant}: fluxo {details.get('flow_type', 'N/D')} / "
-            f"{details.get('sampler_decode_steps', 'N/D')} passo(s)"
+            f"{details.get('sampler_decode_steps', 'N/D')} passo(s) / "
+            f"INT8 {'sim' if details.get('quantize_int8') else 'não'}"
             for variant, details in loaded_model_diagnostics.items()
             if isinstance(details, dict)
         ) or "nenhum modelo carregado"
