@@ -1725,6 +1725,52 @@ class JoeWindow(QMainWindow):
         form.addRow("URL da API", self.colab_url)
         form.addRow("Token de acesso", self.colab_token)
 
+        self.colab_tts_cpu_threads = QSpinBox()
+        self.colab_tts_cpu_threads.setRange(1, 64)
+        self.colab_tts_cpu_threads.setValue(
+            self.app_settings.value("colab_tts_cpu_threads", 2, type=int)
+        )
+        self.colab_tts_cpu_threads.setToolTip(
+            "Número de threads CPU usadas pelo Pocket TTS no runtime do Google Colab."
+        )
+        self.colab_tts_sampler_steps = QSpinBox()
+        self.colab_tts_sampler_steps.setRange(1, 16)
+        self.colab_tts_sampler_steps.setValue(
+            self.app_settings.value("colab_tts_sampler_steps", 4, type=int)
+        )
+        self.colab_tts_sampler_steps.setToolTip(
+            "Mais passos podem melhorar a qualidade da fala, mas aumentam o tempo de síntese."
+        )
+        self.colab_tts_cpu_threads.valueChanged.connect(self._save_colab_tts_settings)
+        self.colab_tts_sampler_steps.valueChanged.connect(self._save_colab_tts_settings)
+
+        colab_tts_form = QFormLayout()
+        colab_tts_form.addRow("Threads CPU:", self.colab_tts_cpu_threads)
+        colab_tts_form.addRow("Qualidade (passos):", self.colab_tts_sampler_steps)
+        self.colab_tts_settings_status = QLabel(
+            "Padrão: 2 threads CPU e qualidade 4. Ajuste aqui e aplique no runtime conectado."
+        )
+        self.colab_tts_settings_status.setObjectName("muted")
+        self.colab_tts_settings_status.setWordWrap(True)
+        self.colab_tts_apply_button = QPushButton("Aplicar configurações no Colab")
+        self.colab_tts_apply_button.setObjectName("primaryButton")
+        self.colab_tts_apply_button.clicked.connect(self._apply_colab_tts_settings)
+
+        self.colab_tts_group = QGroupBox("Desempenho e qualidade do Pocket TTS no Colab")
+        colab_tts_layout = QVBoxLayout(self.colab_tts_group)
+        colab_tts_layout.addLayout(colab_tts_form)
+        colab_tts_note = QLabel(
+            "Threads CPU é limitado automaticamente à quantidade disponível no Colab. "
+            "Ao alterar a qualidade, o modelo é removido apenas do cache em memória e "
+            "recarregado na próxima síntese; os modelos e as vozes salvos no Google Drive "
+            "não são modificados."
+        )
+        colab_tts_note.setObjectName("muted")
+        colab_tts_note.setWordWrap(True)
+        colab_tts_layout.addWidget(colab_tts_note)
+        colab_tts_layout.addWidget(self.colab_tts_apply_button)
+        colab_tts_layout.addWidget(self.colab_tts_settings_status)
+
         self.colab_test_button = QPushButton("Testar conexão com o Colab")
         self.colab_test_button.setObjectName("primaryButton")
         self.colab_test_button.clicked.connect(self._test_colab_connection)
@@ -1748,9 +1794,9 @@ class JoeWindow(QMainWindow):
         self.colab_info = QLabel(
             "1. Abra o notebook do branch de armazenamento direto e execute as células.\n"
             "2. Copie a URL e o token exibidos no final e cole nos campos acima.\n"
-            "3. Clique em 'Localizar modelos e escolher o que enviar' para listar os "
-            "modelos encontrados e marcar somente os que deseja instalar no Drive.\n"
-            "4. Selecione um áudio original no Joe; ele será enviado e preparado no Colab.\n\n"
+            "3. Ajuste Threads CPU e Qualidade nesta tela e clique em 'Aplicar configurações no Colab'.\n"
+            "4. Clique em 'Localizar modelos e escolher o que enviar' para instalar modelos no Drive.\n"
+            "5. Selecione um áudio original no Joe; ele será enviado e preparado no Colab.\n\n"
             "Modelos, áudios originais e estados de voz ficam em arquivos individuais no Google Drive. "
             "O novo fluxo não utiliza JOE_MODELS.zip.\n\n"
             "O Joe verifica a conexão a cada 60 segundos enquanto o modo Colab está selecionado. "
@@ -1787,6 +1833,7 @@ class JoeWindow(QMainWindow):
         layout.addWidget(description)
         layout.addLayout(form)
         layout.addLayout(buttons)
+        layout.addWidget(self.colab_tts_group)
         layout.addWidget(model_upload_group)
         layout.addWidget(self.colab_status)
         layout.addWidget(self.colab_info)
@@ -1919,6 +1966,82 @@ class JoeWindow(QMainWindow):
             f"Modelo {variant} instalado no Google Drive.", 7000
         )
 
+    def _save_colab_tts_settings(self, *_args) -> None:
+        if hasattr(self, "colab_tts_cpu_threads"):
+            self.app_settings.setValue(
+                "colab_tts_cpu_threads", int(self.colab_tts_cpu_threads.value())
+            )
+        if hasattr(self, "colab_tts_sampler_steps"):
+            self.app_settings.setValue(
+                "colab_tts_sampler_steps", int(self.colab_tts_sampler_steps.value())
+            )
+        if hasattr(self, "colab_tts_settings_status"):
+            self.colab_tts_settings_status.setText(
+                "Configurações salvas localmente. Clique em 'Aplicar configurações no Colab' "
+                "para enviá-las ao runtime conectado."
+            )
+
+    def _apply_colab_tts_settings(self) -> None:
+        if getattr(self, "colab_tts_settings_worker", None) is not None:
+            self.statusBar().showMessage(
+                "A aplicação das configurações do Colab já está em andamento.", 4000
+            )
+            return
+        try:
+            client = self._colab_client()
+        except ValueError as exc:
+            QMessageBox.information(self, "Configure a API do Colab", str(exc))
+            return
+
+        cpu_threads = int(self.colab_tts_cpu_threads.value())
+        sampler_steps = int(self.colab_tts_sampler_steps.value())
+        self._save_colab_tts_settings()
+        self.colab_tts_apply_button.setEnabled(False)
+        self.colab_tts_settings_status.setText(
+            "Enviando as configurações para o Google Colab…"
+        )
+        worker = FunctionWorker(
+            lambda: client.update_tts_settings(cpu_threads, sampler_steps)
+        )
+        self.colab_tts_settings_worker = worker
+        worker.signals.finished.connect(self._colab_tts_settings_applied)
+        worker.signals.failed.connect(self._colab_tts_settings_failed)
+        self.colab_monitor_pool.start(worker)
+
+    def _colab_tts_settings_applied(self, result: object) -> None:
+        self.colab_tts_settings_worker = None
+        self.colab_tts_apply_button.setEnabled(True)
+        data = result if isinstance(result, dict) else {}
+        applied_threads = data.get("tts_cpu_threads", "—")
+        requested_threads = data.get("tts_requested_cpu_threads", applied_threads)
+        available_threads = data.get("tts_available_cpu_threads", "—")
+        sampler_steps = data.get(
+            "tts_sampler_decode_steps", self.colab_tts_sampler_steps.value()
+        )
+        message = (
+            f"Aplicado no Colab: {applied_threads} thread(s) CPU "
+            f"(de {available_threads} disponível(is)) e qualidade {sampler_steps}."
+        )
+        if requested_threads != applied_threads:
+            message += (
+                f" O Colab ajustou o valor solicitado ({requested_threads}) "
+                "ao limite de CPU do runtime."
+            )
+        if data.get("tts_model_reloaded_on_next_generation"):
+            message += " O modelo será recarregado na próxima síntese."
+        self.colab_tts_settings_status.setText(message)
+        self.statusBar().showMessage("Configurações do Pocket TTS aplicadas no Colab.", 6000)
+        self._start_colab_check(manual=False)
+
+    def _colab_tts_settings_failed(self, message: str) -> None:
+        self.colab_tts_settings_worker = None
+        self.colab_tts_apply_button.setEnabled(True)
+        detail = str(message).split("\\n\\n", 1)[0].strip()
+        self.colab_tts_settings_status.setText(
+            f"Não foi possível aplicar as configurações: {detail}"
+        )
+        self.statusBar().showMessage("Falha ao aplicar configurações no Colab.", 6000)
+
     def _save_colab_settings(self, *_args) -> None:
         if hasattr(self, "processing_mode"):
             self.app_settings.setValue("processing_mode", self.processing_mode.currentData())
@@ -1994,6 +2117,7 @@ class JoeWindow(QMainWindow):
         tts_devices = data.get("tts_loaded_devices") or {}
         tts_device = next(iter(tts_devices.values()), data.get("tts_device_selected", "não selecionado"))
         tts_threads = data.get("tts_cpu_threads", "—")
+        tts_available_threads = data.get("tts_available_cpu_threads", "—")
         tts_steps = data.get("tts_sampler_decode_steps", "—")
         last_tts = data.get("last_tts_generation") or {}
         last_tts_status = (
@@ -2018,7 +2142,7 @@ class JoeWindow(QMainWindow):
             f"Conexão confirmada. Servidor: {data.get('service', 'Joe Colab API')}\n"
             f"ASR: {data.get('asr', 'Parakeet Redux')}\n"
             f"GPU disponível: {gpu}\n"
-            f"TTS Pocket TTS: {tts_device} (modo {tts_mode}) | threads CPU: {tts_threads} | passos: {tts_steps}\n"
+            f"TTS Pocket TTS: {tts_device} (modo {tts_mode}) | threads CPU: {tts_threads}/{tts_available_threads} | qualidade: {tts_steps}\n"
             f"{last_tts_status}\n"
             f"Parakeet carregado: {'sim' if data.get('asr_loaded') else 'ainda não'}\n"
             f"{storage_status}\n\n"
@@ -2049,7 +2173,7 @@ class JoeWindow(QMainWindow):
     def _open_colab_notebook(self) -> None:
         url = (
             "https://colab.research.google.com/github/g4b3r-desktop/joe/"
-            "blob/fix/colab-pocket-tts-inference-quality/colab/Joe_Colab_API.ipynb"
+            "blob/feature/clipboard-dialog-appearance-settings/colab/Joe_Colab_API.ipynb"
         )
         QDesktopServices.openUrl(QUrl(url))
 
