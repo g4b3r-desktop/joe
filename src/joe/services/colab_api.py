@@ -11,6 +11,40 @@ from typing import Any
 import httpx
 
 
+def split_tts_batches(
+    texts: list[str],
+    *,
+    max_characters: int = 18_000,
+    max_segments: int = 128,
+) -> list[list[str]]:
+    """Split TTS text chunks into requests within the Colab API batch limits."""
+    if max_characters < 1 or max_segments < 1:
+        raise ValueError("Os limites do lote precisam ser maiores que zero.")
+    batches: list[list[str]] = []
+    current: list[str] = []
+    current_characters = 0
+    for value in texts:
+        text = str(value).strip()
+        if not text:
+            raise ValueError("O lote de áudio contém um segmento vazio.")
+        if len(text) > max_characters:
+            raise ValueError(
+                f"Um segmento contém {len(text)} caracteres e excede o limite de {max_characters}."
+            )
+        if current and (
+            len(current) >= max_segments
+            or current_characters + len(text) > max_characters
+        ):
+            batches.append(current)
+            current = []
+            current_characters = 0
+        current.append(text)
+        current_characters += len(text)
+    if current:
+        batches.append(current)
+    return batches
+
+
 def _download_hf_tokenizer(filename: str, revision: str, cache_dir: Path) -> Path:
     """Download one tokenizer file from the exact Hugging Face model revision."""
     try:
@@ -509,6 +543,8 @@ class ColabAPIClient:
             raise ValueError("O lote de áudio precisa conter textos não vazios.")
         if len(normalized) > 128:
             raise ValueError("O lote excede o limite de 128 segmentos.")
+        if sum(len(item) for item in normalized) > 20_000:
+            raise ValueError("O lote excede o limite total de 20.000 caracteres do Colab.")
         payload: dict[str, Any] = {
             "texts": normalized,
             "language": language,
