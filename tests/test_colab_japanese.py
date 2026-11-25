@@ -63,3 +63,31 @@ def test_colab_forwards_quality_sampler_steps_when_configured():
             "sampler_decode_steps": 5,
         }
     ]
+
+
+
+def test_colab_forwards_int8_quantization_to_pocket_tts_loader():
+    calls = []
+
+    class FakeTTSModel:
+        @staticmethod
+        def load_model(**kwargs):
+            calls.append(kwargs)
+            return "loaded"
+
+    result = load_tts_model(
+        FakeTTSModel,
+        "portuguese",
+        "portuguese_24l",
+        quantize=True,
+        sampler_decode_steps=4,
+    )
+
+    assert result == "loaded"
+    assert calls == [
+        {
+            "language": "portuguese_24l",
+            "quantize": True,
+            "sampler_decode_steps": 4,
+        }
+    ]
