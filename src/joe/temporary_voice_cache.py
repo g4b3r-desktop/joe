@@ -30,9 +30,6 @@ class TemporaryVoiceFileCache:
             return None
 
         source_path = self._canonical_source(source)
-        if not source_path.is_file():
-            raise FileNotFoundError(f"Arquivo de voz não encontrado: {source_path}")
-
         source_key = str(source_path)
         if (
             source_key == self._source_key
@@ -40,6 +37,9 @@ class TemporaryVoiceFileCache:
             and self._cached_path.is_file()
         ):
             return self._cached_path
+
+        if not source_path.is_file():
+            raise FileNotFoundError(f"Arquivo de voz não encontrado: {source_path}")
 
         # get() is called only when the previous shortcut generation is idle.
         self.invalidate()
