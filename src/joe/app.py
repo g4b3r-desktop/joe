@@ -2206,7 +2206,8 @@ class JoeWindow(QMainWindow):
         quantize_active = bool(data.get("tts_quantize_int8"))
         quantize_requested = bool(data.get("tts_quantize_int8_requested"))
         quantize_note = (
-            "INT8 ativo na CPU." if quantize_active else
+            "INT8 configurado para a próxima síntese na CPU."
+            if quantize_active else
             str(data.get("tts_quantization_disabled_reason") or "INT8 desativado.")
             if quantize_requested else "INT8 desativado."
         )
