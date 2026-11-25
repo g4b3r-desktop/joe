@@ -1130,7 +1130,7 @@ def update_tts_settings(payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
                 _tts_loaded_devices.clear()
                 _tts_voice_states.clear()
 
-    if sampler_changed:
+    if sampler_changed or quantization_changed:
         gc.collect()
         if torch.cuda.is_available():
             try:
