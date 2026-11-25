@@ -1,0 +1,405 @@
+from __future__ import annotations
+
+import json
+import os
+import shutil
+import tempfile
+import zipfile
+from collections import Counter
+from pathlib import Path
+from typing import Any, Callable
+
+MAX_ARCHIVE_BYTES = 4_000_000_000  # 4 GB (decimal bytes)
+
+# ZIP member -> (Hugging Face repo, file, pinned revision, validation type).
+MODEL_ASSETS = {
+    "pocket-tts/languages/portuguese/model.safetensors": (
+        "kyutai/pocket-tts",
+        "languages/portuguese/model.safetensors",
+        "3e82814a68665eec246ff649b14c71331f955c06",
+        "safetensors",
+    ),
+    "pocket-tts-without-voice-cloning/languages/portuguese/tokenizer.json": (
+        "kyutai/pocket-tts-without-voice-cloning",
+        "languages/portuguese/tokenizer.json",
+        "00eac05ed3d16bdc3f6b5d598874019c34a89214",
+        "json",
+    ),
+    "pocket-tts/languages/portuguese_24l/model.safetensors": (
+        "kyutai/pocket-tts",
+        "languages/portuguese_24l/model.safetensors",
+        "2dd944b099d06bb9edbd221fef138685711d9bf0",
+        "safetensors",
+    ),
+    "pocket-tts-without-voice-cloning/languages/portuguese_24l/tokenizer.json": (
+        "kyutai/pocket-tts-without-voice-cloning",
+        "languages/portuguese_24l/tokenizer.json",
+        "00eac05ed3d16bdc3f6b5d598874019c34a89214",
+        "json",
+    ),
+}
+
+
+def validate_local_tts_configs(config_paths: dict[str, str | Path]) -> dict[str, dict[str, str]]:
+    """Fail closed unless each local YAML points to valid model weights and tokenizer."""
+    import yaml
+
+    from safetensors_validation import validate_safetensors_file
+
+    validated: dict[str, dict[str, str]] = {}
+    for variant, raw_config_path in config_paths.items():
+        config_path = Path(raw_config_path).expanduser()
+        if not config_path.is_file():
+            raise FileNotFoundError(
+                f"YAML da variante {variant!r} não encontrado: {config_path}"
+            )
+
+        config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+        if not isinstance(config, dict):
+            raise ValueError(f"YAML inválido para a variante {variant!r}: {config_path}")
+
+        weights_value = config.get("weights_path")
+        lookup_table = config.get("flow_lm", {}).get("lookup_table", {})
+        tokenizer_value = (
+            lookup_table.get("tokenizer_path")
+            if isinstance(lookup_table, dict)
+            else None
+        )
+        if not weights_value:
+            raise ValueError(
+                f"YAML {variant!r} não define weights_path: {config_path}"
+            )
+        if not tokenizer_value:
+            raise ValueError(
+                f"YAML {variant!r} não define flow_lm.lookup_table.tokenizer_path: "
+                f"{config_path}"
+            )
+
+        weights_path = Path(weights_value).expanduser()
+        tokenizer_path = Path(tokenizer_value).expanduser()
+        if not weights_path.is_file():
+            raise FileNotFoundError(
+                f"Checkpoint da variante {variant!r} não encontrado: {weights_path}"
+            )
+        if not tokenizer_path.is_file():
+            raise FileNotFoundError(
+                f"Tokenizer da variante {variant!r} não encontrado: {tokenizer_path}"
+            )
+
+        validate_safetensors_file(weights_path)
+        try:
+            tokenizer_data = json.loads(tokenizer_path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise ValueError(
+                f"Tokenizer da variante {variant!r} não é um JSON válido: "
+                f"{tokenizer_path}"
+            ) from exc
+        if not isinstance(tokenizer_data, dict) or not tokenizer_data:
+            raise ValueError(
+                f"Tokenizer da variante {variant!r} está vazio ou inválido: "
+                f"{tokenizer_path}"
+            )
+
+        optional_weights = config.get("weights_path_without_voice_cloning")
+        if optional_weights:
+            optional_path = Path(optional_weights).expanduser()
+            if not optional_path.is_file():
+                raise FileNotFoundError(
+                    f"Checkpoint sem clonagem da variante {variant!r} não encontrado: "
+                    f"{optional_path}"
+                )
+            validate_safetensors_file(optional_path)
+
+        validated[variant] = {
+            "config": str(config_path.resolve()),
+            "weights": str(weights_path.resolve()),
+            "tokenizer": str(tokenizer_path.resolve()),
+        }
+
+    if not validated:
+        raise ValueError("Nenhuma configuração local do Pocket TTS foi validada.")
+    return validated
+
+
+class ArchiveSizeLimitError(ValueError):
+    """Raised when updating the model archive would exceed its configured limit."""
+
+
+def _validate_stream(stream: Any, kind: str, label: str) -> None:
+    if kind == "safetensors":
+        prefix = stream.read(8)
+        if len(prefix) != 8:
+            raise ValueError(f"{label}: arquivo Safetensors incompleto.")
+        header_size = int.from_bytes(prefix, "little")
+        if header_size <= 1 or header_size > 100 * 1024 * 1024:
+            raise ValueError(f"{label}: cabeçalho Safetensors inválido.")
+        header_bytes = stream.read(header_size)
+        if len(header_bytes) != header_size:
+            raise ValueError(f"{label}: cabeçalho Safetensors truncado.")
+        header = json.loads(header_bytes)
+        if not isinstance(header, dict) or not any(
+            key != "__metadata__" for key in header
+        ):
+            raise ValueError(f"{label}: não contém tensores Safetensors.")
+        # Ler até o final também valida o CRC do membro ZIP.
+        while stream.read(8 * 1024 * 1024):
+            pass
+        return
+
+    if kind == "json":
+        payload = stream.read()
+        parsed = json.loads(payload.decode("utf-8"))
+        if not isinstance(parsed, dict) or not parsed:
+            raise ValueError(f"{label}: tokenizer JSON vazio ou inválido.")
+        return
+
+    raise ValueError(f"Tipo de validação desconhecido: {kind}")
+
+
+def _is_valid_member(
+    archive: zipfile.ZipFile, member_name: str, kind: str
+) -> bool:
+    try:
+        with archive.open(member_name, "r") as stream:
+            _validate_stream(stream, kind, member_name)
+        return True
+    except (
+        KeyError,
+        OSError,
+        EOFError,
+        RuntimeError,
+        ValueError,
+        zipfile.BadZipFile,
+        json.JSONDecodeError,
+    ):
+        return False
+
+
+def _is_valid_file(path: Path, kind: str) -> bool:
+    try:
+        with path.open("rb") as stream:
+            _validate_stream(stream, kind, str(path))
+        return True
+    except (OSError, ValueError, json.JSONDecodeError):
+        return False
+
+
+def _archive_prefix(names: list[str]) -> str:
+    """Choose the existing root layout with the most known model assets."""
+    nested_prefix = "JOE_MODELS/"
+    root_score = sum(member in names for member in MODEL_ASSETS)
+    nested_score = sum(nested_prefix + member in names for member in MODEL_ASSETS)
+
+    if root_score or nested_score:
+        return nested_prefix if nested_score > root_score else ""
+
+    if any(name.startswith(nested_prefix) for name in names):
+        return nested_prefix
+    # For an existing ZIP containing other root-level assets, add models at root.
+    # An empty archive uses the notebook's conventional JOE_MODELS/ directory.
+    return "" if names else nested_prefix
+
+
+def _default_download(
+    repo_id: str,
+    filename: str,
+    *,
+    revision: str,
+    token: str | None,
+) -> str:
+    from huggingface_hub import hf_hub_download
+
+    return hf_hub_download(
+        repo_id=repo_id,
+        filename=filename,
+        revision=revision,
+        token=token,
+    )
+
+
+def ensure_portuguese_model_in_zip(
+    zip_path: str | Path,
+    *,
+    token: str | None = None,
+    max_archive_bytes: int = MAX_ARCHIVE_BYTES,
+    download_file: Callable[..., str | Path] | None = None,
+) -> dict[str, Any]:
+    """Ensure both Portuguese Pocket TTS variants are available in a Drive ZIP.
+
+    Existing ZIP members are preserved. Only missing or invalid model assets are
+    downloaded, and the original ZIP is replaced only after the new archive has
+    passed validation and the configured size limit.
+    """
+    destination = Path(zip_path).expanduser()
+    if max_archive_bytes <= 0:
+        raise ValueError("O limite do ZIP deve ser maior que zero.")
+
+    if destination.exists() and not destination.is_file():
+        raise ValueError(f"O caminho do ZIP não é um arquivo: {destination}")
+
+    archive_exists = destination.is_file()
+    if archive_exists and destination.stat().st_size > max_archive_bytes:
+        raise ArchiveSizeLimitError(
+            f"O ZIP atual já excede o limite de {max_archive_bytes:,} bytes."
+        )
+
+    names: list[str] = []
+    if archive_exists:
+        if not zipfile.is_zipfile(destination):
+            raise ValueError(f"O arquivo existente não é um ZIP válido: {destination}")
+        with zipfile.ZipFile(destination, "r") as archive:
+            names = archive.namelist()
+
+    prefix = _archive_prefix(names)
+    name_counts = Counter(names)
+    target_members = {
+        prefix + archive_path: asset
+        for archive_path, asset in MODEL_ASSETS.items()
+    }
+
+    valid_members: set[str] = set()
+    missing_members: dict[str, tuple[str, str, str, str]] = {}
+    if archive_exists:
+        with zipfile.ZipFile(destination, "r") as archive:
+            for member_name, (_, _, _, kind) in target_members.items():
+                if (
+                    name_counts[member_name] == 1
+                    and _is_valid_member(archive, member_name, kind)
+                ):
+                    valid_members.add(member_name)
+                else:
+                    missing_members[member_name] = target_members[member_name]
+    else:
+        missing_members = dict(target_members)
+
+    if not missing_members:
+        return {
+            "archive_path": str(destination),
+            "archive_size_bytes": destination.stat().st_size,
+            "downloaded": [],
+            "reused": sorted(valid_members),
+            "updated": False,
+        }
+
+    selected_downloader = download_file or _default_download
+    effective_token = token
+    if download_file is None and not effective_token:
+        try:
+            from huggingface_hub import get_token
+
+            effective_token = get_token()
+        except Exception:
+            effective_token = None
+        if not effective_token:
+            raise RuntimeError(
+                "O modelo kyutai/pocket-tts exige acesso autorizado no Hugging Face. "
+                "Aceite as condições em https://huggingface.co/kyutai/pocket-tts "
+                "e configure o Secret HF_TOKEN no Google Colab (Notebook access ativo)."
+            )
+
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    downloaded: dict[str, Path] = {}
+    with tempfile.TemporaryDirectory(prefix="joe-pocket-tts-") as staging_dir:
+        staging = Path(staging_dir)
+        for member_name, (
+            repo_id,
+            repo_filename,
+            revision,
+            kind,
+        ) in missing_members.items():
+            try:
+                local_path = Path(
+                    selected_downloader(
+                        repo_id,
+                        repo_filename,
+                        revision=revision,
+                        token=effective_token,
+                    )
+                )
+            except Exception as exc:
+                raise RuntimeError(
+                    "Não foi possível baixar um arquivo ausente do Hugging Face. "
+                    f"Repositório: {repo_id}; arquivo: {repo_filename}; revisão: {revision}. "
+                    "Confira o acesso ao repositório e se a revisão existe nesse "
+                    "repositório. O ZIP original no Drive não foi substituído. "
+                    f"Detalhe: {type(exc).__name__}: {exc}"
+                ) from exc
+
+            if not local_path.is_file() or not _is_valid_file(local_path, kind):
+                raise ValueError(
+                    f"O download retornou um arquivo ausente ou inválido: {repo_filename}"
+                )
+            staged_path = staging / f"{len(downloaded):02d}_{local_path.name}"
+            shutil.copy2(local_path, staged_path)
+            downloaded[member_name] = staged_path
+
+        fd, temp_name = tempfile.mkstemp(
+            prefix=f".{destination.name}.", suffix=".tmp", dir=destination.parent
+        )
+        os.close(fd)
+        temporary_zip = Path(temp_name)
+        replaced_members = set(downloaded)
+
+        try:
+            with zipfile.ZipFile(
+                temporary_zip, "w", allowZip64=True
+            ) as output_zip:
+                if archive_exists:
+                    with zipfile.ZipFile(destination, "r") as input_zip:
+                        for info in input_zip.infolist():
+                            if info.filename in replaced_members:
+                                continue
+                            if info.is_dir():
+                                output_zip.writestr(info, b"")
+                                continue
+                            with input_zip.open(info, "r") as source:
+                                with output_zip.open(
+                                    info, "w", force_zip64=True
+                                ) as target:
+                                    shutil.copyfileobj(
+                                        source, target, length=8 * 1024 * 1024
+                                    )
+
+                for member_name, staged_path in downloaded.items():
+                    info = zipfile.ZipInfo(member_name)
+                    info.compress_type = (
+                        zipfile.ZIP_STORED
+                        if member_name.endswith(".safetensors")
+                        else zipfile.ZIP_DEFLATED
+                    )
+                    info.external_attr = 0o100644 << 16
+                    with staged_path.open("rb") as source:
+                        with output_zip.open(
+                            info, "w", force_zip64=True
+                        ) as target:
+                            shutil.copyfileobj(
+                                source, target, length=8 * 1024 * 1024
+                            )
+
+            final_size = temporary_zip.stat().st_size
+            if final_size > max_archive_bytes:
+                limit_gb = max_archive_bytes / 1_000_000_000
+                raise ArchiveSizeLimitError(
+                    "O ZIP atualizado ultrapassaria o limite configurado de "
+                    f"{limit_gb:.2f} GB ({final_size:,} bytes). "
+                    "O ZIP original no Drive foi preservado."
+                )
+
+            with zipfile.ZipFile(temporary_zip, "r") as check_zip:
+                for member_name, (_, _, _, kind) in target_members.items():
+                    if not _is_valid_member(check_zip, member_name, kind):
+                        raise ValueError(
+                            f"Falha na validação do arquivo dentro do ZIP: {member_name}"
+                        )
+
+            os.replace(temporary_zip, destination)
+        finally:
+            temporary_zip.unlink(missing_ok=True)
+
+    return {
+        "archive_path": str(destination),
+        "archive_size_bytes": destination.stat().st_size,
+        "downloaded": sorted(downloaded),
+        "reused": sorted(valid_members),
+        "updated": True,
+    }

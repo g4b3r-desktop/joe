@@ -1,0 +1,12 @@
+fastapi>=0.115
+uvicorn[standard]>=0.30
+python-multipart>=0.0.9
+pocket-tts>=4.0.1
+# Pocket TTS 2.4 is known to generate incorrect audio.
+torch>=2.5
+moondream>=2.4.1
+soundfile>=0.12
+transformers>=4.57
+scipy>=1.13
+PyYAML>=6
+huggingface_hub>=0.24
