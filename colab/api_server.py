@@ -6,6 +6,7 @@ import hashlib
 import importlib.metadata
 import io
 import json
+import logging
 import math
 import os
 import re
@@ -55,6 +56,8 @@ from tts_runtime import (
     resolve_tts_device,
     resolve_int8_quantization,
 )
+
+logger = logging.getLogger("joe.colab_api")
 
 API_TOKEN = os.environ.get("JOE_API_TOKEN", "")
 if len(API_TOKEN) < 32:
@@ -1244,7 +1247,17 @@ def _submit_job(
             "future": None,
         }
     task_args = (*args, cancel_event) if _pass_cancel_event else args
-    future = _JOB_EXECUTOR.submit(_run_job, job_id, function, task_args)
+    try:
+        future = _JOB_EXECUTOR.submit(_run_job, job_id, function, task_args)
+    except Exception as exc:
+        # Do not leave a phantom queued job when the executor cannot create a worker.
+        with _JOB_LOCK:
+            _JOBS.pop(job_id, None)
+        logger.exception("Falha ao iniciar worker para tarefa %s (%s).", kind, job_id)
+        raise RuntimeError(
+            f"Não foi possível iniciar o worker de inferência ({type(exc).__name__}: {exc}). "
+            "Confira os recursos do runtime do Colab e reinicie a sessão se necessário."
+        ) from exc
     with _JOB_LOCK:
         if job_id in _JOBS:
             _JOBS[job_id]["future"] = future
@@ -1346,15 +1359,36 @@ def submit_tts_batch_job(payload: dict[str, Any] = Body(...)) -> dict[str, str]:
             detail="IDs de voz exigem armazenamento direto no Google Drive.",
         )
 
-    job_id = _submit_job(
-        "tts_batch",
-        _generate_tts_batch_job,
-        texts,
-        language,
-        selected_model,
-        voice_id,
-        _pass_cancel_event=True,
-    )
+    try:
+        job_id = _submit_job(
+            "tts_batch",
+            _generate_tts_batch_job,
+            texts,
+            language,
+            selected_model,
+            voice_id,
+            _pass_cancel_event=True,
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        # Surface the enqueue failure to the authenticated desktop client instead
+        # of returning FastAPI's opaque "Internal Server Error" response.
+        logger.exception(
+            "Falha ao enfileirar lote TTS: segmentos=%d, caracteres=%d, "
+            "idioma=%s, modelo=%s.",
+            len(texts),
+            sum(len(item) for item in texts),
+            language,
+            selected_model,
+        )
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "O servidor não conseguiu criar a tarefa de geração em lote. "
+                f"{type(exc).__name__}: {exc}"
+            ),
+        ) from exc
     return {"job_id": job_id, "status": "queued", "segments": len(texts)}
 
 
