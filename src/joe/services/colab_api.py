@@ -260,9 +260,30 @@ class ColabAPIClient:
                 detail = response.json().get("detail", response.text)
             except Exception:
                 detail = response.text
+
             if response.status_code in {401, 403}:
                 raise ColabAPIError("Token recusado pela API do Colab. Confira o token.")
-            retryable = response.status_code in {408, 425, 429, 500, 502, 503, 504}
+
+            if response.status_code == 530:
+                # Cloudflare 1033 means the named/quick tunnel cannot currently
+                # resolve a connected cloudflared origin. The Colab job may still
+                # be running, so let _wait_for_result retry status/result polling
+                # instead of failing the shortcut on the first tunnel interruption.
+                body_text = response.text.lower()
+                if "1033" in body_text:
+                    detail = (
+                        "O Cloudflare não conseguiu localizar uma conexão ativa "
+                        "para o túnel do Colab (erro 1033). O trabalho remoto pode "
+                        "continuar executando; o Joe tentará consultar novamente "
+                        "quando o túnel voltar."
+                    )
+                else:
+                    detail = (
+                        "O Cloudflare retornou HTTP 530. O túnel do Colab está "
+                        "temporariamente indisponível; o Joe tentará consultar novamente."
+                    )
+
+            retryable = response.status_code in {408, 425, 429, 500, 502, 503, 504, 530}
             raise ColabAPIError(
                 f"API do Colab respondeu HTTP {response.status_code}: {detail}",
                 retryable=retryable,
