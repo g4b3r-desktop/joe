@@ -94,7 +94,12 @@ from joe.pronunciation_dictionary import (
     load_pronunciation_dictionary_json,
     merge_pronunciation_entries,
 )
-from joe.services.colab_api import ColabAPIClient, ColabAPIError, ColabVoiceSession
+from joe.services.colab_api import (
+    ColabAPIClient,
+    ColabAPIError,
+    ColabVoiceSession,
+    split_tts_batches,
+)
 from joe.model_discovery import LocalModel, default_model_search_roots, discover_local_models
 from joe.services.parakeet import ParakeetReduxService
 from joe.services.pocket_tts import PocketTTSService
@@ -363,26 +368,33 @@ class TTSGenerationWorker(QRunnable):
                 generated: list[Path] = []
                 remote_audio_chunks: list[bytes] | None = None
                 if remote is not None:
-                    self.signals.progress.emit(
-                        self.task.task_id,
-                        f"Enviando {len(chunks)} trechos em um único lote para o Google Colab…",
-                    )
-                    try:
-                        remote_audio_chunks = remote.generate_audio_batch(
-                            chunks,
-                            self.task.language,
-                            cancel_event=self.cancel_event,
-                            model_variant=self.task.model_variant,
-                            voice_id=remote_voice_id,
-                        )
-                    except ColabAPIError as batch_error:
-                        # Keep compatibility with notebook versions before the batch endpoint.
-                        if "HTTP 404" not in str(batch_error):
-                            raise
+                    remote_audio_chunks = []
+                    remote_batches = split_tts_batches(chunks)
+                    for batch_index, remote_batch in enumerate(remote_batches, start=1):
                         self.signals.progress.emit(
                             self.task.task_id,
-                            "API antiga detectada; usando geração remota compatível por trecho…",
+                            f"Enviando lote {batch_index} de {len(remote_batches)} "
+                            f"({len(remote_batch)} trechos) para o Google Colab…",
                         )
+                        try:
+                            batch_audio = remote.generate_audio_batch(
+                                remote_batch,
+                                self.task.language,
+                                cancel_event=self.cancel_event,
+                                model_variant=self.task.model_variant,
+                                voice_id=remote_voice_id,
+                            )
+                        except ColabAPIError as batch_error:
+                            # Keep compatibility with API versions before the batch endpoint.
+                            if batch_index == 1 and "HTTP 404" in str(batch_error):
+                                remote_audio_chunks = None
+                                self.signals.progress.emit(
+                                    self.task.task_id,
+                                    "API antiga detectada; usando geração remota compatível por trecho…",
+                                )
+                                break
+                            raise
+                        remote_audio_chunks.extend(batch_audio)
                     if remote_audio_chunks is not None and len(remote_audio_chunks) != len(chunks):
                         raise ColabAPIError(
                             "O Colab retornou uma quantidade inesperada de segmentos no lote."
