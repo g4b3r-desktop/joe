@@ -162,7 +162,7 @@ class ClipboardChunkWorker(QRunnable):
         final_path: Path,
         remote: bool = False,
         prepare: Callable[[], object] | None = None,
-        batch_generator: Callable[[list[str]], list[bytes]] | None = None,
+        batch_generator: Callable[[list[str], threading.Event], list[bytes]] | None = None,
     ):
         super().__init__()
         import threading
@@ -208,7 +208,7 @@ class ClipboardChunkWorker(QRunnable):
                     self.signals.progress.emit(
                         f"Gerando trechos {first_index}–{last_index} de {total} no Colab…"
                     )
-                    audio_batch = self.batch_generator(batch_texts)
+                    audio_batch = self.batch_generator(batch_texts, self.cancel_event)
                     if len(audio_batch) != len(batch_texts):
                         raise RuntimeError(
                             "O Colab retornou uma quantidade inesperada de segmentos de áudio."
