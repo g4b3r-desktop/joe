@@ -4918,8 +4918,9 @@ class JoeWindow(QMainWindow):
 
         batch_generator = None
         if remote_voice_session is not None:
-            if interactive_phrases:
-                batch_generator = remote_voice_session.generate_audio_batch
+            # One remote task for all configured chunks, regardless of whether
+            # the shortcut exposes clickable phrases.
+            batch_generator = remote_voice_session.generate_audio_batch
 
             def generate_clipboard_chunk(chunk_text: str, output_path: Path) -> Path:
                 audio_data = remote_voice_session.generate_audio(chunk_text)
