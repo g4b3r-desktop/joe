@@ -7,6 +7,8 @@ from pathlib import Path
 from typing import Any
 
 MODEL_ID = "moondream/parakeet-redux"
+# Immutable Hugging Face revision containing the Transformers processor/model files.
+TRANSFORMERS_MODEL_REVISION = "a049528989ebbc6097c6478551266f1e3d26d1b3"
 logger = logging.getLogger(__name__)
 
 
@@ -101,6 +103,7 @@ class ParakeetReduxService:
         # is required by its documented reference implementation.
         self._processor = AutoProcessor.from_pretrained(
             MODEL_ID,
+            revision=TRANSFORMERS_MODEL_REVISION,
             trust_remote_code=True,
         )
 
@@ -113,6 +116,7 @@ class ParakeetReduxService:
         try:
             model = AutoModel.from_pretrained(
                 MODEL_ID,
+                revision=TRANSFORMERS_MODEL_REVISION,
                 trust_remote_code=True,
                 dtype=dtype,
             )
@@ -130,6 +134,7 @@ class ParakeetReduxService:
             self._backend_note = f"CUDA indisponível ({exc}); fallback para CPU."
             model = AutoModel.from_pretrained(
                 MODEL_ID,
+                revision=TRANSFORMERS_MODEL_REVISION,
                 trust_remote_code=True,
                 dtype=torch.float32,
             )
