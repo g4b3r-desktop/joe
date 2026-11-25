@@ -208,8 +208,27 @@ def _load_tts_model_for_inference(loader: Any, model_variant: str) -> Any:
     return model
 
 
+def _count_quantized_linear_layers(model: Any) -> int:
+    """Count quantized Linear modules present in the loaded Pocket TTS model."""
+    modules = getattr(model, "modules", None)
+    if not callable(modules):
+        return 0
+    count = 0
+    try:
+        for module in modules():
+            module_type = type(module)
+            qualified_type = (
+                f"{module_type.__module__}.{module_type.__name__}".lower()
+            )
+            if "linear" in module_type.__name__.lower() and "quant" in qualified_type:
+                count += 1
+    except Exception:
+        return 0
+    return count
+
+
 def _tts_model_diagnostics(model: Any) -> dict[str, Any]:
-    """Read the actual sampler and flow implementation from a loaded Pocket TTS model."""
+    """Read the actual sampler, flow and quantized layers from a loaded model."""
     flow_lm = getattr(model, "flow_lm", None)
     flow_type = getattr(flow_lm, "flow_type", None)
 
@@ -241,6 +260,7 @@ def _tts_model_diagnostics(model: Any) -> dict[str, Any]:
         "flow_type": str(flow_type) if flow_type is not None else "não informado pelo modelo",
         "sampler_decode_steps": sampler_steps,
         "quantize_int8": TTS_QUANTIZE_INT8,
+        "quantized_linear_layers": _count_quantized_linear_layers(model),
     }
 
 
