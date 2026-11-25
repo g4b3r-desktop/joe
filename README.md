@@ -144,6 +144,8 @@ python -m pip install torch --index-url https://download.pytorch.org/whl/cu132
 
 Esse atalho usa o idioma, a voz, a normalização, o dicionário de pronúncia e o modo Local/Google Colab já selecionados no Joe. O texto do clipboard só é lido quando o atalho é acionado. Também existe a ação **Arquivo → Gerar áudio do texto copiado** como alternativa.
 
+O modo atalho mantém uma cópia temporária da voz selecionada no cache do usuário (`~/.cache/joe-audio-studio/shortcut-voice`). As próximas ativações reutilizam esse arquivo, inclusive quando cada atalho inicia um processo separado. Ao escolher outra voz (ou voltar para a voz padrão), a cópia anterior é removida assim que não houver geração usando-a. O arquivo original da biblioteca nunca é alterado.
+ 
 Em **Configurações → Arquivos, histórico e atalho de texto copiado**, ative **Frases clicáveis** para gerar cada frase separadamente. Na janela compacta, clique em uma frase pronta para ouvir somente aquele trecho; o botão principal continua reproduzindo o WAV completo. Frases muito longas são divididas respeitando o limite de caracteres configurado. Como cada frase exige uma chamada TTS própria, esse modo pode demorar mais em textos com muitas frases.
 
 Opcionalmente, ative **Reconhecer a fala após gerar**. Depois do TTS, o Parakeet Redux transcreve o WAV completo. Quando o backend retornar timestamps, os segmentos reconhecidos aparecem em uma segunda lista e podem ser reproduzidos isoladamente. O backend local Transformers pode retornar somente o texto, sem tempos; nesse caso, a lista de frases TTS continua disponível. No modo Colab, os timestamps dependem do backend Parakeet disponível no runtime. O reconhecimento é desligado por padrão para não acrescentar tempo de processamento a cada atalho.
