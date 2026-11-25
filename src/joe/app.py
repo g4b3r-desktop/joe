@@ -4318,7 +4318,10 @@ class JoeWindow(QMainWindow):
                     f"Revise as opções de pronúncia antes de comparar o desempenho.\n\n{exc}",
                 )
                 return
-            chunks = split_text_into_chunks(prepared_text, max_chars=280)
+            chunks = prepare_tts_chunks(
+                prepared_text,
+                max_chunk_chars=int(self.tts_chunk_size.currentData() or 0),
+            )
             sample_text = chunks[0] if chunks else ""
         else:
             sample_text = (
