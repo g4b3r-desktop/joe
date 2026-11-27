@@ -326,7 +326,7 @@ def format_cuda_precision_benchmark_report(
     """Report FP32 vs FP16 autocast measurements and basic audio integrity checks."""
     lines = [
         "Comparação CUDA — Pocket TTS: FP32 × FP16",
-        "Mesmo modelo, voz e texto. FP16 usa autocast nas três threads internas do Pocket TTS.",
+        "Mesmo modelo, voz e texto. FP16 usa autocast nos três pontos internos do Pocket TTS (prefill, geração autoregressiva e decoder).",
         "Os pesos permanecem FP32; apenas operações compatíveis usam precisão FP16.",
         "O cronômetro inclui geração e transferência do áudio para a RAM.",
         "",
