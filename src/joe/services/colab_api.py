@@ -597,6 +597,19 @@ class ColabVoiceSession:
     ) -> bytes:
         """Generate one chunk using the already prepared Drive voice, never multipart."""
         self.prepare()
+        generation_options = {
+            "sampler_decode_steps": sampler_decode_steps,
+            "temperature": temperature,
+            "eos_threshold": eos_threshold,
+            "frames_after_eos": frames_after_eos,
+            "max_tokens": max_tokens,
+        }
+        generation_options = {
+            key: value for key, value in generation_options.items()
+            if value is not None
+        }
+        if teacher_force_previous_chunk:
+            generation_options["teacher_force_previous_chunk"] = True
         return self.client.generate_audio(
             text,
             self.language,
@@ -604,10 +617,5 @@ class ColabVoiceSession:
             cancel_event=cancel_event,
             model_variant=self.model_variant,
             voice_id=self._voice_id,
-            sampler_decode_steps=sampler_decode_steps,
-            temperature=temperature,
-            eos_threshold=eos_threshold,
-            frames_after_eos=frames_after_eos,
-            max_tokens=max_tokens,
-            teacher_force_previous_chunk=teacher_force_previous_chunk,
+            **generation_options,
         )
