@@ -376,7 +376,7 @@ def test_benchmark_reports_cpu_and_cuda_availability(monkeypatch):
 
 
 
-def test_generate_runs_voice_encoding_and_synthesis_in_inference_mode(monkeypatch, tmp_path):
+def test_generate_uses_no_grad_not_inference_mode(monkeypatch, tmp_path):
     import sys
     from contextlib import contextmanager
     from types import SimpleNamespace
@@ -386,7 +386,7 @@ def test_generate_runs_voice_encoding_and_synthesis_in_inference_mode(monkeypatc
     state = {"active": False, "calls": []}
 
     @contextmanager
-    def inference_mode():
+    def no_grad():
         state["active"] = True
         state["calls"].append("enter")
         try:
@@ -394,6 +394,9 @@ def test_generate_runs_voice_encoding_and_synthesis_in_inference_mode(monkeypatc
         finally:
             state["active"] = False
             state["calls"].append("exit")
+
+    def forbidden_inference_mode():
+        raise AssertionError("Pocket TTS must not create inference tensors.")
 
     class FakeAudio:
         def detach(self):
@@ -433,13 +436,14 @@ def test_generate_runs_voice_encoding_and_synthesis_in_inference_mode(monkeypatc
 
     fake_torch = SimpleNamespace(
         set_num_threads=lambda _value: None,
-        inference_mode=inference_mode,
+        no_grad=no_grad,
+        inference_mode=forbidden_inference_mode,
     )
     monkeypatch.setitem(sys.modules, "torch", fake_torch)
     monkeypatch.setitem(sys.modules, "soundfile", FakeSoundFile)
     monkeypatch.setitem(sys.modules, "pocket_tts", SimpleNamespace(TTSModel=FakeTTSModel))
 
-    destination = tmp_path / "inference-mode.wav"
+    destination = tmp_path / "no-grad.wav"
     PocketTTSService().generate("Olá", "portuguese", destination)
 
     assert state["calls"] == ["enter", "exit"]
