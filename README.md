@@ -212,6 +212,8 @@ python -m pytest
 ruff check .
 ~~~
 
+Para testar compilação seletiva, FP16/BF16 e TF32 sem alterar o backend normal, consulte [Backends avançados e otimizações experimentais](docs/ADVANCED_TTS_BACKENDS.md). O guia inclui um benchmark comparativo isolado.
+
 ## Estado
 
 MVP: interface desktop, geração WAV em fila sequencial com progresso por tarefa, cancelamento cooperativo, prioridade urgente e repetição de falhas, transcrição de arquivo, cópia/salvamento de texto, exportação SRT quando o backend fornece timestamps, seleção local CPU/CUDA e integração com API do Google Colab. Gravação direta do microfone e empacotamento AppImage/DEB ficam para etapas posteriores.
