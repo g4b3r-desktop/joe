@@ -1026,11 +1026,34 @@ class PocketTTSService:
         active_run: dict[str, int | bool | None] = {
             "index": None,
             "autoregressive": False,
+            "flow_thread_id": None,
         }
         trace_runs: list[dict[str, object]] = []
+        component_keys = (
+            "flow_lm_input_proj",
+            "attention_norm",
+            "attention_qkv_projection",
+            "attention_rope",
+            "kv_cache_append",
+            "kv_cache_write",
+            "attention_sdpa",
+            "attention_output_projection",
+            "ffn_norm",
+            "ffn_linear1",
+            "ffn_gelu",
+            "ffn_linear2",
+            "flow_lm_output_norm",
+            "flow_lm_eos_projection",
+            "flow_net_input_projection",
+            "flow_net_condition_projection",
+            "flow_net_time_embedding",
+            "flow_net_residual_blocks",
+            "flow_net_final_layer",
+        )
 
         def new_trace_run() -> dict[str, object]:
-            return {
+            trace = {
+                "flow_ar_loop_wall": [],
                 "flow_prefill_wall": [],
                 "flow_prefill_events": [],
                 "flow_auto_wall": [],
@@ -1047,6 +1070,10 @@ class PocketTTSService:
                 "queue_wait": [],
                 "queue_get_calls": [],
             }
+            for component_key in component_keys:
+                trace[f"{component_key}_wall"] = []
+                trace[f"{component_key}_events"] = []
+            return trace
 
         trace_runs.extend(new_trace_run() for _ in range(measured_count))
 
@@ -1060,7 +1087,10 @@ class PocketTTSService:
                 index = active_run["index"]
                 if index is None:
                     return
-                if autoregressive_only and not active_run["autoregressive"]:
+                if autoregressive_only and (
+                    not active_run["autoregressive"]
+                    or active_run["flow_thread_id"] != threading.get_ident()
+                ):
                     return
                 trace_runs[index][key].append(value)
 
@@ -1088,12 +1118,17 @@ class PocketTTSService:
             event.record()
             return event
 
-        def install_thread_tracing(target_model) -> None:
+        def install_thread_tracing(target_model):
+            import importlib
+
             original_flow = getattr(
                 target_model, "_run_flow_lm_and_increment_step", None
             )
             original_decode_worker = getattr(
                 target_model, "_decode_audio_worker", None
+            )
+            original_autoregressive = getattr(
+                target_model, "_autoregressive_generation", None
             )
             mimi = getattr(target_model, "mimi", None)
             original_mimi_decode = getattr(mimi, "decode_from_latent", None)
@@ -1102,29 +1137,101 @@ class PocketTTSService:
             transformer_layers = tuple(getattr(transformer, "layers", ()))
             flow_net = getattr(flow_lm, "flow_net", None)
             original_flow_net_forward = getattr(flow_net, "forward", None)
+
+            # Fail with the intended compatibility message before importing internals
+            # when a Pocket TTS build does not expose the profiling entry points.
+            if not all(
+                callable(method)
+                for method in (
+                    original_flow,
+                    original_decode_worker,
+                    original_autoregressive,
+                    original_mimi_decode,
+                    original_flow_net_forward,
+                )
+            ) or not transformer_layers:
+                raise RuntimeError(
+                    "A versão instalada do Pocket TTS não expõe os métodos internos "
+                    "necessários ao profiling detalhado: Flow LM, Transformer, "
+                    "FlowNet e workers de geração/decodificação."
+                )
+
+            attention_module = importlib.import_module("pocket_tts.modules.attention")
+            transformer_module = importlib.import_module("pocket_tts.modules.transformer")
+            attention_functional = getattr(attention_module, "F", None)
+            transformer_functional = getattr(transformer_module, "F", None)
+            original_sdpa = getattr(
+                attention_functional, "scaled_dot_product_attention", None
+            )
+            original_gelu = getattr(transformer_functional, "gelu", None)
+            original_complete_kv = getattr(attention_module, "complete_kv", None)
+
             layer_methods = all(
                 callable(getattr(layer, method, None))
                 for layer in transformer_layers
                 for method in ("_sa_block", "_ff_block")
+            )
+            attention_components = all(
+                callable(
+                    getattr(
+                        getattr(getattr(layer, "self_attn", None), name, None),
+                        "forward",
+                        None,
+                    )
+                )
+                for layer in transformer_layers
+                for name in ("in_proj", "rope", "out_proj")
+            )
+            cache_components = all(
+                callable(getattr(getattr(layer.self_attn, "_cache_backend", None), "append_and_get", None))
+                for layer in transformer_layers
+            )
+            layer_components = all(
+                callable(getattr(getattr(layer, name, None), "forward", None))
+                for layer in transformer_layers
+                for name in ("norm1", "norm2", "linear1", "linear2")
+            )
+            flow_lm_components = all(
+                callable(getattr(getattr(flow_lm, name, None), "forward", None))
+                for name in ("input_linear", "out_norm", "out_eos")
+            )
+            flow_net_components = all(
+                callable(getattr(getattr(flow_net, name, None), "forward", None))
+                for name in ("input_proj", "cond_embed", "final_layer")
             )
             if not all(
                 callable(method)
                 for method in (
                     original_flow,
                     original_decode_worker,
+                    original_autoregressive,
                     original_mimi_decode,
                     original_flow_net_forward,
+                    original_sdpa,
+                    original_gelu,
+                    original_complete_kv,
                 )
-            ) or not transformer_layers or not layer_methods:
+            ) or not transformer_layers or not layer_methods or not attention_components or not cache_components or not layer_components or not flow_lm_components or not flow_net_components:
                 raise RuntimeError(
                     "A versão instalada do Pocket TTS não expõe os métodos internos "
-                    "necessários ao profiling detalhado: Flow LM, camadas Transformer "
-                    "com _sa_block/_ff_block, flow_net.forward, "
-                    "_run_flow_lm_and_increment_step, _decode_audio_worker e "
-                    "mimi.decode_from_latent. Use a geração CUDA FP32 normal ou atualize o Pocket TTS."
+                    "necessários ao microprofiling: Flow LM autoregressivo, "
+                    "self-attention (projeções, RoPE, cache KV e SDPA), "
+                    "camadas norm/FFN e componentes do FlowNet. "
+                    "Use a geração CUDA FP32 normal ou confira a versão do Pocket TTS."
+                )
+
+            restore_callbacks = []
+
+            def patch_attribute(owner, attribute: str, replacement) -> None:
+                original = getattr(owner, attribute)
+                setattr(owner, attribute, replacement)
+                restore_callbacks.append(
+                    lambda owner=owner, attribute=attribute, original=original:
+                        setattr(owner, attribute, original)
                 )
 
             def timed_component(original, key: str):
+                """Measure a coarse block with CUDA Events and host wall time."""
                 def wrapped(*args, **kwargs):
                     started = time.perf_counter()
                     start_event = cuda_event()
@@ -1141,73 +1248,192 @@ class PocketTTSService:
                         )
                 return wrapped
 
-            # Attention covers Q/K/V projection, RoPE, KV cache and SDPA.
-            # FFN covers normalization, both linear layers, GELU and residual work.
-            for layer in transformer_layers:
-                layer._sa_block = timed_component(layer._sa_block, "flow_attention")
-                layer._ff_block = timed_component(layer._ff_block, "flow_ffn")
-
-            # FlowNet converts the transformer conditioning and sampled noise to a latent.
-            flow_net.forward = timed_component(original_flow_net_forward, "flow_net")
-
-            def timed_flow(*args, **kwargs):
-                text_tokens = kwargs.get("text_tokens")
-                if text_tokens is None and len(args) > 1:
-                    text_tokens = args[1]
-                is_prefill = (
-                    text_tokens is not None
-                    and len(getattr(text_tokens, "shape", ())) > 1
-                    and int(text_tokens.shape[1]) > 0
-                )
-                phase = "flow_prefill" if is_prefill else "flow_auto"
-                with trace_lock:
-                    if active_run["index"] is not None:
-                        active_run["autoregressive"] = not is_prefill
-                started = time.perf_counter()
-                start_event = cuda_event()
-                try:
-                    return original_flow(*args, **kwargs)
-                finally:
-                    end_event = cuda_event()
-                    record_phase(phase, started, start_event, end_event)
-
-            def timed_mimi_decode(*args, **kwargs):
-                started = time.perf_counter()
-                start_event = cuda_event()
-                try:
-                    return original_mimi_decode(*args, **kwargs)
-                finally:
-                    end_event = cuda_event()
-                    record_phase("mimi_decode", started, start_event, end_event)
-
-            def timed_decode_worker(latents_queue, *args, **kwargs):
-                original_get = latents_queue.get
-
-                def timed_queue_get(*get_args, **get_kwargs):
+            def timed_component_wall(original, key: str):
+                """Measure a fine-grained call on the host without event overhead."""
+                def wrapped(*args, **kwargs):
                     started = time.perf_counter()
                     try:
-                        return original_get(*get_args, **get_kwargs)
+                        return original(*args, **kwargs)
                     finally:
                         record_value(
-                            "queue_wait", time.perf_counter() - started
+                            f"{key}_wall",
+                            time.perf_counter() - started,
+                            autoregressive_only=True,
                         )
-                        record_value("queue_get_calls", 1)
+                return wrapped
 
-                # Queue.get_nowait() delegates to this same get method, so this
-                # captures both blocking waits and non-blocking drain attempts.
-                latents_queue.get = timed_queue_get
-                started = time.perf_counter()
-                try:
-                    return original_decode_worker(latents_queue, *args, **kwargs)
-                finally:
-                    record_value(
-                        "mimi_worker_wall", time.perf_counter() - started
+            patched_module_ids: set[int] = set()
+
+            def patch_module_forward(module, key: str) -> None:
+                # Pocket TTS shares one RotaryEmbedding instance across all
+                # Transformer layers. Do not wrap the same object once per layer:
+                # nested wrappers multiply both call counts and reported time.
+                module_id = id(module)
+                if module_id in patched_module_ids:
+                    return
+                original = getattr(module, "forward", None)
+                if not callable(original):
+                    raise RuntimeError(
+                        f"Componente {key} não expõe forward() para microprofiling."
                     )
+                patch_attribute(module, "forward", timed_component_wall(original, key))
+                patched_module_ids.add(module_id)
 
-            target_model._run_flow_lm_and_increment_step = timed_flow
-            target_model._decode_audio_worker = timed_decode_worker
-            mimi.decode_from_latent = timed_mimi_decode
+            try:
+                # Split the attention block into its actual operations. Timings are
+                # collected only in the autoregressive worker, excluding text prefill.
+                for layer in transformer_layers:
+                    patch_attribute(
+                        layer, "_sa_block",
+                        timed_component(layer._sa_block, "flow_attention")
+                    )
+                    patch_attribute(
+                        layer, "_ff_block",
+                        timed_component(layer._ff_block, "flow_ffn")
+                    )
+                    self_attention = layer.self_attn
+                    patch_module_forward(layer.norm1, "attention_norm")
+                    patch_module_forward(self_attention.in_proj, "attention_qkv_projection")
+                    patch_module_forward(self_attention.rope, "attention_rope")
+                    patch_attribute(
+                        self_attention._cache_backend,
+                        "append_and_get",
+                        timed_component(
+                            self_attention._cache_backend.append_and_get,
+                            "kv_cache_append",
+                        ),
+                    )
+                    patch_module_forward(self_attention.out_proj, "attention_output_projection")
+                    patch_module_forward(layer.norm2, "ffn_norm")
+                    patch_module_forward(layer.linear1, "ffn_linear1")
+                    patch_module_forward(layer.linear2, "ffn_linear2")
 
+                # complete_kv performs the actual in-place KV write. It also includes
+                # the offset scalar read, which can force a host/device synchronization.
+                patch_attribute(
+                    attention_module,
+                    "complete_kv",
+                    timed_component_wall(original_complete_kv, "kv_cache_write"),
+                )
+                patch_attribute(
+                    attention_functional,
+                    "scaled_dot_product_attention",
+                    timed_component_wall(original_sdpa, "attention_sdpa"),
+                )
+                patch_attribute(
+                    transformer_functional,
+                    "gelu",
+                    timed_component_wall(original_gelu, "ffn_gelu"),
+                )
+
+                patch_module_forward(flow_lm.input_linear, "flow_lm_input_proj")
+                patch_module_forward(flow_lm.out_norm, "flow_lm_output_norm")
+                patch_module_forward(flow_lm.out_eos, "flow_lm_eos_projection")
+
+                patch_module_forward(flow_net.input_proj, "flow_net_input_projection")
+                patch_module_forward(flow_net.cond_embed, "flow_net_condition_projection")
+                patch_module_forward(flow_net.final_layer, "flow_net_final_layer")
+                for module in tuple(getattr(flow_net, "time_embed", ())):
+                    patch_module_forward(module, "flow_net_time_embedding")
+                for module in tuple(getattr(flow_net, "res_blocks", ())):
+                    patch_module_forward(module, "flow_net_residual_blocks")
+
+                patch_attribute(
+                    flow_net,
+                    "forward",
+                    timed_component(original_flow_net_forward, "flow_net"),
+                )
+
+                def timed_flow(*args, **kwargs):
+                    text_tokens = kwargs.get("text_tokens")
+                    if text_tokens is None and len(args) > 1:
+                        text_tokens = args[1]
+                    is_prefill = (
+                        text_tokens is not None
+                        and len(getattr(text_tokens, "shape", ())) > 1
+                        and int(text_tokens.shape[1]) > 0
+                    )
+                    phase = "flow_prefill" if is_prefill else "flow_auto"
+                    with trace_lock:
+                        if active_run["index"] is not None:
+                            active_run["autoregressive"] = not is_prefill
+                    started = time.perf_counter()
+                    start_event = cuda_event()
+                    try:
+                        return original_flow(*args, **kwargs)
+                    finally:
+                        end_event = cuda_event()
+                        record_phase(phase, started, start_event, end_event)
+
+                def timed_autoregressive(*args, **kwargs):
+                    with trace_lock:
+                        if active_run["index"] is not None:
+                            active_run["autoregressive"] = True
+                            active_run["flow_thread_id"] = threading.get_ident()
+                    started = time.perf_counter()
+                    try:
+                        return original_autoregressive(*args, **kwargs)
+                    finally:
+                        record_value(
+                            "flow_ar_loop_wall",
+                            time.perf_counter() - started,
+                        )
+
+                def timed_mimi_decode(*args, **kwargs):
+                    started = time.perf_counter()
+                    start_event = cuda_event()
+                    try:
+                        return original_mimi_decode(*args, **kwargs)
+                    finally:
+                        end_event = cuda_event()
+                        record_phase("mimi_decode", started, start_event, end_event)
+
+                def timed_decode_worker(latents_queue, *args, **kwargs):
+                    original_get = latents_queue.get
+
+                    def timed_queue_get(*get_args, **get_kwargs):
+                        started = time.perf_counter()
+                        try:
+                            return original_get(*get_args, **get_kwargs)
+                        finally:
+                            record_value(
+                                "queue_wait", time.perf_counter() - started
+                            )
+                            record_value("queue_get_calls", 1)
+
+                    # Queue.get_nowait() delegates to this same get method, so this
+                    # captures blocking waits and non-blocking drain attempts.
+                    latents_queue.get = timed_queue_get
+                    started = time.perf_counter()
+                    try:
+                        return original_decode_worker(latents_queue, *args, **kwargs)
+                    finally:
+                        record_value(
+                            "mimi_worker_wall", time.perf_counter() - started
+                        )
+
+                patch_attribute(target_model, "_run_flow_lm_and_increment_step", timed_flow)
+                patch_attribute(target_model, "_autoregressive_generation", timed_autoregressive)
+                patch_attribute(target_model, "_decode_audio_worker", timed_decode_worker)
+                patch_attribute(mimi, "decode_from_latent", timed_mimi_decode)
+            except Exception:
+                for restore in reversed(restore_callbacks):
+                    try:
+                        restore()
+                    except Exception:
+                        pass
+                raise
+
+            def restore_thread_tracing() -> None:
+                for restore in reversed(restore_callbacks):
+                    try:
+                        restore()
+                    except Exception:
+                        pass
+
+            return restore_thread_tracing
+
+        restore_tracing = lambda: None
         try:
             torch.cuda.empty_cache()
             torch.cuda.reset_peak_memory_stats()
@@ -1221,7 +1447,7 @@ class PocketTTSService:
             torch.cuda.synchronize()
             model_load_seconds = time.perf_counter() - model_started
 
-            install_thread_tracing(model)
+            restore_tracing = install_thread_tracing(model)
 
             voice_started = time.perf_counter()
             voice_state = model.get_state_for_audio_prompt(voice_source)
@@ -1277,6 +1503,12 @@ class PocketTTSService:
         finally:
             with trace_lock:
                 active_run["index"] = None
+                active_run["autoregressive"] = False
+                active_run["flow_thread_id"] = None
+            try:
+                restore_tracing()
+            except Exception:
+                pass
             voice_state = None
             model = None
             self._models.clear()
@@ -1330,6 +1562,30 @@ class PocketTTSService:
                 flow_step_counts=tuple(
                     phase_count("flow_auto", i) for i in range(measured_count)
                 ),
+                flow_ar_loop_wall_seconds=tuple(
+                    sum(float(value) for value in trace_runs[i]["flow_ar_loop_wall"])
+                    for i in range(measured_count)
+                ),
+                flow_ar_control_wall_seconds=tuple(
+                    max(
+                        0.0,
+                        sum(float(value) for value in trace_runs[i]["flow_ar_loop_wall"])
+                        - phase_wall("flow_auto", i),
+                    )
+                    for i in range(measured_count)
+                ),
+                flow_component_wall_seconds={
+                    key: tuple(phase_wall(key, i) for i in range(measured_count))
+                    for key in component_keys
+                },
+                flow_component_gpu_seconds={
+                    key: tuple(phase_gpu(key, i) for i in range(measured_count))
+                    for key in component_keys
+                },
+                flow_component_calls={
+                    key: tuple(phase_count(key, i) for i in range(measured_count))
+                    for key in component_keys
+                },
                 flow_attention_wall_seconds=tuple(
                     phase_wall("flow_attention", i) for i in range(measured_count)
                 ),
