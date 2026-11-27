@@ -300,4 +300,4 @@ def format_cuda_quantization_benchmark_report(
         "A comparação não altera a preferência de quantização nem o modelo escolhido "
         "para as próximas gerações."
     )
-    return "\\n".join(lines)
+    return "\n".join(lines)
