@@ -113,7 +113,7 @@ class _SingleRotaryCache:
         # _expand_kv_cache is patched at the model boundary to grow the tables
         # before each generation chunk. This keeps CUDA offsets on-device and
         # avoids a .item() synchronization on every autoregressive attention call.
-        if time_steps and self.capacity <= time_steps:
+        if time_steps > self.capacity:
             self.fallbacks += 1
             return self._original_forward(q, k, offset)
 
