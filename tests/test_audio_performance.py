@@ -441,7 +441,7 @@ def test_cuda_attention_report_includes_memory_efficient_backend():
 
     assert "Flash kernel not eligible" in report
     assert "Memory-Efficient FP16" in report
-    assert "Flash e Memory-Efficient são testados separadamente" in report
+    assert "Flash, Memory-Efficient e cuDNN são testados separadamente" in report
     assert "Memory-Efficient FP16 foi 1,25× mais rápido" in report
     assert "cuDNN Attention — SDPA FP16 somente na atenção" in report
     assert "cuDNN FP16 foi 1,67× mais rápido" in report
