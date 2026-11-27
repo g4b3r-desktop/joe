@@ -3,12 +3,14 @@ from __future__ import annotations
 import gc
 import tempfile
 import time
+import threading
 from pathlib import Path
 
 from joe.audio_performance import (
     TTSBenchmarkResult,
     TTSCudaQuantizationBenchmarkResult,
     TTSCudaPrecisionBenchmarkResult,
+    TTSCudaProfileBenchmarkResult,
 )
 from joe.model_cache import configure_model_cache
 from joe.pocket_tts_models import (
@@ -760,6 +762,319 @@ class PocketTTSService:
                 )
             )
         return results
+
+    def benchmark_cuda_profile(
+        self,
+        text: str,
+        language: str,
+        voice_path: str | Path | None = None,
+        model_variant: str | None = None,
+        *,
+        cpu_threads: int = 2,
+        warmup_runs: int = 2,
+        measured_runs: int = 7,
+    ) -> list[TTSCudaProfileBenchmarkResult]:
+        """Profile CUDA FP32 Flow LM, Mimi decoding, latent queue waits and D2H transfer."""
+        if not text.strip():
+            raise ValueError("Informe um texto para diagnosticar o desempenho CUDA.")
+        warmup_count = max(1, int(warmup_runs))
+        measured_count = max(3, int(measured_runs))
+
+        configure_model_cache()
+        try:
+            import torch
+            from pocket_tts import TTSModel
+        except ImportError as exc:
+            raise RuntimeError(
+                "Dependências do Pocket TTS ausentes. Execute ./scripts/install-linux.sh."
+            ) from exc
+
+        model_variant = model_variant or default_model_variant(language)
+        if not is_model_variant_for_language(language, model_variant):
+            raise ValueError(
+                f"A versão {model_variant!r} não está disponível para o idioma {language!r}."
+            )
+        if not torch.cuda.is_available():
+            return [
+                TTSCudaProfileBenchmarkResult(
+                    error="CUDA não está disponível na instalação atual do PyTorch."
+                )
+            ]
+
+        self._configure_torch(torch, cpu_threads)
+        self.close()
+        voice_source = str(voice_path) if voice_path else (
+            default_voice_for_language(language) or DEFAULT_VOICE
+        )
+
+        model = None
+        voice_state = None
+        model_load_seconds = 0.0
+        voice_prepare_seconds = 0.0
+        generation_times: list[float] = []
+        audio_durations: list[float] = []
+        audio_transfer_seconds: list[float] = []
+        peak_vram_mb = 0.0
+        peak_vram_reserved_mb = 0.0
+        error = ""
+
+        trace_lock = threading.Lock()
+        active_run: dict[str, int | None] = {"index": None}
+        trace_runs: list[dict[str, object]] = []
+
+        def new_trace_run() -> dict[str, object]:
+            return {
+                "flow_prefill_wall": [],
+                "flow_prefill_events": [],
+                "flow_auto_wall": [],
+                "flow_auto_events": [],
+                "mimi_decode_wall": [],
+                "mimi_decode_events": [],
+                "mimi_worker_wall": [],
+                "queue_wait": [],
+                "queue_get_calls": [],
+            }
+
+        trace_runs.extend(new_trace_run() for _ in range(measured_count))
+
+        def record_value(key: str, value: object) -> None:
+            with trace_lock:
+                index = active_run["index"]
+                if index is None:
+                    return
+                values = trace_runs[index][key]
+                values.append(value)
+
+        def record_phase(key: str, started: float, start_event, end_event) -> None:
+            record_value(f"{key}_wall", time.perf_counter() - started)
+            record_value(f"{key}_events", (start_event, end_event))
+
+        def cuda_event():
+            event = torch.cuda.Event(enable_timing=True)
+            event.record()
+            return event
+
+        def install_thread_tracing(target_model) -> None:
+            original_flow = getattr(
+                target_model, "_run_flow_lm_and_increment_step", None
+            )
+            original_decode_worker = getattr(
+                target_model, "_decode_audio_worker", None
+            )
+            mimi = getattr(target_model, "mimi", None)
+            original_mimi_decode = getattr(mimi, "decode_from_latent", None)
+            if not all(
+                callable(method)
+                for method in (original_flow, original_decode_worker, original_mimi_decode)
+            ):
+                raise RuntimeError(
+                    "A versão instalada do Pocket TTS não expõe os métodos internos "
+                    "_run_flow_lm_and_increment_step, _decode_audio_worker e "
+                    "mimi.decode_from_latent necessários ao profiling. "
+                    "Use a geração CUDA FP32 normal ou atualize o Pocket TTS."
+                )
+
+            def timed_flow(*args, **kwargs):
+                text_tokens = kwargs.get("text_tokens")
+                if text_tokens is None and len(args) > 1:
+                    text_tokens = args[1]
+                is_prefill = (
+                    text_tokens is not None
+                    and len(getattr(text_tokens, "shape", ())) > 1
+                    and int(text_tokens.shape[1]) > 0
+                )
+                phase = "flow_prefill" if is_prefill else "flow_auto"
+                started = time.perf_counter()
+                start_event = cuda_event()
+                try:
+                    return original_flow(*args, **kwargs)
+                finally:
+                    end_event = cuda_event()
+                    record_phase(phase, started, start_event, end_event)
+
+            def timed_mimi_decode(*args, **kwargs):
+                started = time.perf_counter()
+                start_event = cuda_event()
+                try:
+                    return original_mimi_decode(*args, **kwargs)
+                finally:
+                    end_event = cuda_event()
+                    record_phase("mimi_decode", started, start_event, end_event)
+
+            def timed_decode_worker(latents_queue, *args, **kwargs):
+                original_get = latents_queue.get
+
+                def timed_queue_get(*get_args, **get_kwargs):
+                    started = time.perf_counter()
+                    try:
+                        return original_get(*get_args, **get_kwargs)
+                    finally:
+                        record_value(
+                            "queue_wait", time.perf_counter() - started
+                        )
+                        record_value("queue_get_calls", 1)
+
+                # Queue.get_nowait() delegates to this same get method, so this
+                # captures both blocking waits and non-blocking drain attempts.
+                latents_queue.get = timed_queue_get
+                started = time.perf_counter()
+                try:
+                    return original_decode_worker(latents_queue, *args, **kwargs)
+                finally:
+                    record_value(
+                        "mimi_worker_wall", time.perf_counter() - started
+                    )
+
+            target_model._run_flow_lm_and_increment_step = timed_flow
+            target_model._decode_audio_worker = timed_decode_worker
+            mimi.decode_from_latent = timed_mimi_decode
+
+        try:
+            torch.cuda.empty_cache()
+            torch.cuda.reset_peak_memory_stats()
+
+            model_started = time.perf_counter()
+            model = TTSModel.load_model(
+                **model_loading_options(model_variant),
+                quantize=False,
+            )
+            model.to("cuda")
+            torch.cuda.synchronize()
+            model_load_seconds = time.perf_counter() - model_started
+
+            install_thread_tracing(model)
+
+            voice_started = time.perf_counter()
+            voice_state = model.get_state_for_audio_prompt(voice_source)
+            torch.cuda.synchronize()
+            voice_prepare_seconds = time.perf_counter() - voice_started
+
+            def generate_once(run_index: int | None) -> tuple[float, float, float]:
+                with trace_lock:
+                    active_run["index"] = run_index
+                started = time.perf_counter()
+                try:
+                    audio = model.generate_audio(
+                        voice_state,
+                        text.strip(),
+                        copy_state=True,
+                    )
+                    transfer_started = time.perf_counter()
+                    samples = audio.detach().cpu().numpy()
+                    torch.cuda.synchronize()
+                    finished = time.perf_counter()
+                    transfer_elapsed = finished - transfer_started
+                    total_elapsed = finished - started
+                    sample_count = (
+                        int(samples.shape[-1])
+                        if getattr(samples, "ndim", 0)
+                        else int(samples.size)
+                    )
+                    duration = sample_count / max(1, int(model.sample_rate))
+                    del audio, samples
+                    return total_elapsed, transfer_elapsed, duration
+                finally:
+                    with trace_lock:
+                        active_run["index"] = None
+
+            for _ in range(warmup_count):
+                generate_once(None)
+
+            for run_index in range(measured_count):
+                total, transfer, duration = generate_once(run_index)
+                generation_times.append(total)
+                audio_transfer_seconds.append(transfer)
+                audio_durations.append(duration)
+
+            # One final device synchronization makes all CUDA events from both
+            # worker threads readable without serializing the individual phases.
+            torch.cuda.synchronize()
+            peak_vram_mb = float(torch.cuda.max_memory_allocated()) / (1024**2)
+            peak_vram_reserved_mb = (
+                float(torch.cuda.max_memory_reserved()) / (1024**2)
+            )
+        except Exception as exc:  # noqa: BLE001
+            error = f"{type(exc).__name__}: {exc}"
+        finally:
+            with trace_lock:
+                active_run["index"] = None
+            voice_state = None
+            model = None
+            self._models.clear()
+            self._voice_states.clear()
+            gc.collect()
+            if torch.cuda.is_available():
+                try:
+                    torch.cuda.synchronize()
+                except Exception:
+                    pass
+                torch.cuda.empty_cache()
+
+        if error:
+            return [TTSCudaProfileBenchmarkResult(error=error)]
+
+        def phase_wall(key: str, index: int) -> float:
+            values = trace_runs[index][f"{key}_wall"]
+            return sum(float(value) for value in values)
+
+        def phase_gpu(key: str, index: int) -> float:
+            events = trace_runs[index][f"{key}_events"]
+            return sum(
+                float(start.elapsed_time(end)) / 1000.0
+                for start, end in events
+            )
+
+        def phase_count(key: str, index: int) -> int:
+            return len(trace_runs[index][key])
+
+        return [
+            TTSCudaProfileBenchmarkResult(
+                model_load_seconds=model_load_seconds,
+                voice_prepare_seconds=voice_prepare_seconds,
+                generation_times=tuple(generation_times),
+                audio_durations_seconds=tuple(audio_durations),
+                audio_transfer_seconds=tuple(audio_transfer_seconds),
+                flow_prefill_wall_seconds=tuple(
+                    phase_wall("flow_prefill", i) for i in range(measured_count)
+                ),
+                flow_prefill_gpu_seconds=tuple(
+                    phase_gpu("flow_prefill", i) for i in range(measured_count)
+                ),
+                flow_autoregressive_wall_seconds=tuple(
+                    phase_wall("flow_auto", i) for i in range(measured_count)
+                ),
+                flow_autoregressive_gpu_seconds=tuple(
+                    phase_gpu("flow_auto", i) for i in range(measured_count)
+                ),
+                flow_step_counts=tuple(
+                    phase_count("flow_auto", i) for i in range(measured_count)
+                ),
+                mimi_decode_wall_seconds=tuple(
+                    phase_wall("mimi_decode", i) for i in range(measured_count)
+                ),
+                mimi_decode_gpu_seconds=tuple(
+                    phase_gpu("mimi_decode", i) for i in range(measured_count)
+                ),
+                mimi_decode_calls=tuple(
+                    phase_count("mimi_decode", i) for i in range(measured_count)
+                ),
+                mimi_worker_wall_seconds=tuple(
+                    sum(float(value) for value in trace_runs[i]["mimi_worker_wall"])
+                    for i in range(measured_count)
+                ),
+                latent_queue_wait_seconds=tuple(
+                    sum(float(value) for value in trace_runs[i]["queue_wait"])
+                    for i in range(measured_count)
+                ),
+                latent_queue_get_calls=tuple(
+                    len(trace_runs[i]["queue_get_calls"])
+                    for i in range(measured_count)
+                ),
+                warmup_runs=warmup_count,
+                peak_vram_mb=peak_vram_mb,
+                peak_vram_reserved_mb=peak_vram_reserved_mb,
+            )
+        ]
 
     def close(self) -> None:
         self._voice_states.clear()
