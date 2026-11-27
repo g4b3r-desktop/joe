@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import os
 import re
 import sys
 from dataclasses import asdict
@@ -27,6 +28,40 @@ if str(SOURCE_ROOT) not in sys.path:
 
 from joe.audio_performance import format_cuda_rope_cache_benchmark_report  # noqa: E402
 from joe.pocket_tts_models import default_model_variant  # noqa: E402
+
+
+def _configure_hf_token(model_cache_directory: Path) -> str:
+    """Reuse an existing Hugging Face token without printing or exposing it.
+
+    HF_HOME is redirected to the Joe model cache later in the benchmark, so
+    the Hub token may no longer be found at its usual user-cache location.
+    """
+    if os.environ.get("HF_TOKEN", "").strip():
+        return "variável de ambiente"
+
+    candidates = (
+        ("cache de modelos", model_cache_directory.expanduser() / "token"),
+        (
+            "cache padrão do usuário",
+            Path.home() / ".cache" / "huggingface" / "token",
+        ),
+    )
+    checked: set[Path] = set()
+    for source, token_path in candidates:
+        try:
+            resolved = token_path.expanduser().resolve()
+            if resolved in checked:
+                continue
+            checked.add(resolved)
+            if not resolved.is_file():
+                continue
+            token = resolved.read_text(encoding="utf-8").strip()
+        except (OSError, UnicodeError):
+            continue
+        if token:
+            os.environ["HF_TOKEN"] = token
+            return source
+    return ""
 
 
 def normalize_text(text: str) -> str:
@@ -253,6 +288,20 @@ def main(argv: list[str] | None = None) -> int:
         else REPOSITORY_ROOT / "reports" / f"rope-cache-scaling-{timestamp}"
     )
     output_dir.mkdir(parents=True, exist_ok=True)
+
+    token_source = _configure_hf_token(args.model_cache)
+    if token_source:
+        print(
+            f"[Hugging Face] Token carregado do {token_source}; "
+            "o valor não será exibido.",
+            flush=True,
+        )
+    else:
+        print(
+            "[Hugging Face] Nenhum token encontrado. O benchmark continuará "
+            "sem autenticação, sujeito a limites menores do Hub.",
+            flush=True,
+        )
 
     language = str(args.language)
     model_variant = str(args.model_variant or default_model_variant(language))
