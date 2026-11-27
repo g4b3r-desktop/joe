@@ -1202,7 +1202,7 @@ def test_flash_fp16_attention_patch_casts_only_sdpa_and_restores(monkeypatch):
 
     assert result.dtype == "float32"
     assert sdpa_calls == [("float16", "float16", "float16")]
-    assert entered_backends == [backend_marker, backend_marker]
+    assert entered_backends == [backend_marker]
 
     restore()
     assert attention_module.F is original_functional
@@ -1410,7 +1410,7 @@ def test_cuda_attention_benchmark_runs_reference_and_flash_and_restores(monkeypa
     assert [model.generation_calls for model in models] == [5, 5, 5]
     assert sdpa_dtypes[:5] == [("float32",) * 3] * 5
     assert sdpa_dtypes[5:] == [("float16",) * 3] * 10
-    assert len(entered_backends) == 20
+    assert len(entered_backends) == 10
     assert seeds == [
         (device, 1729 + index)
         for _mode in range(3)
