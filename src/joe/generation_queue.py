@@ -18,6 +18,7 @@ class GenerationTask:
     tts_device: str = "cpu"
     cpu_threads: int = 2
     tts_quantization: bool = True
+    tts_sampler_decode_steps: int = 1
     tts_profile: str = "custom"
     voice_path: str | None = None
     voice_alias: str = ""
@@ -59,6 +60,7 @@ class GenerationQueue:
         tts_device: str = "cpu",
         cpu_threads: int = 2,
         tts_quantization: bool = True,
+        tts_sampler_decode_steps: int = 1,
         tts_profile: str = "custom",
         voice_path: str | None = None,
         voice_alias: str = "",
@@ -75,6 +77,8 @@ class GenerationQueue:
             raise ValueError("Dispositivo TTS inválido. Escolha cpu ou cuda.")
         if int(cpu_threads) < 1:
             raise ValueError("A quantidade de threads da CPU precisa ser maior que zero.")
+        if not 1 <= int(tts_sampler_decode_steps) <= 16:
+            raise ValueError("Os passos do sampler precisam ficar entre 1 e 16.")
         task = GenerationTask(
             text=text,
             speech_text=speech_text,
@@ -84,6 +88,7 @@ class GenerationQueue:
             tts_device=tts_device,
             cpu_threads=int(cpu_threads),
             tts_quantization=bool(tts_quantization),
+            tts_sampler_decode_steps=int(tts_sampler_decode_steps),
             tts_profile=str(tts_profile or "custom"),
             voice_path=voice_path,
             voice_alias=voice_alias,
