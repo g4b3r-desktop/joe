@@ -130,7 +130,11 @@ def format_tts_benchmark_report(
             quantization_label = "INT8" if result.quantized else "sem quantização"
             label = f"CPU — {cpu_threads} thread(s), {quantization_label}"
         elif result.device == "cuda":
-            label = "NVIDIA CUDA — sem quantização INT8"
+            label = (
+                "NVIDIA CUDA — INT8 via TorchAO"
+                if result.quantized
+                else "NVIDIA CUDA — sem quantização INT8"
+            )
         else:
             label = result.device.upper()
         lines.append(label)
