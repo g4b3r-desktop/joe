@@ -42,12 +42,33 @@ def _configure_hf_token(
     if os.environ.get("HF_TOKEN", "").strip():
         return "variável de ambiente"
 
-    candidates = (
-        ("cache de modelos", model_cache_directory.expanduser() / "token"),
+    # Prefer Hugging Face's own resolver: it honors HF_TOKEN_PATH and the
+    # active token location configured by the installed huggingface_hub.
+    try:
+        from huggingface_hub import get_token
+
+        active_token = get_token()
+    except (ImportError, OSError, RuntimeError):
+        active_token = None
+    if active_token:
+        os.environ["HF_TOKEN"] = active_token
+        return "configuração ativa do Hugging Face"
+
+    candidates = []
+    token_path_override = os.environ.get("HF_TOKEN_PATH", "").strip()
+    if token_path_override:
+        candidates.append(("HF_TOKEN_PATH", Path(token_path_override)))
+    candidates.append(
+        ("cache de modelos", model_cache_directory.expanduser() / "token")
+    )
+    configured_hf_home = os.environ.get("HF_HOME", "").strip()
+    if configured_hf_home:
+        candidates.append(("HF_HOME", Path(configured_hf_home).expanduser() / "token"))
+    candidates.append(
         (
             "cache padrão do usuário",
             user_token_file or Path.home() / ".cache" / "huggingface" / "token",
-        ),
+        )
     )
     checked: set[Path] = set()
     for source, token_path in candidates:
