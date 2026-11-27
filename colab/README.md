@@ -73,6 +73,20 @@ As opções são aplicadas na próxima inicialização do servidor. Depois de al
 
 O endpoint `/health` informa versão do PyTorch, dispositivo selecionado e realmente carregado, threads, passos e métricas da última síntese (tempo, duração, RTF, pico e RMS). Os logs do servidor também imprimem uma linha `[JOE_TTS]` por geração.
 
+### Parâmetros avançados por geração
+
+A aba de configurações do Joe permite definir parâmetros opcionais para cada geração, tanto local quanto pelo Colab. As opções desativadas são omitidas da chamada à biblioteca, preservando os padrões do Pocket TTS:
+
+- `sampler_decode_steps`: substitui o número de passos do sampler ao carregar o modelo.
+- `temperature` (argumento `temp` na biblioteca) e `eos_threshold`: também são opções de carregamento do modelo; mudanças provocam recarga do modelo em memória.
+- `frames_after_eos`: número manual de frames extras depois do EOS. O valor automático é preservado quando o campo fica em 0.
+- `max_tokens`: limite opcional de tokens por bloco; 0 mantém o padrão da biblioteca.
+- `teacher_force_previous_chunk`: permanece desligado por padrão. Ativá-lo acrescenta prefill do bloco anterior e pode aumentar a latência.
+
+Esses parâmetros são enviados como campos opcionais do endpoint `POST /v1/jobs/tts`. O Colab mantém a fila de inferência sequencial: não aumente o número de workers para tentar acelerar o Pocket TTS, pois a inferência não é thread-safe e a biblioteca não oferece batching atualmente. Reduzir frames ou tokens pode truncar a fala; temperature e eos_threshold não são controles diretos de velocidade.
+
+
+
 Na instalação de um modelo no Drive, além de conferir Safetensors e JSON, o backend carrega o checkpoint e o tokenizer pelo próprio `TTSModel.load_model()` usando o YAML da variante. O upload é recusado se o checkpoint não for compatível com a arquitetura ou não oferecer clonagem de voz. Isso verifica a compatibilidade estrutural, mas não substitui uma audição humana para avaliar pronúncia.
 
 ### Variantes do Pocket TTS
