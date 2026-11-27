@@ -2711,6 +2711,22 @@ class JoeWindow(QMainWindow):
         )
         generation_form.addRow("", self.tts_teacher_force_previous_chunk)
 
+        for checkbox, spinbox in (
+            (self.tts_sampler_override, self.tts_sampler_value),
+            (self.tts_temperature_override, self.tts_temperature_value),
+            (self.tts_eos_threshold_override, self.tts_eos_threshold_value),
+        ):
+            checkbox.toggled.connect(spinbox.setEnabled)
+            checkbox.toggled.connect(self._save_tts_generation_parameters)
+            spinbox.valueChanged.connect(self._save_tts_generation_parameters)
+        self.tts_frames_after_eos.valueChanged.connect(
+            self._save_tts_generation_parameters
+        )
+        self.tts_max_tokens.valueChanged.connect(self._save_tts_generation_parameters)
+        self.tts_teacher_force_previous_chunk.toggled.connect(
+            self._save_tts_generation_parameters
+        )
+
         generation_note = QLabel(
             "As opções desativadas mantêm os padrões originais do modelo. "
             "0 em frames_after_eos e max_tokens significa automático/padrão. "
