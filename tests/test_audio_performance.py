@@ -9,6 +9,8 @@ from joe.audio_performance import (
     format_elapsed_status,
     format_performance_report,
     format_tts_benchmark_report,
+    TTSCudaQuantizationBenchmarkResult,
+    format_cuda_quantization_benchmark_report,
     wav_duration_seconds,
 )
 
@@ -128,3 +130,39 @@ def test_tts_benchmark_report_shows_when_cpu_quantization_is_disabled():
 
     assert "CPU — 4 thread(s), sem quantização" in report
     assert "CPU com INT8 desativada" in report
+
+
+def test_cuda_quantization_report_detects_four_times_slower_int8():
+    report = format_cuda_quantization_benchmark_report(
+        [
+            TTSCudaQuantizationBenchmarkResult(
+                quantized=False,
+                generation_times=(1.0, 1.1, 0.9, 1.0, 1.0),
+                audio_durations_seconds=(4.0, 4.0, 4.0, 4.0, 4.0),
+                warmup_runs=2,
+                model_load_seconds=2.0,
+                peak_vram_mb=1800,
+                peak_vram_reserved_mb=2200,
+            ),
+            TTSCudaQuantizationBenchmarkResult(
+                quantized=True,
+                generation_times=(4.0, 4.1, 3.9, 4.0, 4.0),
+                audio_durations_seconds=(4.0, 4.0, 4.0, 4.0, 4.0),
+                warmup_runs=2,
+                model_load_seconds=2.2,
+                quantization_seconds=0.7,
+                peak_vram_mb=1300,
+                peak_vram_reserved_mb=1700,
+            ),
+        ]
+    )
+
+    assert "Gerações medidas: 5" in report
+    assert "Tempos individuais:" in report
+    assert "Média:" in report
+    assert "Mediana:" in report
+    assert "Desvio padrão:" in report
+    assert "Pico VRAM alocada:" in report
+    assert "Aplicação da quantização:" in report
+    assert "INT8 ficou 4,00× mais lenta" in report
+    assert "CUDA sem quantização foi a opção mais rápida" in report
