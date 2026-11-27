@@ -1085,6 +1085,7 @@ def test_cuda_profile_measures_flow_mimi_and_latent_queue_on_worker_thread(monke
 
     fake_pocket_tts = ModuleType("pocket_tts")
     fake_pocket_tts.__path__ = []
+    fake_pocket_tts.TTSModel = FakeTTSModel
     fake_modules = ModuleType("pocket_tts.modules")
     fake_modules.__path__ = []
     fake_torch = SimpleNamespace(
