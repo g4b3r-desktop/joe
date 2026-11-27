@@ -1204,6 +1204,7 @@ class PocketTTSService:
             cache_calls=cache_calls,
             cache_fallbacks=cache_fallbacks,
             cache_bytes=cache_bytes,
+            text_characters=len(text.strip()),
             error=error,
         )
 
