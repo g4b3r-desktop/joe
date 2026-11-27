@@ -1279,11 +1279,16 @@ def test_cuda_attention_benchmark_runs_reference_and_flash_and_restores(monkeypa
 
     class FakeSDPBackend:
         FLASH_ATTENTION = backend_marker
+        EFFICIENT_ATTENTION = object()
 
     class FakeTensor:
         def __init__(self, dtype):
             self.dtype = dtype
             self.device = SimpleNamespace(type="cuda")
+            self.shape = (1, 2, 3, 4)
+
+        def stride(self):
+            return (24, 12, 4, 1)
 
         def to(self, *, dtype):
             return FakeTensor(dtype)
