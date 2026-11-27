@@ -286,6 +286,15 @@ def test_cuda_profile_report_separates_flow_lm_mimi_and_queue_wait():
                 flow_autoregressive_wall_seconds=(2.0, 2.1, 2.0),
                 flow_autoregressive_gpu_seconds=(1.5, 1.6, 1.5),
                 flow_step_counts=(30, 31, 30),
+                flow_attention_wall_seconds=(0.2, 0.2, 0.2),
+                flow_attention_gpu_seconds=(0.15, 0.16, 0.15),
+                flow_attention_calls=(30, 31, 30),
+                flow_ffn_wall_seconds=(0.3, 0.3, 0.3),
+                flow_ffn_gpu_seconds=(0.25, 0.26, 0.25),
+                flow_ffn_calls=(30, 31, 30),
+                flow_net_wall_seconds=(0.05, 0.05, 0.05),
+                flow_net_gpu_seconds=(0.04, 0.04, 0.04),
+                flow_net_calls=(30, 31, 30),
                 mimi_decode_wall_seconds=(0.5, 0.6, 0.5),
                 mimi_decode_gpu_seconds=(0.4, 0.45, 0.4),
                 mimi_decode_calls=(8, 9, 8),
@@ -302,6 +311,10 @@ def test_cuda_profile_report_separates_flow_lm_mimi_and_queue_wait():
     assert "FLOW LM" in report
     assert "Prefill do texto — GPU" in report
     assert "Geração autoregressiva — GPU" in report
+    assert "FLOW LM — DETALHAMENTO INTERNO" in report
+    assert "Atenção (self-attention) — GPU" in report
+    assert "FFN (MLP do Transformer) — GPU" in report
+    assert "FlowNet (projeção do latente) — GPU" in report
     assert "MIMI DECODER" in report
     assert "decode_from_latent — GPU" in report
     assert "Worker Mimi total (inclui espera)" in report

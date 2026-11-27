@@ -1023,7 +1023,10 @@ class PocketTTSService:
         error = ""
 
         trace_lock = threading.Lock()
-        active_run: dict[str, int | None] = {"index": None}
+        active_run: dict[str, int | bool | None] = {
+            "index": None,
+            "autoregressive": False,
+        }
         trace_runs: list[dict[str, object]] = []
 
         def new_trace_run() -> dict[str, object]:
@@ -1032,6 +1035,12 @@ class PocketTTSService:
                 "flow_prefill_events": [],
                 "flow_auto_wall": [],
                 "flow_auto_events": [],
+                "flow_attention_wall": [],
+                "flow_attention_events": [],
+                "flow_ffn_wall": [],
+                "flow_ffn_events": [],
+                "flow_net_wall": [],
+                "flow_net_events": [],
                 "mimi_decode_wall": [],
                 "mimi_decode_events": [],
                 "mimi_worker_wall": [],
@@ -1041,17 +1050,38 @@ class PocketTTSService:
 
         trace_runs.extend(new_trace_run() for _ in range(measured_count))
 
-        def record_value(key: str, value: object) -> None:
+        def record_value(
+            key: str,
+            value: object,
+            *,
+            autoregressive_only: bool = False,
+        ) -> None:
             with trace_lock:
                 index = active_run["index"]
                 if index is None:
                     return
-                values = trace_runs[index][key]
-                values.append(value)
+                if autoregressive_only and not active_run["autoregressive"]:
+                    return
+                trace_runs[index][key].append(value)
 
-        def record_phase(key: str, started: float, start_event, end_event) -> None:
-            record_value(f"{key}_wall", time.perf_counter() - started)
-            record_value(f"{key}_events", (start_event, end_event))
+        def record_phase(
+            key: str,
+            started: float,
+            start_event,
+            end_event,
+            *,
+            autoregressive_only: bool = False,
+        ) -> None:
+            record_value(
+                f"{key}_wall",
+                time.perf_counter() - started,
+                autoregressive_only=autoregressive_only,
+            )
+            record_value(
+                f"{key}_events",
+                (start_event, end_event),
+                autoregressive_only=autoregressive_only,
+            )
 
         def cuda_event():
             event = torch.cuda.Event(enable_timing=True)
@@ -1067,16 +1097,58 @@ class PocketTTSService:
             )
             mimi = getattr(target_model, "mimi", None)
             original_mimi_decode = getattr(mimi, "decode_from_latent", None)
+            flow_lm = getattr(target_model, "flow_lm", None)
+            transformer = getattr(flow_lm, "transformer", None)
+            transformer_layers = tuple(getattr(transformer, "layers", ()))
+            flow_net = getattr(flow_lm, "flow_net", None)
+            original_flow_net_forward = getattr(flow_net, "forward", None)
+            layer_methods = all(
+                callable(getattr(layer, method, None))
+                for layer in transformer_layers
+                for method in ("_sa_block", "_ff_block")
+            )
             if not all(
                 callable(method)
-                for method in (original_flow, original_decode_worker, original_mimi_decode)
-            ):
+                for method in (
+                    original_flow,
+                    original_decode_worker,
+                    original_mimi_decode,
+                    original_flow_net_forward,
+                )
+            ) or not transformer_layers or not layer_methods:
                 raise RuntimeError(
                     "A versão instalada do Pocket TTS não expõe os métodos internos "
+                    "necessários ao profiling detalhado: Flow LM, camadas Transformer "
+                    "com _sa_block/_ff_block, flow_net.forward, "
                     "_run_flow_lm_and_increment_step, _decode_audio_worker e "
-                    "mimi.decode_from_latent necessários ao profiling. "
-                    "Use a geração CUDA FP32 normal ou atualize o Pocket TTS."
+                    "mimi.decode_from_latent. Use a geração CUDA FP32 normal ou atualize o Pocket TTS."
                 )
+
+            def timed_component(original, key: str):
+                def wrapped(*args, **kwargs):
+                    started = time.perf_counter()
+                    start_event = cuda_event()
+                    try:
+                        return original(*args, **kwargs)
+                    finally:
+                        end_event = cuda_event()
+                        record_phase(
+                            key,
+                            started,
+                            start_event,
+                            end_event,
+                            autoregressive_only=True,
+                        )
+                return wrapped
+
+            # Attention covers Q/K/V projection, RoPE, KV cache and SDPA.
+            # FFN covers normalization, both linear layers, GELU and residual work.
+            for layer in transformer_layers:
+                layer._sa_block = timed_component(layer._sa_block, "flow_attention")
+                layer._ff_block = timed_component(layer._ff_block, "flow_ffn")
+
+            # FlowNet converts the transformer conditioning and sampled noise to a latent.
+            flow_net.forward = timed_component(original_flow_net_forward, "flow_net")
 
             def timed_flow(*args, **kwargs):
                 text_tokens = kwargs.get("text_tokens")
@@ -1088,6 +1160,9 @@ class PocketTTSService:
                     and int(text_tokens.shape[1]) > 0
                 )
                 phase = "flow_prefill" if is_prefill else "flow_auto"
+                with trace_lock:
+                    if active_run["index"] is not None:
+                        active_run["autoregressive"] = not is_prefill
                 started = time.perf_counter()
                 start_event = cuda_event()
                 try:
@@ -1254,6 +1329,33 @@ class PocketTTSService:
                 ),
                 flow_step_counts=tuple(
                     phase_count("flow_auto", i) for i in range(measured_count)
+                ),
+                flow_attention_wall_seconds=tuple(
+                    phase_wall("flow_attention", i) for i in range(measured_count)
+                ),
+                flow_attention_gpu_seconds=tuple(
+                    phase_gpu("flow_attention", i) for i in range(measured_count)
+                ),
+                flow_attention_calls=tuple(
+                    phase_count("flow_attention", i) for i in range(measured_count)
+                ),
+                flow_ffn_wall_seconds=tuple(
+                    phase_wall("flow_ffn", i) for i in range(measured_count)
+                ),
+                flow_ffn_gpu_seconds=tuple(
+                    phase_gpu("flow_ffn", i) for i in range(measured_count)
+                ),
+                flow_ffn_calls=tuple(
+                    phase_count("flow_ffn", i) for i in range(measured_count)
+                ),
+                flow_net_wall_seconds=tuple(
+                    phase_wall("flow_net", i) for i in range(measured_count)
+                ),
+                flow_net_gpu_seconds=tuple(
+                    phase_gpu("flow_net", i) for i in range(measured_count)
+                ),
+                flow_net_calls=tuple(
+                    phase_count("flow_net", i) for i in range(measured_count)
                 ),
                 mimi_decode_wall_seconds=tuple(
                     phase_wall("mimi_decode", i) for i in range(measured_count)

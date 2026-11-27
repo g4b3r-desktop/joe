@@ -958,11 +958,26 @@ def test_cuda_profile_measures_flow_mimi_and_latent_queue_on_worker_thread(monke
         def decode_from_latent(self, _latents, _state):
             return None
 
+    class FakeTransformerLayer:
+        def _sa_block(self, *_args, **_kwargs):
+            return None
+
+        def _ff_block(self, *_args, **_kwargs):
+            return None
+
+    class FakeFlowNet:
+        def forward(self, *_args, **_kwargs):
+            return None
+
     class FakeModel:
         sample_rate = 24_000
 
         def __init__(self):
             self.mimi = FakeMimi()
+            self.flow_lm = SimpleNamespace(
+                transformer=SimpleNamespace(layers=[FakeTransformerLayer()]),
+                flow_net=FakeFlowNet(),
+            )
             self.generation_calls = 0
 
         def to(self, device):
@@ -973,6 +988,11 @@ def test_cuda_profile_measures_flow_mimi_and_latent_queue_on_worker_thread(monke
             return object()
 
         def _run_flow_lm_and_increment_step(self, **kwargs):
+            if kwargs.get("text_tokens") is None:
+                layer = self.flow_lm.transformer.layers[0]
+                layer._sa_block()
+                layer._ff_block()
+                self.flow_lm.flow_net.forward()
             return None
 
         def _decode_audio_worker(self, latents_queue, *_args):
@@ -1036,6 +1056,12 @@ def test_cuda_profile_measures_flow_mimi_and_latent_queue_on_worker_thread(monke
     assert result.flow_step_counts == (2, 2, 2)
     assert result.flow_prefill_gpu_seconds == (0.001, 0.001, 0.001)
     assert result.flow_autoregressive_gpu_seconds == (0.002, 0.002, 0.002)
+    assert result.flow_attention_gpu_seconds == (0.002, 0.002, 0.002)
+    assert result.flow_ffn_gpu_seconds == (0.002, 0.002, 0.002)
+    assert result.flow_net_gpu_seconds == (0.002, 0.002, 0.002)
+    assert result.flow_attention_calls == (2, 2, 2)
+    assert result.flow_ffn_calls == (2, 2, 2)
+    assert result.flow_net_calls == (2, 2, 2)
     assert result.mimi_decode_calls == (1, 1, 1)
     assert result.mimi_decode_gpu_seconds == (0.001, 0.001, 0.001)
     assert result.latent_queue_get_calls == (1, 1, 1)

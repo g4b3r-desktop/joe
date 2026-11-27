@@ -64,6 +64,15 @@ class TTSCudaProfileBenchmarkResult:
     flow_autoregressive_wall_seconds: tuple[float, ...] = ()
     flow_autoregressive_gpu_seconds: tuple[float, ...] = ()
     flow_step_counts: tuple[int, ...] = ()
+    flow_attention_wall_seconds: tuple[float, ...] = ()
+    flow_attention_gpu_seconds: tuple[float, ...] = ()
+    flow_attention_calls: tuple[int, ...] = ()
+    flow_ffn_wall_seconds: tuple[float, ...] = ()
+    flow_ffn_gpu_seconds: tuple[float, ...] = ()
+    flow_ffn_calls: tuple[int, ...] = ()
+    flow_net_wall_seconds: tuple[float, ...] = ()
+    flow_net_gpu_seconds: tuple[float, ...] = ()
+    flow_net_calls: tuple[int, ...] = ()
     mimi_decode_wall_seconds: tuple[float, ...] = ()
     mimi_decode_gpu_seconds: tuple[float, ...] = ()
     mimi_decode_calls: tuple[int, ...] = ()
@@ -506,6 +515,35 @@ def format_cuda_profile_benchmark_report(
                     f"{_format_number(mean(result.flow_step_counts), 1)}"
                 ),
                 "",
+                "  FLOW LM — DETALHAMENTO INTERNO",
+                (
+                    f"    Atenção (self-attention) — GPU: "
+                    f"{format_duration(mean(result.flow_attention_gpu_seconds))}"
+                ),
+                (
+                    f"    Atenção — CPU: "
+                    f"{format_duration(mean(result.flow_attention_wall_seconds))}; "
+                    f"chamadas: {_format_number(mean(result.flow_attention_calls), 1)}"
+                ),
+                (
+                    f"    FFN (MLP do Transformer) — GPU: "
+                    f"{format_duration(mean(result.flow_ffn_gpu_seconds))}"
+                ),
+                (
+                    f"    FFN — CPU: "
+                    f"{format_duration(mean(result.flow_ffn_wall_seconds))}; "
+                    f"chamadas: {_format_number(mean(result.flow_ffn_calls), 1)}"
+                ),
+                (
+                    f"    FlowNet (projeção do latente) — GPU: "
+                    f"{format_duration(mean(result.flow_net_gpu_seconds))}"
+                ),
+                (
+                    f"    FlowNet — CPU: "
+                    f"{format_duration(mean(result.flow_net_wall_seconds))}; "
+                    f"chamadas: {_format_number(mean(result.flow_net_calls), 1)}"
+                ),
+                "",
                 "  MIMI DECODER",
                 (
                     f"    decode_from_latent — CPU: "
@@ -555,6 +593,10 @@ def format_cuda_profile_benchmark_report(
         lines.append(
             "A espera na fila mede o bloqueio do worker ao aguardar latentes; "
             "não representa tempo de computação da GPU."
+        )
+        lines.append(
+            "O detalhamento interno mede atenção, FFN e FlowNet com CUDA Events. "
+            "Os tempos são somas por áudio e não equivalem a tempos de parede exclusivos."
         )
         lines.append(
             "O diagnóstico usa instrumentação por chamadas e eventos CUDA; "
