@@ -4483,7 +4483,8 @@ class JoeWindow(QMainWindow):
                     f"Revise as opções de pronúncia antes de comparar o desempenho.\n\n{exc}",
                 )
                 return
-            sample_text = prepared_text.strip()
+            chunks = split_text_into_chunks(prepared_text, max_chars=280)
+            sample_text = chunks[0] if chunks else ""
         else:
             sample_text = (
                 "Este é um teste de desempenho do Pocket TTS para comparar "
@@ -4760,8 +4761,7 @@ class JoeWindow(QMainWindow):
                     f"Revise as opções de pronúncia antes de comparar o RoPE.\\n\\n{exc}",
                 )
                 return
-            chunks = split_text_into_chunks(prepared_text, max_chars=280)
-            sample_text = chunks[0] if chunks else ""
+            sample_text = prepared_text.strip()
         else:
             sample_text = (
                 "Este é um teste de desempenho do Pocket TTS para comparar "
