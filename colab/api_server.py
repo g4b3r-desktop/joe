@@ -307,7 +307,8 @@ def _get_tts_model(
                 loader = lambda: TTSModel.load_model(
                     config=str(config_path),
                     quantize=False,
-                    sampler_decode_steps=TTS_SAMPLER_DECODE_STEPS,
+                    sampler_decode_steps=effective_steps,
+                    **model_load_options,
                 )
             else:
                 loader = lambda: load_tts_model(
@@ -322,6 +323,7 @@ def _get_tts_model(
 
         model = _load_tts_model_for_inference(loader, model_variant)
         _tts_models[model_variant] = model
+        _tts_model_settings[model_variant] = settings_key
     return model
 
 def _generate_tts(
