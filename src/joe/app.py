@@ -2728,7 +2728,7 @@ class JoeWindow(QMainWindow):
         )
 
         generation_note = QLabel(
-            "As opções desativadas mantêm os padrões originais do modelo. "
+            "As opções desativadas preservam os padrões vigentes de cada backend. "
             "0 em frames_after_eos e max_tokens significa automático/padrão. "
             "Teacher forcing fica desligado para priorizar velocidade."
         )
