@@ -5,9 +5,6 @@ from types import SimpleNamespace
 import pytest
 
 
-torch = pytest.importorskip("torch")
-
-
 def _fake_model_with_shared_rope(rope):
     class FakeModel:
         def __init__(self):
@@ -32,6 +29,8 @@ def _fake_model_with_shared_rope(rope):
 
 
 def test_cached_rope_matches_pocket_tts_reference_and_deduplicates_shared_module():
+    pytest.importorskip("torch")
+    pytest.importorskip("pocket_tts")
     from pocket_tts.modules.rope import RotaryEmbedding, apply_rope
 
     from joe.pocket_tts_rope_cache import install_cuda_rope_cache
@@ -63,6 +62,8 @@ def test_cached_rope_matches_pocket_tts_reference_and_deduplicates_shared_module
 
 
 def test_cached_rope_grows_with_kv_cache_and_restores_model_method():
+    pytest.importorskip("torch")
+    pytest.importorskip("pocket_tts")
     from pocket_tts.modules.rope import RotaryEmbedding, apply_rope
 
     from joe.pocket_tts_rope_cache import install_cuda_rope_cache
@@ -97,6 +98,8 @@ def test_cached_rope_grows_with_kv_cache_and_restores_model_method():
 
 
 def test_cached_rope_uses_original_implementation_for_out_of_range_python_offset():
+    pytest.importorskip("torch")
+    pytest.importorskip("pocket_tts")
     from pocket_tts.modules.rope import RotaryEmbedding, apply_rope
 
     from joe.pocket_tts_rope_cache import install_cuda_rope_cache
