@@ -4483,8 +4483,7 @@ class JoeWindow(QMainWindow):
                     f"Revise as opções de pronúncia antes de comparar o desempenho.\n\n{exc}",
                 )
                 return
-            chunks = split_text_into_chunks(prepared_text, max_chars=280)
-            sample_text = chunks[0] if chunks else ""
+            sample_text = prepared_text.strip()
         else:
             sample_text = (
                 "Este é um teste de desempenho do Pocket TTS para comparar "
@@ -4789,8 +4788,9 @@ class JoeWindow(QMainWindow):
             )
 
         self._run_task(
-            "Comparando RoPE FP32 original com cache: "
-            f"2 pares de aquecimento + {measured_runs} pares medidos, ordem A/B e B/A alternada…",
+            "Comparando RoPE FP32 original com cache usando o texto completo: "
+            f"{len(sample_text):,} caracteres; 2 pares de aquecimento + "
+            f"{measured_runs} pares medidos, ordem A/B e B/A alternada…",
             benchmark,
             completed,
         )
