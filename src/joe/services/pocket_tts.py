@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import gc
+import statistics
 import tempfile
 import time
 from contextlib import nullcontext
@@ -328,6 +329,9 @@ class PocketTTSService:
                         model_load_seconds=model_load_seconds,
                         voice_prepare_seconds=voice_prepare_seconds,
                         generation_seconds=sum(generation_times) / len(generation_times),
+                        generation_min_seconds=min(generation_times),
+                        generation_median_seconds=statistics.median(generation_times),
+                        generation_max_seconds=max(generation_times),
                         audio_duration_seconds=audio_duration_seconds,
                         character_count=len(text.strip()),
                         peak_vram_mb=peak_vram_mb,
