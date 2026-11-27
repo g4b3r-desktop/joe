@@ -148,7 +148,7 @@ class PocketTTSService:
         *,
         device_preference: str = "cpu",
         cpu_threads: int = 2,
-        quantize: bool = True,
+        quantize: bool | None = None,
         sampler_decode_steps: int | None = None,
         temperature: float | None = None,
         eos_threshold: float | None = None,
@@ -176,7 +176,11 @@ class PocketTTSService:
             )
 
         self._configure_torch(torch, cpu_threads)
-        effective_quantize = bool(quantize)
+        # Preserve the existing CPU default; CUDA stays unquantized unless
+        # the caller explicitly opts in.
+        effective_quantize = (
+            device_preference == "cpu" if quantize is None else bool(quantize)
+        )
         if sampler_decode_steps is not None and not 1 <= int(sampler_decode_steps) <= 16:
             raise ValueError("sampler_decode_steps deve ficar entre 1 e 16.")
         if temperature is not None and not 0.05 <= float(temperature) <= 2.0:
@@ -230,7 +234,7 @@ class PocketTTSService:
         *,
         device_preference: str = "cpu",
         cpu_threads: int = 2,
-        quantize: bool = True,
+        quantize: bool | None = None,
     ) -> Path:
         """Encode a reference recording once and save its reusable KV state."""
         source = Path(voice_audio_path).expanduser()
@@ -255,7 +259,9 @@ class PocketTTSService:
                 f"A versão {model_variant!r} não está disponível para o idioma {language!r}."
             )
         self._configure_torch(torch, cpu_threads)
-        effective_quantize = bool(quantize)
+        effective_quantize = (
+            device_preference == "cpu" if quantize is None else bool(quantize)
+        )
         model = self._get_model(
             torch, TTSModel, model_variant, device_preference, effective_quantize
         )
@@ -285,6 +291,7 @@ class PocketTTSService:
         cpu_threads: int = 2,
         repeats: int = 2,
         quantize: bool = True,
+        quantize_cuda: bool = False,
     ) -> list[TTSBenchmarkResult]:
         """Compare CPU and CUDA using the same model, voice and text without saving audio."""
         if not text.strip():
@@ -337,7 +344,7 @@ class PocketTTSService:
                     TTSModel,
                     model_variant,
                     device,
-                    bool(quantize),
+                    bool(quantize) if device == "cpu" else bool(quantize_cuda),
                 )
                 if device == "cuda":
                     torch.cuda.synchronize()
@@ -378,7 +385,7 @@ class PocketTTSService:
                         audio_duration_seconds=audio_duration_seconds,
                         character_count=len(text.strip()),
                         peak_vram_mb=peak_vram_mb,
-                        quantized=bool(quantize),
+                        quantized=bool(quantize) if device == "cpu" else bool(quantize_cuda),
                         repeats=repeat_count,
                     )
                 )
@@ -388,7 +395,7 @@ class PocketTTSService:
                         device=device,
                         cpu_threads=cpu_threads,
                         error=f"{type(exc).__name__}: {exc}",
-                        quantized=bool(quantize),
+                        quantized=bool(quantize) if device == "cpu" else bool(quantize_cuda),
                     )
                 )
             finally:
