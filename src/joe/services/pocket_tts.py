@@ -1028,6 +1028,10 @@ class PocketTTSService:
         baseline_reserved = 0.0
         cached_vram = 0.0
         cached_reserved = 0.0
+        cache_positions = 0
+        cache_calls = 0
+        cache_fallbacks = 0
+        cache_bytes = 0
         error = ""
 
         def peak_memory() -> tuple[float, float]:
@@ -1106,6 +1110,10 @@ class PocketTTSService:
             torch.cuda.reset_peak_memory_stats()
             cached_times, cached_durations, cached_audio = run_mode()
             cached_vram, cached_reserved = peak_memory()
+            cache_positions = cache_handle.capacity_positions
+            cache_calls = cache_handle.calls
+            cache_fallbacks = cache_handle.fallbacks
+            cache_bytes = cache_handle.allocated_bytes
 
         except Exception as exc:  # noqa: BLE001
             error = f"{type(exc).__name__}: {exc}"
@@ -1144,10 +1152,6 @@ class PocketTTSService:
             audio_mean_difference = 0.0
             audio_rms_difference = 0.0
 
-        cache_positions = cache_handle.capacity_positions if cache_handle else 0
-        cache_calls = cache_handle.calls if cache_handle else 0
-        cache_fallbacks = cache_handle.fallbacks if cache_handle else 0
-        cache_bytes = cache_handle.allocated_bytes if cache_handle else 0
         if not error and (not baseline_times or not cached_times):
             error = "Uma das modalidades não concluiu gerações suficientes."
 
