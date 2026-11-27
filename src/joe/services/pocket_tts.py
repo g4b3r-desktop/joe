@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import gc
+import statistics
 import tempfile
 import time
+from contextlib import nullcontext
 from pathlib import Path
 
 from joe.audio_performance import TTSBenchmarkResult
@@ -17,12 +19,24 @@ from joe.pocket_tts_models import (
 DEFAULT_VOICE = "hf://kyutai/tts-voices/alba-mackenna/casual.wav"
 
 
+def _inference_context(torch):
+    """Disable gradient tracking without inference tensors.
+
+    Pocket TTS mutates its KV attention cache in-place while generating audio.
+    Tensors created under torch.inference_mode() cannot be mutated later by
+    generator internals that run under torch.no_grad(), so this service must
+    consistently use no_grad() instead.
+    """
+    no_grad = getattr(torch, "no_grad", None)
+    return no_grad() if callable(no_grad) else nullcontext()
+
+
 class PocketTTSService:
     """Lazy, reusable adapter around Kyutai Pocket TTS."""
 
     def __init__(self) -> None:
-        self._models: dict[tuple[str, str, bool], object] = {}
-        self._voice_states: dict[tuple[str, str, bool, str], object] = {}
+        self._models: dict[tuple[str, str, bool, int | None], object] = {}
+        self._voice_states: dict[tuple[str, str, bool, str, int | None], object] = {}
 
     @staticmethod
     def _configure_torch(torch, cpu_threads: int) -> None:
@@ -42,6 +56,7 @@ class PocketTTSService:
         model_variant: str,
         device: str,
         quantize: bool,
+        sampler_decode_steps: int | None = None,
     ):
         if device not in {"cpu", "cuda"}:
             raise ValueError("Dispositivo TTS inválido. Escolha CPU ou NVIDIA GPU (CUDA).")
@@ -54,7 +69,10 @@ class PocketTTSService:
 
         # Pocket TTS dynamic INT8 quantization is supported on CPU only.
         effective_quantize = bool(quantize) and device == "cpu"
-        cache_key = (model_variant, device, effective_quantize)
+        if sampler_decode_steps is not None and not 1 <= int(sampler_decode_steps) <= 16:
+            raise ValueError("Os passos do sampler precisam ficar entre 1 e 16.")
+        sampler_steps = int(sampler_decode_steps) if sampler_decode_steps is not None else None
+        cache_key = (model_variant, device, effective_quantize, sampler_steps)
         model = self._models.get(cache_key)
         if model is not None:
             return model
@@ -62,8 +80,11 @@ class PocketTTSService:
         # Keep a single model/device active to avoid retaining duplicate weights in RAM/VRAM.
         self._voice_states.clear()
         self._models.clear()
+        loading_options = model_loading_options(model_variant)
+        if sampler_steps is not None:
+            loading_options["sampler_decode_steps"] = sampler_steps
         model = tts_model_class.load_model(
-            **model_loading_options(model_variant),
+            **loading_options,
             quantize=effective_quantize,
         )
         if device == "cuda":
@@ -90,6 +111,7 @@ class PocketTTSService:
         device_preference: str = "cpu",
         cpu_threads: int = 2,
         quantize: bool = True,
+        sampler_decode_steps: int | None = None,
     ) -> Path:
         if not text.strip():
             raise ValueError("Digite algum texto antes de gerar o áudio.")
@@ -113,23 +135,45 @@ class PocketTTSService:
         self._configure_torch(torch, cpu_threads)
         effective_quantize = bool(quantize) and device_preference == "cpu"
         model = self._get_model(
-            torch, TTSModel, model_variant, device_preference, effective_quantize
+            torch,
+            TTSModel,
+            model_variant,
+            device_preference,
+            effective_quantize,
+            sampler_decode_steps,
         )
 
         voice_source = str(voice_path) if voice_path else (
             default_voice_for_language(language) or DEFAULT_VOICE
         )
+        sampler_steps = int(sampler_decode_steps) if sampler_decode_steps is not None else None
         state_key = (
-            model_variant, device_preference, effective_quantize, voice_source
+            model_variant,
+            device_preference,
+            effective_quantize,
+            voice_source,
+            sampler_steps,
         )
-        voice_state = self._voice_states.get(state_key)
-        if voice_state is None:
-            voice_state = model.get_state_for_audio_prompt(voice_source)
-            self._voice_states[state_key] = voice_state
+        with _inference_context(torch):
+            voice_state = self._voice_states.get(state_key)
+            if voice_state is None:
+                voice_state = model.get_state_for_audio_prompt(voice_source)
+                self._voice_states[state_key] = voice_state
 
-        audio = model.generate_audio(voice_state, text.strip())
+            stream_generator = getattr(model, "generate_audio_stream", None)
+            destination = Path(output_path).expanduser()
+            if callable(stream_generator):
+                chunks = stream_generator(
+                    model_state=voice_state,
+                    text_to_generate=text.strip(),
+                )
+                return _write_wav_stream_atomically(
+                    sf, chunks, int(model.sample_rate), destination
+                )
+
+            # Compatibility with older Pocket TTS builds without the streaming API.
+            audio = model.generate_audio(voice_state, text.strip())
         samples = audio.detach().cpu().numpy()
-        destination = Path(output_path).expanduser()
         return _write_wav_atomically(sf, samples, int(model.sample_rate), destination)
 
     def export_voice_state(
@@ -173,12 +217,13 @@ class PocketTTSService:
 
         source_key = str(source.resolve())
         state_key = (
-            model_variant, device_preference, effective_quantize, source_key
+            model_variant, device_preference, effective_quantize, source_key, None
         )
-        voice_state = self._voice_states.get(state_key)
-        if voice_state is None:
-            voice_state = model.get_state_for_audio_prompt(source_key)
-            self._voice_states[state_key] = voice_state
+        with _inference_context(torch):
+            voice_state = self._voice_states.get(state_key)
+            if voice_state is None:
+                voice_state = model.get_state_for_audio_prompt(source_key)
+                self._voice_states[state_key] = voice_state
 
         destination.parent.mkdir(parents=True, exist_ok=True)
         export_model_state(voice_state, destination)
@@ -196,6 +241,7 @@ class PocketTTSService:
         cpu_threads: int = 2,
         repeats: int = 2,
         quantize: bool = True,
+        sampler_decode_steps: int | None = None,
     ) -> list[TTSBenchmarkResult]:
         """Compare CPU and CUDA using the same model, voice and text without saving audio."""
         if not text.strip():
@@ -238,13 +284,22 @@ class PocketTTSService:
 
             model = None
             voice_state = None
+            cuda_device_name = ""
             try:
                 if device == "cuda":
                     torch.cuda.empty_cache()
                     torch.cuda.reset_peak_memory_stats()
+                    get_device_name = getattr(torch.cuda, "get_device_name", None)
+                    if callable(get_device_name):
+                        cuda_device_name = str(get_device_name(0))
                 model_started = time.perf_counter()
+                loading_options = model_loading_options(model_variant)
+                if sampler_decode_steps is not None:
+                    if not 1 <= int(sampler_decode_steps) <= 16:
+                        raise ValueError("Os passos do sampler precisam ficar entre 1 e 16.")
+                    loading_options["sampler_decode_steps"] = int(sampler_decode_steps)
                 model = TTSModel.load_model(
-                    **model_loading_options(model_variant),
+                    **loading_options,
                     quantize=(device == "cpu" and bool(quantize)),
                 )
                 if device == "cuda":
@@ -253,10 +308,31 @@ class PocketTTSService:
                 model_load_seconds = time.perf_counter() - model_started
 
                 voice_started = time.perf_counter()
-                voice_state = model.get_state_for_audio_prompt(voice_source)
+                with _inference_context(torch):
+                    voice_state = model.get_state_for_audio_prompt(voice_source)
                 if device == "cuda":
                     torch.cuda.synchronize()
                 voice_prepare_seconds = time.perf_counter() - voice_started
+
+                # Warm up kernels/caches once; do not include this first call in the average.
+                if device == "cuda":
+                    torch.cuda.synchronize()
+                stream_generator = getattr(model, "generate_audio_stream", None)
+                if callable(stream_generator):
+                    with _inference_context(torch):
+                        for warmup_chunk in stream_generator(
+                            model_state=voice_state,
+                            text_to_generate=text.strip(),
+                        ):
+                            # Move each chunk off the accelerator without retaining the full WAV.
+                            warmup_chunk.detach().cpu()
+                else:
+                    with _inference_context(torch):
+                        warmup_audio = model.generate_audio(voice_state, text.strip())
+                    warmup_samples = warmup_audio.detach().cpu().numpy()
+                    del warmup_audio, warmup_samples
+                if device == "cuda":
+                    torch.cuda.synchronize()
 
                 generation_times: list[float] = []
                 audio_duration_seconds = 0.0
@@ -264,19 +340,35 @@ class PocketTTSService:
                     if device == "cuda":
                         torch.cuda.synchronize()
                     generation_started = time.perf_counter()
-                    with torch.inference_mode():
-                        audio = model.generate_audio(voice_state, text.strip())
-                    samples = audio.detach().cpu().numpy()
+                    if callable(stream_generator):
+                        sample_count = 0
+                        with _inference_context(torch):
+                            for audio_chunk in stream_generator(
+                                model_state=voice_state,
+                                text_to_generate=text.strip(),
+                            ):
+                                sample_count += int(audio_chunk.shape[-1])
+                                audio_chunk.detach().cpu()
+                    else:
+                        with _inference_context(torch):
+                            audio = model.generate_audio(voice_state, text.strip())
+                        samples = audio.detach().cpu().numpy()
+                        sample_count = (
+                            int(samples.shape[-1]) if samples.ndim else int(samples.size)
+                        )
+                        del audio, samples
                     if device == "cuda":
                         torch.cuda.synchronize()
                     generation_times.append(time.perf_counter() - generation_started)
-                    sample_count = int(samples.shape[-1]) if samples.ndim else int(samples.size)
                     audio_duration_seconds = sample_count / max(1, int(model.sample_rate))
-                    del audio, samples
 
                 peak_vram_mb = 0.0
+                peak_vram_reserved_mb = 0.0
                 if device == "cuda":
                     peak_vram_mb = float(torch.cuda.max_memory_allocated()) / (1024**2)
+                    max_memory_reserved = getattr(torch.cuda, "max_memory_reserved", None)
+                    if callable(max_memory_reserved):
+                        peak_vram_reserved_mb = float(max_memory_reserved()) / (1024**2)
                 results.append(
                     TTSBenchmarkResult(
                         device=device,
@@ -284,9 +376,14 @@ class PocketTTSService:
                         model_load_seconds=model_load_seconds,
                         voice_prepare_seconds=voice_prepare_seconds,
                         generation_seconds=sum(generation_times) / len(generation_times),
+                        generation_min_seconds=min(generation_times),
+                        generation_median_seconds=statistics.median(generation_times),
+                        generation_max_seconds=max(generation_times),
                         audio_duration_seconds=audio_duration_seconds,
                         character_count=len(text.strip()),
                         peak_vram_mb=peak_vram_mb,
+                        peak_vram_reserved_mb=peak_vram_reserved_mb,
+                        cuda_device_name=cuda_device_name,
                         quantized=(device == "cpu" and bool(quantize)),
                         repeats=repeat_count,
                     )
@@ -342,6 +439,52 @@ def _write_wav_atomically(soundfile_module, samples, sample_rate: int, destinati
         info = soundfile_module.info(temporary_path)
         if info.frames <= 0 or info.samplerate <= 0:
             raise RuntimeError("O Pocket TTS produziu um WAV vazio ou inválido.")
+        temporary_path.replace(destination)
+    except BaseException:
+        temporary_path.unlink(missing_ok=True)
+        raise
+    return destination
+
+
+def _write_wav_stream_atomically(
+    soundfile_module,
+    chunks,
+    sample_rate: int,
+    destination: Path,
+) -> Path:
+    """Write streamed mono chunks incrementally and replace the destination only on success."""
+    destination = Path(destination).expanduser()
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    temporary_file = tempfile.NamedTemporaryFile(
+        prefix=f".{destination.stem}.",
+        suffix=".wav",
+        dir=destination.parent,
+        delete=False,
+    )
+    temporary_path = Path(temporary_file.name)
+    temporary_file.close()
+    frames_written = 0
+    try:
+        with soundfile_module.SoundFile(
+            temporary_path,
+            mode="w",
+            samplerate=int(sample_rate),
+            channels=1,
+            format="WAV",
+            subtype="PCM_16",
+        ) as writer:
+            for chunk in chunks:
+                samples = chunk.detach().cpu().numpy()
+                if getattr(samples, "ndim", 1) != 1:
+                    samples = samples.reshape(-1)
+                if samples.size:
+                    writer.write(samples)
+                    frames_written += int(samples.size)
+        if frames_written <= 0:
+            raise RuntimeError("O Pocket TTS não produziu nenhum bloco de áudio.")
+        info = soundfile_module.info(temporary_path)
+        if info.frames != frames_written or info.samplerate != int(sample_rate):
+            raise RuntimeError("O Pocket TTS produziu um WAV incompleto ou inválido.")
         temporary_path.replace(destination)
     except BaseException:
         temporary_path.unlink(missing_ok=True)

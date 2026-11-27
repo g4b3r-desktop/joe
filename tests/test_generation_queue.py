@@ -177,3 +177,26 @@ def test_queue_snapshots_tts_compute_device_and_cpu_threads():
     assert task.cpu_threads == 4
     assert task.tts_quantization is False
     assert task.tts_profile == "performance"
+
+
+
+def test_queue_snapshots_sampler_decode_steps_and_rejects_invalid_values():
+    queue = GenerationQueue()
+    task = queue.enqueue(
+        text="Olá",
+        speech_text="Olá",
+        language="portuguese",
+        output_path="/tmp/sampler.wav",
+        tts_sampler_decode_steps=3,
+    )
+
+    assert task.tts_sampler_decode_steps == 3
+
+    with pytest.raises(ValueError, match="passos do sampler"):
+        queue.enqueue(
+            text="Olá",
+            speech_text="Olá",
+            language="portuguese",
+            output_path="/tmp/invalid-sampler.wav",
+            tts_sampler_decode_steps=17,
+        )
