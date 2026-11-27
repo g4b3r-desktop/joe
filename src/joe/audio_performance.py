@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 import statistics
 import wave
@@ -64,6 +64,11 @@ class TTSCudaProfileBenchmarkResult:
     flow_autoregressive_wall_seconds: tuple[float, ...] = ()
     flow_autoregressive_gpu_seconds: tuple[float, ...] = ()
     flow_step_counts: tuple[int, ...] = ()
+    flow_ar_loop_wall_seconds: tuple[float, ...] = ()
+    flow_ar_control_wall_seconds: tuple[float, ...] = ()
+    flow_component_wall_seconds: dict[str, tuple[float, ...]] = field(default_factory=dict)
+    flow_component_gpu_seconds: dict[str, tuple[float, ...]] = field(default_factory=dict)
+    flow_component_calls: dict[str, tuple[int, ...]] = field(default_factory=dict)
     flow_attention_wall_seconds: tuple[float, ...] = ()
     flow_attention_gpu_seconds: tuple[float, ...] = ()
     flow_attention_calls: tuple[int, ...] = ()
@@ -582,6 +587,64 @@ def format_cuda_profile_benchmark_report(
                 "",
             ]
         )
+        if result.flow_ar_loop_wall_seconds:
+            loop_wall = mean(result.flow_ar_loop_wall_seconds)
+            control_wall = mean(result.flow_ar_control_wall_seconds)
+            flow_calls_wall = mean(result.flow_autoregressive_wall_seconds)
+            lines.extend(
+                [
+                    "  FLOW LM — MICROPERFIL AUTORREGRESSIVO",
+                    f"    Loop autoregressivo completo — CPU: {format_duration(loop_wall)}",
+                    f"    Chamadas ao Flow LM — CPU: {format_duration(flow_calls_wall)}",
+                    (
+                        "    Controle Python + verificações EOS/fila — estimativa: "
+                        f"{format_duration(control_wall)}"
+                    ),
+                ]
+            )
+
+        component_labels = {
+            "flow_lm_input_proj": "Projeção de entrada do Flow LM",
+            "attention_norm": "LayerNorm da atenção",
+            "attention_qkv_projection": "Projeção Q/K/V",
+            "attention_rope": "RoPE",
+            "kv_cache_append": "KV cache — preparação/leitura/escrita",
+            "kv_cache_write": "KV cache — gravação K/V",
+            "attention_sdpa": "SDPA (kernel de atenção)",
+            "attention_output_projection": "Projeção de saída da atenção",
+            "ffn_norm": "LayerNorm da FFN",
+            "ffn_linear1": "FFN — primeira projeção",
+            "ffn_gelu": "FFN — GELU",
+            "ffn_linear2": "FFN — segunda projeção",
+            "flow_lm_output_norm": "Normalização de saída do Flow LM",
+            "flow_lm_eos_projection": "Projeção de detecção EOS",
+            "flow_net_input_projection": "FlowNet — projeção de entrada",
+            "flow_net_condition_projection": "FlowNet — projeção de condição",
+            "flow_net_time_embedding": "FlowNet — embeddings temporais",
+            "flow_net_residual_blocks": "FlowNet — blocos residuais",
+            "flow_net_final_layer": "FlowNet — camada final",
+        }
+        has_component_data = any(
+            result.flow_component_calls.get(key)
+            for key in component_labels
+        )
+        if has_component_data:
+            lines.append("  OPERAÇÕES INTERNAS — MÉDIAS POR GERAÇÃO")
+            for key, label in component_labels.items():
+                calls = result.flow_component_calls.get(key, ())
+                if not calls or mean(calls) <= 0:
+                    continue
+                wall = mean(result.flow_component_wall_seconds.get(key, ()))
+                gpu = mean(result.flow_component_gpu_seconds.get(key, ()))
+                host_gap = max(0.0, wall - gpu)
+                lines.append(
+                    f"    {label}: CPU/wall {format_duration(wall)}; "
+                    f"GPU {format_duration(gpu)}; "
+                    f"CPU/lançamento/sincronização ≈ {format_duration(host_gap)}; "
+                    f"chamadas {_format_number(mean(calls), 1)}"
+                )
+            lines.append("")
+
         successful.append((result, average_total))
 
     if successful:
@@ -597,6 +660,10 @@ def format_cuda_profile_benchmark_report(
         lines.append(
             "O detalhamento interno mede atenção, FFN e FlowNet com CUDA Events. "
             "Os tempos são somas por áudio e não equivalem a tempos de parede exclusivos."
+        )
+        lines.append(
+            "CPU/wall menos GPU é apenas uma estimativa de despacho Python, lançamentos e esperas/sincronizações; "
+            "não é uma medição isolada de sincronização CUDA."
         )
         lines.append(
             "O diagnóstico usa instrumentação por chamadas e eventos CUDA; "
