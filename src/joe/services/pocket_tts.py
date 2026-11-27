@@ -3,6 +3,7 @@ from __future__ import annotations
 import gc
 import tempfile
 import time
+from contextlib import nullcontext
 from pathlib import Path
 
 from joe.audio_performance import TTSBenchmarkResult
@@ -15,6 +16,12 @@ from joe.pocket_tts_models import (
 )
 
 DEFAULT_VOICE = "hf://kyutai/tts-voices/alba-mackenna/casual.wav"
+
+
+def _inference_context(torch):
+    """Use PyTorch inference mode when available; keep lightweight test doubles compatible."""
+    inference_mode = getattr(torch, "inference_mode", None)
+    return inference_mode() if callable(inference_mode) else nullcontext()
 
 
 class PocketTTSService:
@@ -122,12 +129,13 @@ class PocketTTSService:
         state_key = (
             model_variant, device_preference, effective_quantize, voice_source
         )
-        voice_state = self._voice_states.get(state_key)
-        if voice_state is None:
-            voice_state = model.get_state_for_audio_prompt(voice_source)
-            self._voice_states[state_key] = voice_state
+        with _inference_context(torch):
+            voice_state = self._voice_states.get(state_key)
+            if voice_state is None:
+                voice_state = model.get_state_for_audio_prompt(voice_source)
+                self._voice_states[state_key] = voice_state
 
-        audio = model.generate_audio(voice_state, text.strip())
+            audio = model.generate_audio(voice_state, text.strip())
         samples = audio.detach().cpu().numpy()
         destination = Path(output_path).expanduser()
         return _write_wav_atomically(sf, samples, int(model.sample_rate), destination)
@@ -175,10 +183,11 @@ class PocketTTSService:
         state_key = (
             model_variant, device_preference, effective_quantize, source_key
         )
-        voice_state = self._voice_states.get(state_key)
-        if voice_state is None:
-            voice_state = model.get_state_for_audio_prompt(source_key)
-            self._voice_states[state_key] = voice_state
+        with _inference_context(torch):
+            voice_state = self._voice_states.get(state_key)
+            if voice_state is None:
+                voice_state = model.get_state_for_audio_prompt(source_key)
+                self._voice_states[state_key] = voice_state
 
         destination.parent.mkdir(parents=True, exist_ok=True)
         export_model_state(voice_state, destination)
@@ -253,7 +262,8 @@ class PocketTTSService:
                 model_load_seconds = time.perf_counter() - model_started
 
                 voice_started = time.perf_counter()
-                voice_state = model.get_state_for_audio_prompt(voice_source)
+                with _inference_context(torch):
+                    voice_state = model.get_state_for_audio_prompt(voice_source)
                 if device == "cuda":
                     torch.cuda.synchronize()
                 voice_prepare_seconds = time.perf_counter() - voice_started
