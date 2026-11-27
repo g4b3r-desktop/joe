@@ -367,6 +367,9 @@ def test_benchmark_reports_cpu_and_cuda_availability(monkeypatch):
     assert results[0].cpu_threads == 3
     assert results[0].audio_duration_seconds == 1.0
     assert results[0].generation_seconds >= 0
+    assert results[0].generation_min_seconds >= 0
+    assert results[0].generation_min_seconds <= results[0].generation_median_seconds
+    assert results[0].generation_median_seconds <= results[0].generation_max_seconds
     assert results[0].quantized
     assert results[1].device == "cuda"
     assert "CUDA não está disponível" in results[1].error
