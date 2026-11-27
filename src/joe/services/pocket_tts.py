@@ -20,9 +20,15 @@ DEFAULT_VOICE = "hf://kyutai/tts-voices/alba-mackenna/casual.wav"
 
 
 def _inference_context(torch):
-    """Use PyTorch inference mode when available; keep lightweight test doubles compatible."""
-    inference_mode = getattr(torch, "inference_mode", None)
-    return inference_mode() if callable(inference_mode) else nullcontext()
+    """Disable gradient tracking without inference tensors.
+
+    Pocket TTS mutates its KV attention cache in-place while generating audio.
+    Tensors created under torch.inference_mode() cannot be mutated later by
+    generator internals that run under torch.no_grad(), so this service must
+    consistently use no_grad() instead.
+    """
+    no_grad = getattr(torch, "no_grad", None)
+    return no_grad() if callable(no_grad) else nullcontext()
 
 
 class PocketTTSService:
