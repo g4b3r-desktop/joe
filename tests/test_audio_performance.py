@@ -228,3 +228,60 @@ def test_cuda_precision_report_marks_incomplete_comparison():
     assert "simulated CUDA error" in report
     assert "Comparação inconclusiva" in report
 
+
+def test_cuda_profile_report_separates_flow_lm_mimi_and_queue_wait():
+    from joe.audio_performance import (
+        TTSCudaProfileBenchmarkResult,
+        format_cuda_profile_benchmark_report,
+    )
+
+    report = format_cuda_profile_benchmark_report(
+        [
+            TTSCudaProfileBenchmarkResult(
+                model_load_seconds=3.0,
+                voice_prepare_seconds=0.5,
+                generation_times=(4.5, 4.7, 4.6),
+                audio_durations_seconds=(6.0, 6.0, 6.0),
+                audio_transfer_seconds=(0.1, 0.1, 0.1),
+                flow_prefill_wall_seconds=(0.2, 0.2, 0.2),
+                flow_prefill_gpu_seconds=(0.1, 0.1, 0.1),
+                flow_autoregressive_wall_seconds=(2.0, 2.1, 2.0),
+                flow_autoregressive_gpu_seconds=(1.5, 1.6, 1.5),
+                flow_step_counts=(30, 31, 30),
+                mimi_decode_wall_seconds=(0.5, 0.6, 0.5),
+                mimi_decode_gpu_seconds=(0.4, 0.45, 0.4),
+                mimi_decode_calls=(8, 9, 8),
+                mimi_worker_wall_seconds=(3.0, 3.1, 3.0),
+                latent_queue_wait_seconds=(1.8, 1.9, 1.8),
+                latent_queue_get_calls=(10, 11, 10),
+                warmup_runs=2,
+                peak_vram_mb=1526,
+                peak_vram_reserved_mb=1644,
+            )
+        ]
+    )
+
+    assert "FLOW LM" in report
+    assert "Prefill do texto — GPU" in report
+    assert "Geração autoregressiva — GPU" in report
+    assert "MIMI DECODER" in report
+    assert "decode_from_latent — GPU" in report
+    assert "Worker Mimi total (inclui espera)" in report
+    assert "Espera acumulada na fila de latentes" in report
+    assert "Transferência áudio GPU → RAM" in report
+    assert "não devem ser somados" in report
+
+
+def test_cuda_profile_report_handles_failed_diagnostic():
+    from joe.audio_performance import (
+        TTSCudaProfileBenchmarkResult,
+        format_cuda_profile_benchmark_report,
+    )
+
+    report = format_cuda_profile_benchmark_report(
+        [TTSCudaProfileBenchmarkResult(error="missing internal Pocket TTS hooks")]
+    )
+
+    assert "missing internal Pocket TTS hooks" in report
+    assert "Diagnóstico inconclusivo" in report
+
