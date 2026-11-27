@@ -226,7 +226,7 @@ def test_cuda_precision_report_marks_incomplete_comparison():
     )
 
     assert "simulated CUDA error" in report
-    assert "Comparação inconclusiva" in report
+    assert "Comparação Flash FP16: inconclusiva" in report
 
 
 
