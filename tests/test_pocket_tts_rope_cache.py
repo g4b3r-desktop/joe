@@ -61,6 +61,44 @@ def test_cached_rope_matches_pocket_tts_reference_and_deduplicates_shared_module
     assert model._expand_kv_cache is not None
 
 
+def test_rope_cache_can_toggle_reference_mode_and_restore_all_methods():
+    torch = pytest.importorskip("torch")
+    pytest.importorskip("pocket_tts")
+    from pocket_tts.modules.rope import RotaryEmbedding
+
+    from joe.pocket_tts_rope_cache import install_cuda_rope_cache
+
+    rope = RotaryEmbedding(max_period=10_000.0)
+    original_forward = rope.forward
+    model = _fake_model_with_shared_rope(rope)
+    original_expand = model._expand_kv_cache
+    cache = install_cuda_rope_cache(model, torch, initial_positions=16)
+    cached_forward = rope.forward
+    cached_expand = model._expand_kv_cache
+
+    assert cached_forward is not original_forward
+    assert cached_expand is not original_expand
+
+    cache.set_enabled(False)
+    assert rope.forward == original_forward
+    assert model._expand_kv_cache == original_expand
+
+    q = torch.randn(1, 2, 2, 8)
+    k = torch.randn(1, 2, 2, 8)
+    rope(q, k, offset=0)
+    assert cache.calls == 0
+
+    cache.set_enabled(True)
+    assert rope.forward is cached_forward
+    assert model._expand_kv_cache is cached_expand
+    rope(q, k, offset=0)
+    assert cache.calls == 1
+
+    cache.close()
+    assert rope.forward == original_forward
+    assert model._expand_kv_cache == original_expand
+
+
 def test_cached_rope_grows_with_kv_cache_and_restores_model_method():
     torch = pytest.importorskip("torch")
     pytest.importorskip("pocket_tts")
@@ -157,7 +195,7 @@ def test_rope_cache_benchmark_report_mentions_speed_audio_and_cache_metrics():
 
 
 
-def test_cuda_rope_cache_benchmark_runs_paired_fp32_modes(monkeypatch):
+def test_cuda_rope_cache_benchmark_alternates_paired_fp32_modes(monkeypatch):
     import sys
     from contextlib import nullcontext
     from types import ModuleType, SimpleNamespace
@@ -169,6 +207,7 @@ def test_cuda_rope_cache_benchmark_runs_paired_fp32_modes(monkeypatch):
     from joe.services.pocket_tts import PocketTTSService
 
     seed_state = {"value": 0}
+    mode_state = {"cached": False}
     generated = []
     handles = []
 
@@ -200,7 +239,7 @@ def test_cuda_rope_cache_benchmark_runs_paired_fp32_modes(monkeypatch):
             assert state is not None
             assert text == "Teste pareado do cache RoPE."
             assert copy_state is True
-            generated.append(seed_state["value"])
+            generated.append((seed_state["value"], mode_state["cached"]))
             return FakeAudio(seed_state["value"])
 
     class FakeTTSModel:
@@ -215,14 +254,22 @@ def test_cuda_rope_cache_benchmark_runs_paired_fp32_modes(monkeypatch):
         fallbacks = 0
         allocated_bytes = 4 * 1024 * 1024
 
+        def __init__(self):
+            self.enabled = True
+            self.closed = False
+
+        def set_enabled(self, enabled):
+            self.enabled = bool(enabled)
+            mode_state["cached"] = self.enabled
+
         def close(self):
+            self.set_enabled(False)
             self.closed = True
             self.allocated_bytes = 0
 
     def install_cache(model, torch, *, initial_positions):
         assert initial_positions == 8192
         handle = FakeCacheHandle()
-        handle.closed = False
         handles.append(handle)
         return handle
 
@@ -271,5 +318,17 @@ def test_cuda_rope_cache_benchmark_runs_paired_fp32_modes(monkeypatch):
     assert result.cache_fallbacks == 0
     assert result.cache_bytes == 4 * 1024 * 1024
     assert len(generated) == 10
-    assert generated[:5] == generated[5:]
+
+    # The same seed is used for both modes; the first mode alternates A/B, B/A.
+    expected_events = []
+    for pair_index in range(5):
+        seed = 1729 + pair_index
+        expected_events.extend(
+            [(seed, False), (seed, True)]
+            if pair_index % 2 == 0
+            else [(seed, True), (seed, False)]
+        )
+    assert generated == expected_events
     assert handles[0].closed is True
+    assert handles[0].enabled is False
+
