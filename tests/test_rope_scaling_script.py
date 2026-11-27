@@ -110,3 +110,26 @@ def test_hf_token_falls_back_to_default_user_cache(tmp_path, monkeypatch):
 
     assert source == "cache padrão do usuário"
     assert os.environ["HF_TOKEN"] == "hf_user_cache_secret"
+
+
+
+def test_hf_token_path_environment_variable_is_respected(tmp_path, monkeypatch):
+    import sys
+    from types import ModuleType
+
+    monkeypatch.delenv("HF_TOKEN", raising=False)
+    monkeypatch.delenv("HF_HOME", raising=False)
+    token_file = tmp_path / "external-token"
+    token_file.write_text("hf_external_path_secret", encoding="utf-8")
+    monkeypatch.setenv("HF_TOKEN_PATH", str(token_file))
+
+    # Exercise the explicit-path fallback independently of an installed Hub
+    # version or any token configured on the test runner.
+    fake_hub = ModuleType("huggingface_hub")
+    fake_hub.get_token = lambda: None
+    monkeypatch.setitem(sys.modules, "huggingface_hub", fake_hub)
+
+    source = _configure_hf_token(tmp_path)
+
+    assert source == "HF_TOKEN_PATH"
+    assert os.environ["HF_TOKEN"] == "hf_external_path_secret"
