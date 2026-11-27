@@ -21,7 +21,9 @@ class PocketTTSService:
     """Lazy, reusable adapter around Kyutai Pocket TTS."""
 
     def __init__(self) -> None:
-        self._models: dict[tuple[str, str, bool], object] = {}
+        self._models: dict[
+            tuple[str, str, bool, int | None, float | None, float | None], object
+        ] = {}
         self._voice_states: dict[tuple[str, str, bool, str], object] = {}
 
     @staticmethod
