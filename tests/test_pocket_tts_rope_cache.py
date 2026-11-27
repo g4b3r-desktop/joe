@@ -29,7 +29,7 @@ def _fake_model_with_shared_rope(rope):
 
 
 def test_cached_rope_matches_pocket_tts_reference_and_deduplicates_shared_module():
-    pytest.importorskip("torch")
+    torch = pytest.importorskip("torch")
     pytest.importorskip("pocket_tts")
     from pocket_tts.modules.rope import RotaryEmbedding, apply_rope
 
@@ -62,7 +62,7 @@ def test_cached_rope_matches_pocket_tts_reference_and_deduplicates_shared_module
 
 
 def test_cached_rope_grows_with_kv_cache_and_restores_model_method():
-    pytest.importorskip("torch")
+    torch = pytest.importorskip("torch")
     pytest.importorskip("pocket_tts")
     from pocket_tts.modules.rope import RotaryEmbedding, apply_rope
 
@@ -98,7 +98,7 @@ def test_cached_rope_grows_with_kv_cache_and_restores_model_method():
 
 
 def test_cached_rope_uses_original_implementation_for_out_of_range_python_offset():
-    pytest.importorskip("torch")
+    torch = pytest.importorskip("torch")
     pytest.importorskip("pocket_tts")
     from pocket_tts.modules.rope import RotaryEmbedding, apply_rope
 
