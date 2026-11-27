@@ -1026,6 +1026,7 @@ class PocketTTSService:
         active_run: dict[str, int | bool | None] = {
             "index": None,
             "autoregressive": False,
+            "flow_thread_id": None,
         }
         trace_runs: list[dict[str, object]] = []
         component_keys = (
@@ -1086,7 +1087,10 @@ class PocketTTSService:
                 index = active_run["index"]
                 if index is None:
                     return
-                if autoregressive_only and not active_run["autoregressive"]:
+                if autoregressive_only and (
+                    not active_run["autoregressive"]
+                    or active_run["flow_thread_id"] != threading.get_ident()
+                ):
                     return
                 trace_runs[index][key].append(value)
 
@@ -1338,6 +1342,10 @@ class PocketTTSService:
                         record_phase(phase, started, start_event, end_event)
 
                 def timed_autoregressive(*args, **kwargs):
+                    with trace_lock:
+                        if active_run["index"] is not None:
+                            active_run["autoregressive"] = True
+                            active_run["flow_thread_id"] = threading.get_ident()
                     started = time.perf_counter()
                     try:
                         return original_autoregressive(*args, **kwargs)
@@ -1471,6 +1479,8 @@ class PocketTTSService:
         finally:
             with trace_lock:
                 active_run["index"] = None
+                active_run["autoregressive"] = False
+                active_run["flow_thread_id"] = None
             try:
                 restore_tracing()
             except Exception:
