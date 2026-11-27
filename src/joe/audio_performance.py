@@ -51,6 +51,23 @@ class TTSCudaPrecisionBenchmarkResult:
 
 
 @dataclass(frozen=True, slots=True)
+class TTSCudaAttentionBenchmarkResult:
+    """Repeated CUDA measurements for the default and Flash-FP16 SDPA paths."""
+
+    mode: str
+    model_load_seconds: float = 0.0
+    voice_prepare_seconds: float = 0.0
+    generation_times: tuple[float, ...] = ()
+    audio_durations_seconds: tuple[float, ...] = ()
+    audio_peak_amplitudes: tuple[float, ...] = ()
+    audio_rms_levels: tuple[float, ...] = ()
+    warmup_runs: int = 0
+    peak_vram_mb: float = 0.0
+    peak_vram_reserved_mb: float = 0.0
+    error: str = ""
+
+
+@dataclass(frozen=True, slots=True)
 class TTSCudaProfileBenchmarkResult:
     """Per-generation CUDA phase timings collected from Pocket TTS worker threads."""
 
@@ -698,6 +715,110 @@ def format_cuda_tf32_benchmark_report(
             "TF32 é experimental e não altera a precisão usada nas gerações normais.",
             "Pico/RMS verificam valores numéricos, mas não substituem a avaliação auditiva da voz.",
             "A configuração original de precisão CUDA matmul é restaurada ao final do teste.",
+        ]
+    )
+    return "\n".join(lines)
+
+
+def format_cuda_attention_benchmark_report(
+    results: list[TTSCudaAttentionBenchmarkResult],
+) -> str:
+    """Report default FP32 SDPA against forced Flash SDPA with FP16 Q/K/V."""
+    lines = [
+        "Comparação CUDA — Pocket TTS: SDPA FP32 × Flash Attention FP16",
+        "O Pocket TTS já usa scaled_dot_product_attention; este teste compara os caminhos de execução.",
+        "No modo Flash, somente Q/K/V entram em FP16 dentro da atenção; a saída volta para FP32.",
+        "Pesos, projeções, FlowNet, Mimi e gerações normais permanecem em FP32.",
+        "O backend Flash é forçado, sem fallback silencioso para o kernel matemático.",
+        "Mesmo modelo, voz e texto. Duas gerações de aquecimento são descartadas.",
+        "O cronômetro inclui geração e transferência do áudio para a RAM.",
+        "",
+    ]
+    successful: dict[str, tuple[TTSCudaAttentionBenchmarkResult, float]] = {}
+    for result in results:
+        label = (
+            "CUDA Flash Attention — SDPA FP16 somente na atenção"
+            if result.mode == "Flash FP16 SDPA"
+            else "CUDA FP32 — SDPA padrão (referência)"
+        )
+        lines.append(label)
+        if result.error:
+            lines.extend([f"  Não foi possível medir: {result.error}", ""])
+            continue
+        timings = tuple(max(0.0, float(value)) for value in result.generation_times)
+        if not timings:
+            lines.extend(["  Nenhuma geração medida.", ""])
+            continue
+        average = statistics.mean(timings)
+        median = statistics.median(timings)
+        deviation = statistics.stdev(timings) if len(timings) > 1 else 0.0
+        durations = tuple(
+            max(0.0, float(value)) for value in result.audio_durations_seconds
+        )
+        peaks = tuple(
+            max(0.0, float(value)) for value in result.audio_peak_amplitudes
+        )
+        rms_values = tuple(
+            max(0.0, float(value)) for value in result.audio_rms_levels
+        )
+        average_audio = statistics.mean(durations) if durations else 0.0
+        realtime_factor = average_audio / average if average > 0 else 0.0
+        lines.extend(
+            [
+                f"  Aquecimento descartado: {result.warmup_runs} geração(ões)",
+                f"  Gerações medidas: {len(timings)}",
+                f"  Tempos individuais: {', '.join(format_duration(value) for value in timings)}",
+                f"  Média: {format_duration(average)}",
+                f"  Mediana: {format_duration(median)}",
+                f"  Desvio padrão: {format_duration(deviation)}",
+                (
+                    f"  Mínimo / máximo: {format_duration(min(timings))} / "
+                    f"{format_duration(max(timings))}"
+                ),
+                f"  Áudio médio produzido: {format_duration(average_audio)}",
+                f"  Velocidade média: {_format_number(realtime_factor, 2)}× tempo real",
+                f"  Carregamento + transferência para CUDA: {format_duration(result.model_load_seconds)}",
+                f"  Preparação da voz: {format_duration(result.voice_prepare_seconds)}",
+                (
+                    "  Integridade numérica: amostras finitas (sem NaN/Inf); "
+                    f"pico médio {_format_number(statistics.mean(peaks), 4) if peaks else 'n/d'}; "
+                    f"RMS médio {_format_number(statistics.mean(rms_values), 4) if rms_values else 'n/d'}"
+                ),
+                f"  Pico VRAM alocada: {_format_number(result.peak_vram_mb, 0)} MB",
+                f"  Pico VRAM reservada: {_format_number(result.peak_vram_reserved_mb, 0)} MB",
+                "",
+            ]
+        )
+        successful[result.mode] = (result, average)
+
+    reference = successful.get("FP32 SDPA")
+    flash = successful.get("Flash FP16 SDPA")
+    if reference and flash and reference[1] > 0 and flash[1] > 0:
+        ratio = flash[1] / reference[1]
+        delta_percent = (ratio - 1.0) * 100.0
+        if ratio < 0.98:
+            lines.append(
+                f"Resultado: Flash FP16 foi {_format_number(1.0 / ratio, 2)}× mais rápido "
+                f"({_format_number(-delta_percent, 1)}% menos tempo por geração)."
+            )
+        elif ratio > 1.02:
+            lines.append(
+                f"Resultado: Flash FP16 ficou {_format_number(ratio, 2)}× mais lento "
+                f"({_format_number(delta_percent, 1)}% mais tempo por geração)."
+            )
+        else:
+            lines.append(
+                "Resultado: SDPA FP32 e Flash FP16 tiveram desempenho semelhante."
+            )
+    else:
+        lines.append(
+            "Comparação inconclusiva: os dois modos precisam concluir as medições."
+        )
+    lines.extend(
+        [
+            "O benchmark é experimental e não altera a precisão usada nas gerações normais.",
+            "Pico/RMS verificam integridade numérica, mas não substituem a avaliação auditiva.",
+            "Se Flash não suportar a forma da atenção, o teste registra o erro e não usa fallback.",
         ]
     )
     return "\n".join(lines)

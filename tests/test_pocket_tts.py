@@ -1115,3 +1115,146 @@ def test_cuda_profile_refuses_unknown_pocket_tts_internal_methods(monkeypatch):
     assert len(results) == 1
     assert "não expõe os métodos internos" in results[0].error
 
+
+
+def test_flash_fp16_attention_patch_casts_only_sdpa_and_restores(monkeypatch):
+    import sys
+    from contextlib import contextmanager
+    from types import ModuleType, SimpleNamespace
+
+    from joe.services.pocket_tts import PocketTTSService
+
+    backend_marker = object()
+    entered_backends = []
+    sdpa_calls = []
+
+    @contextmanager
+    def fake_sdpa_kernel(backend):
+        entered_backends.append(backend)
+        yield
+
+    fake_torch = ModuleType("torch")
+    fake_torch.float32 = "float32"
+    fake_torch.float16 = "float16"
+
+    fake_torch_nn = ModuleType("torch.nn")
+    fake_torch_nn.__path__ = []
+    fake_torch_attention = ModuleType("torch.nn.attention")
+
+    class FakeSDPBackend:
+        FLASH_ATTENTION = backend_marker
+
+    fake_torch_attention.SDPBackend = FakeSDPBackend
+    fake_torch_attention.sdpa_kernel = fake_sdpa_kernel
+
+    class FakeTensor:
+        def __init__(self, dtype):
+            self.dtype = dtype
+            self.device = SimpleNamespace(type="cuda")
+
+        def to(self, *, dtype):
+            return FakeTensor(dtype)
+
+    def original_sdpa(query, key, value, *_args, **_kwargs):
+        sdpa_calls.append((query.dtype, key.dtype, value.dtype))
+        return FakeTensor(query.dtype)
+
+    original_functional = SimpleNamespace(
+        scaled_dot_product_attention=original_sdpa
+    )
+    attention_module = ModuleType("pocket_tts.modules.attention")
+    attention_module.F = original_functional
+
+    pocket_tts = ModuleType("pocket_tts")
+    pocket_tts.__path__ = []
+    pocket_modules = ModuleType("pocket_tts.modules")
+    pocket_modules.__path__ = []
+
+    monkeypatch.setitem(sys.modules, "torch", fake_torch)
+    monkeypatch.setitem(sys.modules, "torch.nn", fake_torch_nn)
+    monkeypatch.setitem(sys.modules, "torch.nn.attention", fake_torch_attention)
+    monkeypatch.setitem(sys.modules, "pocket_tts", pocket_tts)
+    monkeypatch.setitem(sys.modules, "pocket_tts.modules", pocket_modules)
+    monkeypatch.setitem(
+        sys.modules, "pocket_tts.modules.attention", attention_module
+    )
+
+    class FakeModel:
+        def _generate(self):
+            return self._autoregressive_generation()
+
+        def _autoregressive_generation(self):
+            tensor = FakeTensor("float32")
+            return attention_module.F.scaled_dot_product_attention(
+                tensor, tensor, tensor, dropout_p=0.0
+            )
+
+    model = FakeModel()
+    restore = PocketTTSService._apply_cuda_flash_fp16_attention(model, fake_torch)
+
+    result = model._generate()
+
+    assert result.dtype == "float32"
+    assert sdpa_calls == [("float16", "float16", "float16")]
+    assert entered_backends == [backend_marker, backend_marker]
+
+    restore()
+    assert attention_module.F is original_functional
+    assert model._generate() is not None
+    assert len(entered_backends) == 2
+
+
+def test_flash_fp16_attention_patch_refuses_missing_worker_methods():
+    from types import ModuleType, SimpleNamespace
+    import sys
+
+    from joe.services.pocket_tts import PocketTTSService
+
+    fake_torch = ModuleType("torch")
+    fake_attention_api = ModuleType("torch.nn.attention")
+    fake_attention_api.SDPBackend = SimpleNamespace(FLASH_ATTENTION=object())
+
+    class FakeContext:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+    fake_attention_api.sdpa_kernel = lambda _backend: FakeContext()
+    fake_torch_nn = ModuleType("torch.nn")
+    fake_torch_nn.__path__ = []
+    fake_module = ModuleType("pocket_tts.modules.attention")
+    fake_module.F = SimpleNamespace(
+        scaled_dot_product_attention=lambda *args, **kwargs: None
+    )
+    fake_pocket = ModuleType("pocket_tts")
+    fake_pocket.__path__ = []
+    fake_modules = ModuleType("pocket_tts.modules")
+    fake_modules.__path__ = []
+
+    sys.modules["torch"] = fake_torch
+    sys.modules["torch.nn"] = fake_torch_nn
+    sys.modules["torch.nn.attention"] = fake_attention_api
+    sys.modules["pocket_tts"] = fake_pocket
+    sys.modules["pocket_tts.modules"] = fake_modules
+    sys.modules["pocket_tts.modules.attention"] = fake_module
+
+    class UnsupportedModel:
+        pass
+
+    try:
+        with pytest.raises(RuntimeError, match="não expõe os pontos internos"):
+            PocketTTSService._apply_cuda_flash_fp16_attention(
+                UnsupportedModel(), fake_torch
+            )
+    finally:
+        for key in (
+            "torch",
+            "torch.nn",
+            "torch.nn.attention",
+            "pocket_tts",
+            "pocket_tts.modules",
+            "pocket_tts.modules.attention",
+        ):
+            sys.modules.pop(key, None)

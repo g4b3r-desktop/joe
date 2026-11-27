@@ -10,6 +10,7 @@ from joe.audio_performance import (
     TTSBenchmarkResult,
     TTSCudaQuantizationBenchmarkResult,
     TTSCudaPrecisionBenchmarkResult,
+    TTSCudaAttentionBenchmarkResult,
     TTSCudaProfileBenchmarkResult,
 )
 from joe.model_cache import configure_model_cache
@@ -113,6 +114,92 @@ class PocketTTSService:
                     return _original(*args, **kwargs)
 
             setattr(model, name, run_with_fp16_autocast)
+
+    @staticmethod
+    def _apply_cuda_flash_fp16_attention(model, torch):
+        """Temporarily force Flash SDPA and cast only its Q/K/V tensors to FP16.
+
+        Pocket TTS 4.0.1 already calls F.scaled_dot_product_attention. This patch
+        keeps its projections, KV cache, output projection and residual path in
+        FP32, while the SDPA kernel itself receives FP16 Q/K/V. The SDPA output
+        is converted back to the query dtype before Pocket TTS continues.
+        """
+        try:
+            from torch.nn.attention import SDPBackend, sdpa_kernel
+            import importlib
+
+            attention_module = importlib.import_module("pocket_tts.modules.attention")
+        except Exception as exc:  # noqa: BLE001
+            raise RuntimeError(
+                "O Pocket TTS/PyTorch instalado não expõe o módulo de atenção SDPA "
+                "ou o seletor de backend Flash Attention."
+            ) from exc
+
+        method_names = ("_generate", "_autoregressive_generation")
+        originals = {name: getattr(model, name, None) for name in method_names}
+        missing = [name for name, method in originals.items() if not callable(method)]
+        if missing:
+            raise RuntimeError(
+                "A versão instalada do Pocket TTS não expõe os pontos internos "
+                "necessários para limitar o backend Flash à geração Flow LM: "
+                + ", ".join(missing)
+            )
+
+        functional = getattr(attention_module, "F", None)
+        original_sdpa = getattr(functional, "scaled_dot_product_attention", None)
+        if not callable(original_sdpa):
+            raise RuntimeError(
+                "A atenção interna do Pocket TTS não usa a API "
+                "scaled_dot_product_attention esperada."
+            )
+
+        flash_backend = getattr(SDPBackend, "FLASH_ATTENTION", None)
+        if flash_backend is None:
+            raise RuntimeError(
+                "Esta versão do PyTorch não oferece SDPBackend.FLASH_ATTENTION."
+            )
+
+        class _FlashAttentionFunctional:
+            @staticmethod
+            def scaled_dot_product_attention(query, key, value, *args, **kwargs):
+                if (
+                    getattr(getattr(query, "device", None), "type", None) == "cuda"
+                    and getattr(query, "dtype", None) == torch.float32
+                ):
+                    query_dtype = query.dtype
+                    output = original_sdpa(
+                        query.to(dtype=torch.float16),
+                        key.to(dtype=torch.float16),
+                        value.to(dtype=torch.float16),
+                        *args,
+                        **kwargs,
+                    )
+                    return output.to(dtype=query_dtype)
+                return original_sdpa(query, key, value, *args, **kwargs)
+
+        def with_flash_backend(original):
+            def run_with_flash(*args, **kwargs):
+                with sdpa_kernel(flash_backend):
+                    return original(*args, **kwargs)
+
+            return run_with_flash
+
+        attention_module.F = _FlashAttentionFunctional()
+        for name, original in originals.items():
+            setattr(model, name, with_flash_backend(original))
+
+        restored = False
+
+        def restore() -> None:
+            nonlocal restored
+            if restored:
+                return
+            attention_module.F = functional
+            for name, original in originals.items():
+                setattr(model, name, original)
+            restored = True
+
+        return restore
 
     def _get_model(
         self,
@@ -965,6 +1052,178 @@ class PocketTTSService:
         finally:
             # Never leak this experimental setting into ordinary generation.
             setattr(matmul_backend, precision_attribute, original_precision)
+        return results
+
+    def benchmark_cuda_attention(
+        self,
+        text: str,
+        language: str,
+        voice_path: str | Path | None = None,
+        model_variant: str | None = None,
+        *,
+        cpu_threads: int = 2,
+        warmup_runs: int = 2,
+        measured_runs: int = 7,
+    ) -> list[TTSCudaAttentionBenchmarkResult]:
+        """Compare default FP32 SDPA with forced Flash SDPA using FP16 Q/K/V only."""
+        if not text.strip():
+            raise ValueError("Informe um texto para comparar os backends de atenção CUDA.")
+        warmup_count = max(1, int(warmup_runs))
+        measured_count = max(3, int(measured_runs))
+
+        configure_model_cache()
+        try:
+            import numpy as np
+            import torch
+            from pocket_tts import TTSModel
+        except ImportError as exc:
+            raise RuntimeError(
+                "Dependências do Pocket TTS ausentes. Execute ./scripts/install-linux.sh."
+            ) from exc
+
+        model_variant = model_variant or default_model_variant(language)
+        if not is_model_variant_for_language(language, model_variant):
+            raise ValueError(
+                f"A versão {model_variant!r} não está disponível para o idioma {language!r}."
+            )
+        if not torch.cuda.is_available():
+            error = "CUDA não está disponível na instalação atual do PyTorch."
+            return [
+                TTSCudaAttentionBenchmarkResult(mode="FP32 SDPA", error=error),
+                TTSCudaAttentionBenchmarkResult(mode="Flash FP16 SDPA", error=error),
+            ]
+
+        self._configure_torch(torch, cpu_threads)
+        self.close()
+        voice_source = str(voice_path) if voice_path else (
+            default_voice_for_language(language) or DEFAULT_VOICE
+        )
+        results: list[TTSCudaAttentionBenchmarkResult] = []
+
+        for use_flash in (False, True):
+            mode = "Flash FP16 SDPA" if use_flash else "FP32 SDPA"
+            model = None
+            voice_state = None
+            restore_flash = None
+            model_load_seconds = 0.0
+            voice_prepare_seconds = 0.0
+            generation_times: list[float] = []
+            audio_durations: list[float] = []
+            audio_peaks: list[float] = []
+            audio_rms_levels: list[float] = []
+            peak_vram_mb = 0.0
+            peak_vram_reserved_mb = 0.0
+            error = ""
+
+            try:
+                torch.cuda.empty_cache()
+                torch.cuda.reset_peak_memory_stats()
+
+                model_started = time.perf_counter()
+                model = TTSModel.load_model(
+                    **model_loading_options(model_variant),
+                    quantize=False,
+                )
+                model.to("cuda")
+                torch.cuda.synchronize()
+                model_load_seconds = time.perf_counter() - model_started
+
+                voice_started = time.perf_counter()
+                voice_state = model.get_state_for_audio_prompt(voice_source)
+                torch.cuda.synchronize()
+                voice_prepare_seconds = time.perf_counter() - voice_started
+
+                if use_flash:
+                    restore_flash = self._apply_cuda_flash_fp16_attention(model, torch)
+
+                def generate_once(seed_index: int) -> float:
+                    seed = 1729 + int(seed_index)
+                    manual_seed = getattr(torch, "manual_seed", None)
+                    if callable(manual_seed):
+                        manual_seed(seed)
+                    cuda_manual_seed = getattr(torch.cuda, "manual_seed_all", None)
+                    if callable(cuda_manual_seed):
+                        cuda_manual_seed(seed)
+
+                    started = time.perf_counter()
+                    audio = model.generate_audio(
+                        voice_state,
+                        text.strip(),
+                        copy_state=True,
+                    )
+                    samples = audio.detach().cpu().numpy()
+                    torch.cuda.synchronize()
+                    elapsed = time.perf_counter() - started
+
+                    if samples.size == 0 or not np.isfinite(samples).all():
+                        raise RuntimeError(
+                            f"{mode} produziu áudio vazio ou com valores NaN/Inf."
+                        )
+                    samples64 = np.asarray(samples, dtype=np.float64)
+                    sample_count = (
+                        int(samples.shape[-1]) if samples.ndim else int(samples.size)
+                    )
+                    audio_durations.append(
+                        sample_count / max(1, int(model.sample_rate))
+                    )
+                    audio_peaks.append(float(np.max(np.abs(samples64))))
+                    audio_rms_levels.append(
+                        float(np.sqrt(np.mean(np.square(samples64))))
+                    )
+                    del audio, samples, samples64
+                    return elapsed
+
+                for index in range(warmup_count):
+                    generate_once(index)
+                audio_durations.clear()
+                audio_peaks.clear()
+                audio_rms_levels.clear()
+
+                for index in range(measured_count):
+                    generation_times.append(generate_once(warmup_count + index))
+
+                peak_vram_mb = float(torch.cuda.max_memory_allocated()) / (1024**2)
+                peak_vram_reserved_mb = (
+                    float(torch.cuda.max_memory_reserved()) / (1024**2)
+                )
+            except Exception as exc:  # noqa: BLE001
+                error = f"{type(exc).__name__}: {exc}"
+            finally:
+                if restore_flash is not None:
+                    try:
+                        restore_flash()
+                    except Exception as exc:  # noqa: BLE001
+                        error = error or (
+                            f"Falha ao restaurar a atenção original: "
+                            f"{type(exc).__name__}: {exc}"
+                        )
+                voice_state = None
+                model = None
+                self._models.clear()
+                self._voice_states.clear()
+                gc.collect()
+                if torch.cuda.is_available():
+                    try:
+                        torch.cuda.synchronize()
+                    except Exception:
+                        pass
+                    torch.cuda.empty_cache()
+
+            results.append(
+                TTSCudaAttentionBenchmarkResult(
+                    mode=mode,
+                    model_load_seconds=model_load_seconds,
+                    voice_prepare_seconds=voice_prepare_seconds,
+                    generation_times=tuple(generation_times),
+                    audio_durations_seconds=tuple(audio_durations),
+                    audio_peak_amplitudes=tuple(audio_peaks),
+                    audio_rms_levels=tuple(audio_rms_levels),
+                    warmup_runs=warmup_count,
+                    peak_vram_mb=peak_vram_mb,
+                    peak_vram_reserved_mb=peak_vram_reserved_mb,
+                    error=error,
+                )
+            )
         return results
 
     def benchmark_cuda_profile(
