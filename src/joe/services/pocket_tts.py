@@ -268,13 +268,23 @@ class PocketTTSService:
                     torch.cuda.synchronize()
                 voice_prepare_seconds = time.perf_counter() - voice_started
 
+                # Warm up kernels/caches once; do not include this first call in the average.
+                if device == "cuda":
+                    torch.cuda.synchronize()
+                with _inference_context(torch):
+                    warmup_audio = model.generate_audio(voice_state, text.strip())
+                warmup_samples = warmup_audio.detach().cpu().numpy()
+                if device == "cuda":
+                    torch.cuda.synchronize()
+                del warmup_audio, warmup_samples
+
                 generation_times: list[float] = []
                 audio_duration_seconds = 0.0
                 for _ in range(repeat_count):
                     if device == "cuda":
                         torch.cuda.synchronize()
                     generation_started = time.perf_counter()
-                    with torch.inference_mode():
+                    with _inference_context(torch):
                         audio = model.generate_audio(voice_state, text.strip())
                     samples = audio.detach().cpu().numpy()
                     if device == "cuda":
