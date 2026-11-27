@@ -1134,6 +1134,24 @@ class PocketTTSService:
             flow_net = getattr(flow_lm, "flow_net", None)
             original_flow_net_forward = getattr(flow_net, "forward", None)
 
+            # Fail with the intended compatibility message before importing internals
+            # when a Pocket TTS build does not expose the profiling entry points.
+            if not all(
+                callable(method)
+                for method in (
+                    original_flow,
+                    original_decode_worker,
+                    original_autoregressive,
+                    original_mimi_decode,
+                    original_flow_net_forward,
+                )
+            ) or not transformer_layers:
+                raise RuntimeError(
+                    "A versão instalada do Pocket TTS não expõe os métodos internos "
+                    "necessários ao profiling detalhado: Flow LM, Transformer, "
+                    "FlowNet e workers de geração/decodificação."
+                )
+
             attention_module = importlib.import_module("pocket_tts.modules.attention")
             transformer_module = importlib.import_module("pocket_tts.modules.transformer")
             attention_functional = getattr(attention_module, "F", None)
@@ -1150,11 +1168,15 @@ class PocketTTSService:
                 for method in ("_sa_block", "_ff_block")
             )
             attention_components = all(
-                callable(getattr(getattr(layer, "self_attn", None), name, None))
-                if name == "_cache_backend"
-                else callable(getattr(getattr(getattr(layer, "self_attn", None), name, None), "forward", None))
+                callable(
+                    getattr(
+                        getattr(getattr(layer, "self_attn", None), name, None),
+                        "forward",
+                        None,
+                    )
+                )
                 for layer in transformer_layers
-                for name in ("in_proj", "rope", "out_proj", "_cache_backend")
+                for name in ("in_proj", "rope", "out_proj")
             )
             cache_components = all(
                 callable(getattr(getattr(layer.self_attn, "_cache_backend", None), "append_and_get", None))
