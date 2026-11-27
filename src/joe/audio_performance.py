@@ -33,6 +33,24 @@ class TTSCudaQuantizationBenchmarkResult:
 
 
 @dataclass(frozen=True, slots=True)
+class TTSCudaPrecisionBenchmarkResult:
+    """Repeated measurements for one CUDA inference precision mode."""
+
+    precision: str
+    model_load_seconds: float = 0.0
+    autocast_setup_seconds: float = 0.0
+    voice_prepare_seconds: float = 0.0
+    generation_times: tuple[float, ...] = ()
+    audio_durations_seconds: tuple[float, ...] = ()
+    audio_peak_amplitudes: tuple[float, ...] = ()
+    audio_rms_levels: tuple[float, ...] = ()
+    warmup_runs: int = 0
+    peak_vram_mb: float = 0.0
+    peak_vram_reserved_mb: float = 0.0
+    error: str = ""
+
+
+@dataclass(frozen=True, slots=True)
 class TTSBenchmarkResult:
     """One isolated Pocket TTS benchmark run for a selected compute device."""
 
@@ -301,3 +319,106 @@ def format_cuda_quantization_benchmark_report(
         "para as próximas gerações."
     )
     return "\n".join(lines)
+
+def format_cuda_precision_benchmark_report(
+    results: list[TTSCudaPrecisionBenchmarkResult],
+) -> str:
+    """Report FP32 vs FP16 autocast measurements and basic audio integrity checks."""
+    lines = [
+        "Comparação CUDA — Pocket TTS: FP32 × FP16",
+        "Mesmo modelo, voz e texto. FP16 usa autocast nas três threads internas do Pocket TTS.",
+        "Os pesos permanecem FP32; apenas operações compatíveis usam precisão FP16.",
+        "O cronômetro inclui geração e transferência do áudio para a RAM.",
+        "",
+    ]
+    successful: dict[str, tuple[TTSCudaPrecisionBenchmarkResult, float]] = {}
+    for result in results:
+        label = (
+            "CUDA FP16 autocast (pesos FP32)"
+            if result.precision.upper().startswith("FP16")
+            else "CUDA FP32 (referência)"
+        )
+        lines.append(label)
+        if result.error:
+            lines.append(f"  Não foi possível medir: {result.error}")
+            lines.append("")
+            continue
+        timings = tuple(max(0.0, float(value)) for value in result.generation_times)
+        if not timings:
+            lines.append("  Nenhuma geração medida.")
+            lines.append("")
+            continue
+        average = statistics.mean(timings)
+        median = statistics.median(timings)
+        deviation = statistics.stdev(timings) if len(timings) > 1 else 0.0
+        audio_durations = tuple(
+            max(0.0, float(value)) for value in result.audio_durations_seconds
+        )
+        average_audio = statistics.mean(audio_durations) if audio_durations else 0.0
+        realtime_factor = average_audio / average if average > 0 else 0.0
+        peaks = tuple(max(0.0, float(value)) for value in result.audio_peak_amplitudes)
+        rms_values = tuple(max(0.0, float(value)) for value in result.audio_rms_levels)
+        lines.extend(
+            [
+                f"  Aquecimento descartado: {result.warmup_runs} geração(ões)",
+                f"  Gerações medidas: {len(timings)}",
+                f"  Tempos individuais: {', '.join(format_duration(value) for value in timings)}",
+                f"  Média: {format_duration(average)}",
+                f"  Mediana: {format_duration(median)}",
+                f"  Desvio padrão: {format_duration(deviation)}",
+                (
+                    f"  Mínimo / máximo: {format_duration(min(timings))} / "
+                    f"{format_duration(max(timings))}"
+                ),
+                f"  Áudio médio produzido: {format_duration(average_audio)}",
+                f"  Velocidade média: {_format_number(realtime_factor, 2)}× tempo real",
+                f"  Carregamento + transferência para CUDA: {format_duration(result.model_load_seconds)}",
+                f"  Preparação do autocast FP16: {format_duration(result.autocast_setup_seconds)}",
+                f"  Preparação da voz: {format_duration(result.voice_prepare_seconds)}",
+                (
+                    "  Integridade numérica: amostras finitas (sem NaN/Inf); "
+                    f"pico médio {_format_number(statistics.mean(peaks), 4) if peaks else 'n/d'}; "
+                    f"RMS médio {_format_number(statistics.mean(rms_values), 4) if rms_values else 'n/d'}"
+                ),
+                f"  Pico VRAM alocada: {_format_number(result.peak_vram_mb, 0)} MB",
+                f"  Pico VRAM reservada: {_format_number(result.peak_vram_reserved_mb, 0)} MB",
+                "",
+            ]
+        )
+        successful[result.precision] = (result, average)
+
+    fp32 = next(
+        (value for key, value in successful.items() if key.upper() == "FP32"),
+        None,
+    )
+    fp16 = next(
+        (value for key, value in successful.items() if key.upper().startswith("FP16")),
+        None,
+    )
+    if fp32 and fp16 and fp32[1] > 0 and fp16[1] > 0:
+        ratio = fp16[1] / fp32[1]
+        if ratio > 1.02:
+            lines.append(
+                f"Resultado: FP16 ficou {_format_number(ratio, 2)}× mais lento "
+                f"({_format_number((ratio - 1) * 100, 1)}% mais tempo por geração)."
+            )
+            lines.append("CUDA FP32 foi a opção mais rápida nesta medição.")
+        elif ratio < 0.98:
+            lines.append(
+                f"Resultado: FP16 foi {_format_number(1 / ratio, 2)}× mais rápido "
+                f"({_format_number((1 - ratio) * 100, 1)}% menos tempo por geração)."
+            )
+        else:
+            lines.append("Resultado: FP32 e FP16 tiveram desempenho semelhante.")
+    else:
+        lines.append(
+            "Comparação inconclusiva: FP32 e FP16 precisam concluir todas as medições."
+        )
+    lines.extend(
+        [
+            "O teste FP16 é experimental e não altera a precisão usada nas gerações normais.",
+            "Pico/RMS verificam valores numéricos, mas não substituem a avaliação auditiva da voz.",
+        ]
+    )
+    return "\n".join(lines)
+
