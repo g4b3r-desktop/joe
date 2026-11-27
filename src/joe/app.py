@@ -84,6 +84,7 @@ from joe.audio_performance import (
     format_elapsed_status,
     format_performance_report,
     format_tts_benchmark_report,
+    format_cuda_quantization_benchmark_report,
     wav_duration_seconds,
 )
 from joe.local_ipc import LocalCommandServer, send_local_command
@@ -2639,8 +2640,36 @@ class JoeWindow(QMainWindow):
         )
         self.tts_benchmark_button.clicked.connect(self._benchmark_tts_performance)
 
+        self.tts_cuda_quant_benchmark_runs = QSpinBox()
+        self.tts_cuda_quant_benchmark_runs.setRange(3, 15)
+        self.tts_cuda_quant_benchmark_runs.setValue(
+            self.app_settings.value("tts_cuda_quant_benchmark_runs", 7, type=int)
+        )
+        self.tts_cuda_quant_benchmark_runs.setFixedWidth(72)
+        self.tts_cuda_quant_benchmark_runs.setToolTip(
+            "Quantidade de gerações medidas por modo, depois de duas gerações de aquecimento."
+        )
+        self.tts_cuda_quant_benchmark_runs.valueChanged.connect(
+            lambda value: self.app_settings.setValue(
+                "tts_cuda_quant_benchmark_runs", int(value)
+            )
+        )
+        self.tts_cuda_quant_benchmark_button = QPushButton(
+            "Medir CUDA: INT8 × sem INT8"
+        )
+        self.tts_cuda_quant_benchmark_button.setToolTip(
+            "Aquece cada modo, descarta as primeiras duas gerações e mede várias sínteses. "
+            "Mostra tempos individuais, média, mediana, desvio padrão e VRAM."
+        )
+        self.tts_cuda_quant_benchmark_button.clicked.connect(
+            self._benchmark_tts_cuda_quantization
+        )
+
         hardware_actions = QHBoxLayout()
         hardware_actions.addWidget(self.tts_benchmark_button)
+        hardware_actions.addWidget(QLabel("Gerações medidas por modo:"))
+        hardware_actions.addWidget(self.tts_cuda_quant_benchmark_runs)
+        hardware_actions.addWidget(self.tts_cuda_quant_benchmark_button)
         hardware_actions.addStretch(1)
         hardware_form.addRow("Perfil de desempenho", self.tts_performance_profile)
         hardware_form.addRow("Dispositivo para geração local", self.tts_device)
@@ -4427,6 +4456,76 @@ class JoeWindow(QMainWindow):
 
         self._run_task("Comparando o Pocket TTS em CPU e CUDA…", benchmark, completed)
 
+    def _benchmark_tts_cuda_quantization(self) -> None:
+        if (
+            self.active_worker is not None
+            or self.active_generation_worker is not None
+            or self.clipboard_generation_worker is not None
+        ):
+            QMessageBox.information(
+                self,
+                "Joe ocupado",
+                "Aguarde a tarefa atual terminar antes de comparar a quantização CUDA.",
+            )
+            return
+        if not torch.cuda.is_available():
+            QMessageBox.information(
+                self,
+                "CUDA indisponível",
+                "Ative a GPU NVIDIA e confirme que o PyTorch reconhece CUDA antes de medir.",
+            )
+            return
+
+        language = str(self.tts_language.currentData() or "portuguese")
+        model_variant = str(self.tts_model_variant.currentData() or language)
+        cpu_threads = int(self.tts_cpu_threads.value())
+        measured_runs = int(self.tts_cuda_quant_benchmark_runs.value())
+        selected_voice = self.voice_path.text().strip() or None
+        source_text = self.tts_text.toPlainText().strip()
+        if source_text:
+            try:
+                prepared_text = self._prepared_speech_text(source_text, language)
+            except Exception as exc:  # noqa: BLE001
+                QMessageBox.warning(
+                    self,
+                    "Não foi possível preparar o texto",
+                    f"Revise as opções de pronúncia antes de comparar o desempenho.\\n\\n{exc}",
+                )
+                return
+            chunks = split_text_into_chunks(prepared_text, max_chars=280)
+            sample_text = chunks[0] if chunks else ""
+        else:
+            sample_text = (
+                "Este é um teste repetido do Pocket TTS para medir a velocidade "
+                "da GPU com quantização INT8 e sem quantização."
+            )
+
+        def benchmark() -> str:
+            results = self.tts.benchmark_cuda_quantization(
+                sample_text,
+                language,
+                selected_voice,
+                model_variant,
+                cpu_threads=cpu_threads,
+                warmup_runs=2,
+                measured_runs=measured_runs,
+            )
+            return format_cuda_quantization_benchmark_report(results)
+
+        def completed(report: object) -> None:
+            QMessageBox.information(
+                self,
+                "Medições CUDA — INT8 × sem INT8",
+                str(report),
+            )
+
+        self._run_task(
+            f"Medindo CUDA sem INT8 e com INT8: 2 aquecimentos + "
+            f"{measured_runs} gerações por modo…",
+            benchmark,
+            completed,
+        )
+
     def _save_tts_output_settings(self, *_args) -> None:
         if not hasattr(self, "tts_output_directory"):
             return
@@ -5763,6 +5862,8 @@ class JoeWindow(QMainWindow):
             self.tts_max_tokens,
             self.tts_teacher_force_previous_chunk,
             self.tts_benchmark_button,
+            self.tts_cuda_quant_benchmark_runs,
+            self.tts_cuda_quant_benchmark_button,
             self.tts_language,
             self.tts_model_variant,
             self.clipboard_chunk_size,
