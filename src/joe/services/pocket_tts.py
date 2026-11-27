@@ -981,7 +981,7 @@ class PocketTTSService:
         warmup_runs: int = 2,
         measured_runs: int = 7,
     ) -> TTSCudaRopeCacheBenchmarkResult:
-        """Compare the original FP32 RoPE with cached FP32 trigonometric tables."""
+        """Compare FP32 RoPE modes with paired, alternating execution order."""
         import numpy as np
 
         if not text.strip():
@@ -1045,35 +1045,33 @@ class PocketTTSService:
             )
             return allocated, reserved
 
-        def run_mode() -> tuple[list[float], list[float], list[np.ndarray]]:
-            times: list[float] = []
-            durations: list[float] = []
-            audio_samples: list[np.ndarray] = []
-            total_runs = warmup_count + measured_count
-            for run_index in range(total_runs):
-                seed = 1729 + run_index
+        def run_once(seed: int, use_cache: bool):
+            if cache_handle is None:
+                raise RuntimeError("O controlador do cache RoPE não foi inicializado.")
+            # Toggle only the RoPE/KV-expansion wrappers. The model, voice state,
+            # weights, CUDA context, and all other generation settings stay fixed.
+            cache_handle.set_enabled(use_cache)
+            torch.cuda.synchronize()
+            torch.cuda.reset_peak_memory_stats()
+            with torch.random.fork_rng(devices=[torch.cuda.current_device()]):
+                torch.manual_seed(seed)
+                torch.cuda.manual_seed_all(seed)
+                started = time.perf_counter()
+                audio = model.generate_audio(
+                    voice_state,
+                    text.strip(),
+                    copy_state=True,
+                )
+                samples = np.asarray(audio.detach().cpu().numpy()).copy()
                 torch.cuda.synchronize()
-                with torch.random.fork_rng(devices=[torch.cuda.current_device()]):
-                    torch.manual_seed(seed)
-                    torch.cuda.manual_seed_all(seed)
-                    started = time.perf_counter()
-                    audio = model.generate_audio(
-                        voice_state,
-                        text.strip(),
-                        copy_state=True,
-                    )
-                    samples = np.asarray(audio.detach().cpu().numpy()).copy()
-                    torch.cuda.synchronize()
-                    elapsed = time.perf_counter() - started
-                if run_index >= warmup_count:
-                    times.append(elapsed)
-                    durations.append(
-                        float(samples.shape[-1]) / float(model.sample_rate)
-                        if samples.ndim
-                        else 0.0
-                    )
-                    audio_samples.append(samples)
-            return times, durations, audio_samples
+                elapsed = time.perf_counter() - started
+            duration = (
+                float(samples.shape[-1]) / float(model.sample_rate)
+                if samples.ndim
+                else 0.0
+            )
+            allocated, reserved = peak_memory()
+            return elapsed, duration, samples, allocated, reserved
 
         try:
             torch.cuda.empty_cache()
@@ -1094,22 +1092,48 @@ class PocketTTSService:
             torch.cuda.synchronize()
             voice_prepare_seconds = time.perf_counter() - voice_started
 
-            # Reference mode: original upstream RoPE implementation, unchanged.
-            torch.cuda.reset_peak_memory_stats()
-            baseline_times, baseline_durations, baseline_audio = run_mode()
-            baseline_vram, baseline_reserved = peak_memory()
-
-            # Experimental mode: cache FP32 cos/sin tables on the same shared
-            # RotaryEmbedding object. First-use table creation is inside discarded
-            # warmup runs. The handle restores both patched methods in finally.
+            # Install once, then explicitly restore upstream methods for the
+            # first reference run. Keeping one handle allows AB/BA ordering.
             cache_handle = install_cuda_rope_cache(
                 model,
                 torch,
                 initial_positions=8192,
             )
-            torch.cuda.reset_peak_memory_stats()
-            cached_times, cached_durations, cached_audio = run_mode()
-            cached_vram, cached_reserved = peak_memory()
+            cache_handle.set_enabled(False)
+
+            total_pairs = warmup_count + measured_count
+            for pair_index in range(total_pairs):
+                seed = 1729 + pair_index
+                # Alternate the first mode on every pair to reduce thermal,
+                # clock, and runtime-drift bias: A/B, then B/A, repeatedly.
+                mode_order = (
+                    (False, True) if pair_index % 2 == 0 else (True, False)
+                )
+                pair_results = {}
+                for use_cache in mode_order:
+                    pair_results[use_cache] = run_once(seed, use_cache)
+
+                    result = pair_results[use_cache]
+                    if use_cache:
+                        cached_vram = max(cached_vram, result[3])
+                        cached_reserved = max(cached_reserved, result[4])
+                    else:
+                        baseline_vram = max(baseline_vram, result[3])
+                        baseline_reserved = max(baseline_reserved, result[4])
+
+                # Both warmup modes are executed and discarded as paired runs.
+                if pair_index < warmup_count:
+                    continue
+
+                baseline_result = pair_results[False]
+                cached_result = pair_results[True]
+                baseline_times.append(baseline_result[0])
+                baseline_durations.append(baseline_result[1])
+                baseline_audio.append(baseline_result[2])
+                cached_times.append(cached_result[0])
+                cached_durations.append(cached_result[1])
+                cached_audio.append(cached_result[2])
+
             cache_positions = cache_handle.capacity_positions
             cache_calls = cache_handle.calls
             cache_fallbacks = cache_handle.fallbacks
@@ -1119,6 +1143,11 @@ class PocketTTSService:
             error = f"{type(exc).__name__}: {exc}"
         finally:
             if cache_handle is not None:
+                # Preserve diagnostics before close() releases the FP32 tables.
+                cache_positions = cache_handle.capacity_positions
+                cache_calls = cache_handle.calls
+                cache_fallbacks = cache_handle.fallbacks
+                cache_bytes = cache_handle.allocated_bytes
                 cache_handle.close()
 
         shapes_match = (
