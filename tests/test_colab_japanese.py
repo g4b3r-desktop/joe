@@ -63,3 +63,35 @@ def test_colab_forwards_quality_sampler_steps_when_configured():
             "sampler_decode_steps": 5,
         }
     ]
+
+
+
+def test_colab_loader_forwards_temperature_and_eos_threshold():
+    calls = []
+
+    class FakeTTSModel:
+        @staticmethod
+        def load_model(**kwargs):
+            calls.append(kwargs)
+            return "loaded"
+
+    result = load_tts_model(
+        FakeTTSModel,
+        "portuguese",
+        "portuguese",
+        quantize=False,
+        sampler_decode_steps=4,
+        temp=0.85,
+        eos_threshold=-3.0,
+    )
+
+    assert result == "loaded"
+    assert calls == [
+        {
+            "language": "portuguese",
+            "quantize": False,
+            "sampler_decode_steps": 4,
+            "temp": 0.85,
+            "eos_threshold": -3.0,
+        }
+    ]
