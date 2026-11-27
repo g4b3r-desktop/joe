@@ -122,6 +122,7 @@ def format_tts_benchmark_report(
         "Comparação de desempenho — Pocket TTS",
         f"Mesmo texto, idioma, modelo e voz. Threads configuradas: {cpu_threads}.",
         "Carga do modelo e preparação da voz são mostradas separadamente da geração.",
+        "Uma geração de aquecimento é descartada antes das repetições cronometradas.",
         "",
     ]
     successful = []
