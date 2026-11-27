@@ -441,3 +441,60 @@ def test_generate_runs_voice_encoding_and_synthesis_in_inference_mode(monkeypatc
 
     assert state["calls"] == ["enter", "exit"]
     assert destination.read_bytes() == b"fake wav"
+
+
+
+def test_generate_passes_sampler_decode_steps_to_model_loader(monkeypatch, tmp_path):
+    import sys
+    from types import SimpleNamespace
+
+    from joe.services.pocket_tts import PocketTTSService
+
+    loaded = []
+
+    class FakeAudio:
+        def detach(self):
+            return self
+
+        def cpu(self):
+            return self
+
+        def numpy(self):
+            return [0.0, 0.1, -0.1]
+
+    class FakeModel:
+        sample_rate = 24_000
+
+        def get_state_for_audio_prompt(self, _voice):
+            return object()
+
+        def generate_audio(self, _state, _text):
+            return FakeAudio()
+
+    class FakeTTSModel:
+        @staticmethod
+        def load_model(**kwargs):
+            loaded.append(kwargs)
+            return FakeModel()
+
+    class FakeSoundFile:
+        @staticmethod
+        def write(path, _samples, _rate, subtype):
+            Path(path).write_bytes(b"fake wav")
+
+        @staticmethod
+        def info(_path):
+            return SimpleNamespace(frames=3, samplerate=24_000)
+
+    monkeypatch.setitem(sys.modules, "torch", SimpleNamespace(set_num_threads=lambda _n: None))
+    monkeypatch.setitem(sys.modules, "soundfile", FakeSoundFile)
+    monkeypatch.setitem(sys.modules, "pocket_tts", SimpleNamespace(TTSModel=FakeTTSModel))
+
+    PocketTTSService().generate(
+        "Olá",
+        "portuguese",
+        tmp_path / "sampler.wav",
+        sampler_decode_steps=3,
+    )
+
+    assert loaded == [{"language": "portuguese", "sampler_decode_steps": 3, "quantize": True}]
