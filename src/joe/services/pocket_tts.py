@@ -28,8 +28,8 @@ class PocketTTSService:
     """Lazy, reusable adapter around Kyutai Pocket TTS."""
 
     def __init__(self) -> None:
-        self._models: dict[tuple[str, str, bool], object] = {}
-        self._voice_states: dict[tuple[str, str, bool, str], object] = {}
+        self._models: dict[tuple[str, str, bool, int | None], object] = {}
+        self._voice_states: dict[tuple[str, str, bool, str, int | None], object] = {}
 
     @staticmethod
     def _configure_torch(torch, cpu_threads: int) -> None:
@@ -49,6 +49,7 @@ class PocketTTSService:
         model_variant: str,
         device: str,
         quantize: bool,
+        sampler_decode_steps: int | None = None,
     ):
         if device not in {"cpu", "cuda"}:
             raise ValueError("Dispositivo TTS inválido. Escolha CPU ou NVIDIA GPU (CUDA).")
@@ -61,7 +62,10 @@ class PocketTTSService:
 
         # Pocket TTS dynamic INT8 quantization is supported on CPU only.
         effective_quantize = bool(quantize) and device == "cpu"
-        cache_key = (model_variant, device, effective_quantize)
+        if sampler_decode_steps is not None and not 1 <= int(sampler_decode_steps) <= 16:
+            raise ValueError("Os passos do sampler precisam ficar entre 1 e 16.")
+        sampler_steps = int(sampler_decode_steps) if sampler_decode_steps is not None else None
+        cache_key = (model_variant, device, effective_quantize, sampler_steps)
         model = self._models.get(cache_key)
         if model is not None:
             return model
@@ -69,8 +73,11 @@ class PocketTTSService:
         # Keep a single model/device active to avoid retaining duplicate weights in RAM/VRAM.
         self._voice_states.clear()
         self._models.clear()
+        loading_options = model_loading_options(model_variant)
+        if sampler_steps is not None:
+            loading_options["sampler_decode_steps"] = sampler_steps
         model = tts_model_class.load_model(
-            **model_loading_options(model_variant),
+            **loading_options,
             quantize=effective_quantize,
         )
         if device == "cuda":
@@ -97,6 +104,7 @@ class PocketTTSService:
         device_preference: str = "cpu",
         cpu_threads: int = 2,
         quantize: bool = True,
+        sampler_decode_steps: int | None = None,
     ) -> Path:
         if not text.strip():
             raise ValueError("Digite algum texto antes de gerar o áudio.")
@@ -120,7 +128,12 @@ class PocketTTSService:
         self._configure_torch(torch, cpu_threads)
         effective_quantize = bool(quantize) and device_preference == "cpu"
         model = self._get_model(
-            torch, TTSModel, model_variant, device_preference, effective_quantize
+            torch,
+            TTSModel,
+            model_variant,
+            device_preference,
+            effective_quantize,
+            sampler_decode_steps,
         )
 
         voice_source = str(voice_path) if voice_path else (
@@ -205,6 +218,7 @@ class PocketTTSService:
         cpu_threads: int = 2,
         repeats: int = 2,
         quantize: bool = True,
+        sampler_decode_steps: int | None = None,
     ) -> list[TTSBenchmarkResult]:
         """Compare CPU and CUDA using the same model, voice and text without saving audio."""
         if not text.strip():
@@ -252,8 +266,13 @@ class PocketTTSService:
                     torch.cuda.empty_cache()
                     torch.cuda.reset_peak_memory_stats()
                 model_started = time.perf_counter()
+                loading_options = model_loading_options(model_variant)
+                if sampler_decode_steps is not None:
+                    if not 1 <= int(sampler_decode_steps) <= 16:
+                        raise ValueError("Os passos do sampler precisam ficar entre 1 e 16.")
+                    loading_options["sampler_decode_steps"] = int(sampler_decode_steps)
                 model = TTSModel.load_model(
-                    **model_loading_options(model_variant),
+                    **loading_options,
                     quantize=(device == "cpu" and bool(quantize)),
                 )
                 if device == "cuda":
