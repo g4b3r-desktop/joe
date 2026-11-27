@@ -991,7 +991,10 @@ class PocketTTSService:
             )
         warmup_count = max(1, int(warmup_runs))
         measured_count = max(3, int(measured_runs))
-        configure_model_cache(cache_directory=model_cache_dir) if model_cache_dir else configure_model_cache()
+        if model_cache_dir is not None:
+            configure_model_cache(cache_directory=model_cache_dir)
+        else:
+            configure_model_cache()
         try:
             import torch
             from pocket_tts import TTSModel
