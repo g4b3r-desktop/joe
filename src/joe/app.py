@@ -366,6 +366,7 @@ class TTSGenerationWorker(QRunnable):
                                     device_preference=self.task.tts_device,
                                     cpu_threads=self.task.cpu_threads,
                                     quantize=self.task.tts_quantization,
+                                    sampler_decode_steps=self.task.tts_sampler_decode_steps,
                                 )
                             if not chunk_path.is_file() or chunk_path.stat().st_size == 0:
                                 raise RuntimeError("O serviço TTS não produziu um WAV válido.")
@@ -2556,12 +2557,24 @@ class JoeWindow(QMainWindow):
             "quantização dinâmica INT8 no caminho CUDA."
         )
 
+        self.tts_sampler_decode_steps = QSpinBox()
+        self.tts_sampler_decode_steps.setRange(1, 16)
+        self.tts_sampler_decode_steps.setValue(
+            max(1, min(16, self.app_settings.value("tts_sampler_decode_steps", 1, type=int)))
+        )
+        self.tts_sampler_decode_steps.setToolTip(
+            "Menos passos do sampler normalmente geram áudio mais rápido. "
+            "Mais passos podem melhorar a qualidade, mas aumentam o tempo de síntese. "
+            "O padrão local é 1."
+        )
+
         self.tts_hardware_info = QLabel()
         self.tts_hardware_info.setObjectName("muted")
         self.tts_hardware_info.setWordWrap(True)
         self.tts_device.currentIndexChanged.connect(self._save_tts_hardware_settings)
         self.tts_cpu_threads.valueChanged.connect(self._save_tts_hardware_settings)
         self.tts_quantization.toggled.connect(self._save_tts_hardware_settings)
+        self.tts_sampler_decode_steps.valueChanged.connect(self._save_tts_hardware_settings)
         self.tts_performance_profile.currentIndexChanged.connect(
             self._apply_tts_performance_profile
         )
@@ -2580,6 +2593,7 @@ class JoeWindow(QMainWindow):
         hardware_form.addRow("Dispositivo para geração local", self.tts_device)
         hardware_form.addRow("Threads da CPU", self.tts_cpu_threads)
         hardware_form.addRow("Quantização do modelo", self.tts_quantization)
+        hardware_form.addRow("Passos do sampler (1 = mais rápido)", self.tts_sampler_decode_steps)
         hardware_form.addRow("Estado do hardware", self.tts_hardware_info)
         hardware_form.addRow("", hardware_actions)
         settings_layout.addWidget(hardware_group)
@@ -3952,7 +3966,12 @@ class JoeWindow(QMainWindow):
     def _save_tts_hardware_settings(self, *_args) -> None:
         if not all(
             hasattr(self, name)
-            for name in ("tts_device", "tts_cpu_threads", "tts_quantization")
+            for name in (
+                "tts_device",
+                "tts_cpu_threads",
+                "tts_quantization",
+                "tts_sampler_decode_steps",
+            )
         ):
             return
         if not self._applying_tts_profile and hasattr(self, "tts_performance_profile"):
@@ -3966,6 +3985,9 @@ class JoeWindow(QMainWindow):
         self.app_settings.setValue("tts_cpu_threads", int(self.tts_cpu_threads.value()))
         self.app_settings.setValue(
             "tts_quantization", bool(self.tts_quantization.isChecked())
+        )
+        self.app_settings.setValue(
+            "tts_sampler_decode_steps", int(self.tts_sampler_decode_steps.value())
         )
         self._refresh_tts_hardware_info()
 
@@ -4936,6 +4958,7 @@ class JoeWindow(QMainWindow):
                 tts_device=str(self.tts_device.currentData() or "cpu"),
                 cpu_threads=int(self.tts_cpu_threads.value()),
                 tts_quantization=bool(self.tts_quantization.isChecked()),
+                tts_sampler_decode_steps=int(self.tts_sampler_decode_steps.value()),
                 tts_profile=str(self.tts_performance_profile.currentData() or "custom"),
                 voice_path=selected_voice,
                 voice_alias=selected_voice_alias,
