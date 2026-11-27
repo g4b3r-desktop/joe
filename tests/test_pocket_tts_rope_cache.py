@@ -182,6 +182,7 @@ def test_rope_cache_benchmark_report_mentions_speed_audio_and_cache_metrics():
         cache_calls=255,
         cache_fallbacks=0,
         cache_bytes=4 * 1024 * 1024,
+        text_characters=42,
     )
 
     report = format_cuda_rope_cache_benchmark_report(result)
@@ -192,6 +193,7 @@ def test_rope_cache_benchmark_report_mentions_speed_audio_and_cache_metrics():
     assert "Chamadas atendidas pelo cache: 255" in report
     assert "Fallbacks para implementação original: 0" in report
     assert "4,00 MB" in report
+    assert "Texto completo avaliado: 42 caracteres." in report
 
 
 
@@ -317,6 +319,7 @@ def test_cuda_rope_cache_benchmark_alternates_paired_fp32_modes(monkeypatch):
     assert result.cache_calls == 123
     assert result.cache_fallbacks == 0
     assert result.cache_bytes == 4 * 1024 * 1024
+    assert result.text_characters == len("Teste pareado do cache RoPE.")
     assert len(generated) == 10
 
     # The same seed is used for both modes; the first mode alternates A/B, B/A.
