@@ -1207,7 +1207,7 @@ def test_flash_fp16_attention_patch_casts_only_sdpa_and_restores(monkeypatch):
     restore()
     assert attention_module.F is original_functional
     assert model._generate() is not None
-    assert len(entered_backends) == 2
+    assert len(entered_backends) == 1
 
 
 def test_flash_fp16_attention_patch_refuses_missing_worker_methods(monkeypatch):

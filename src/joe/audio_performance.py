@@ -723,7 +723,7 @@ def format_cuda_tf32_benchmark_report(
 def format_cuda_attention_benchmark_report(
     results: list[TTSCudaAttentionBenchmarkResult],
 ) -> str:
-    """Report default FP32 SDPA against forced Flash SDPA with FP16 Q/K/V."""
+    """Report default FP32 SDPA against forced Flash and efficient FP16 SDPA backends."""
     lines = [
         "Comparação CUDA — Pocket TTS: SDPA FP32 × backends fused FP16",
         "O Pocket TTS já usa scaled_dot_product_attention; este teste compara backends internos do PyTorch.",
@@ -736,11 +736,13 @@ def format_cuda_attention_benchmark_report(
     ]
     successful: dict[str, tuple[TTSCudaAttentionBenchmarkResult, float]] = {}
     for result in results:
-        label = (
-            "CUDA Flash Attention — SDPA FP16 somente na atenção"
-            if result.mode == "Flash FP16 SDPA"
-            else "CUDA FP32 — SDPA padrão (referência)"
-        )
+        label = {
+            "Flash FP16 SDPA": "CUDA Flash Attention — SDPA FP16 somente na atenção",
+            "Efficient FP16 SDPA": (
+                "CUDA Memory-Efficient Attention — SDPA FP16 somente na atenção"
+            ),
+            "FP32 SDPA": "CUDA FP32 — SDPA padrão (referência)",
+        }.get(result.mode, f"CUDA — {result.mode}")
         lines.append(label)
         if result.error:
             lines.extend([f"  Não foi possível medir: {result.error}", ""])
