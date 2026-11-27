@@ -725,11 +725,11 @@ def format_cuda_attention_benchmark_report(
 ) -> str:
     """Report default FP32 SDPA against forced Flash SDPA with FP16 Q/K/V."""
     lines = [
-        "Comparação CUDA — Pocket TTS: SDPA FP32 × Flash Attention FP16",
-        "O Pocket TTS já usa scaled_dot_product_attention; este teste compara os caminhos de execução.",
-        "No modo Flash, somente Q/K/V entram em FP16 dentro da atenção; a saída volta para FP32.",
+        "Comparação CUDA — Pocket TTS: SDPA FP32 × backends fused FP16",
+        "O Pocket TTS já usa scaled_dot_product_attention; este teste compara backends internos do PyTorch.",
+        "Nos modos fused, somente Q/K/V entram em FP16 dentro da atenção; a saída volta para FP32.",
         "Pesos, projeções, FlowNet, Mimi e gerações normais permanecem em FP32.",
-        "O backend Flash é forçado, sem fallback silencioso para o kernel matemático.",
+        "Flash e Memory-Efficient são testados separadamente, sem fallback silencioso para o kernel matemático.",
         "Mesmo modelo, voz e texto. Duas gerações de aquecimento são descartadas.",
         "O cronômetro inclui geração e transferência do áudio para a RAM.",
         "",
@@ -792,33 +792,37 @@ def format_cuda_attention_benchmark_report(
         successful[result.mode] = (result, average)
 
     reference = successful.get("FP32 SDPA")
-    flash = successful.get("Flash FP16 SDPA")
-    if reference and flash and reference[1] > 0 and flash[1] > 0:
-        ratio = flash[1] / reference[1]
+    for fused_mode, label in (
+        ("Flash FP16 SDPA", "Flash FP16"),
+        ("Efficient FP16 SDPA", "Memory-Efficient FP16"),
+    ):
+        fused = successful.get(fused_mode)
+        if not reference or not fused or reference[1] <= 0 or fused[1] <= 0:
+            lines.append(
+                f"Comparação {label}: inconclusiva; modo de referência ou fused não terminou."
+            )
+            continue
+        ratio = fused[1] / reference[1]
         delta_percent = (ratio - 1.0) * 100.0
         if ratio < 0.98:
             lines.append(
-                f"Resultado: Flash FP16 foi {_format_number(1.0 / ratio, 2)}× mais rápido "
+                f"Resultado: {label} foi {_format_number(1.0 / ratio, 2)}× mais rápido "
                 f"({_format_number(-delta_percent, 1)}% menos tempo por geração)."
             )
         elif ratio > 1.02:
             lines.append(
-                f"Resultado: Flash FP16 ficou {_format_number(ratio, 2)}× mais lento "
+                f"Resultado: {label} ficou {_format_number(ratio, 2)}× mais lento "
                 f"({_format_number(delta_percent, 1)}% mais tempo por geração)."
             )
         else:
             lines.append(
-                "Resultado: SDPA FP32 e Flash FP16 tiveram desempenho semelhante."
+                f"Resultado: {label} e SDPA FP32 tiveram desempenho semelhante."
             )
-    else:
-        lines.append(
-            "Comparação inconclusiva: os dois modos precisam concluir as medições."
-        )
     lines.extend(
         [
             "O benchmark é experimental e não altera a precisão usada nas gerações normais.",
             "Pico/RMS verificam integridade numérica, mas não substituem a avaliação auditiva.",
-            "Se Flash não suportar a forma da atenção, o teste registra o erro e não usa fallback.",
+            "Cada backend fused é forçado individualmente; falhas incluem dados de elegibilidade e formato dos tensores.",
         ]
     )
     return "\n".join(lines)

@@ -116,23 +116,22 @@ class PocketTTSService:
             setattr(model, name, run_with_fp16_autocast)
 
     @staticmethod
-    def _apply_cuda_flash_fp16_attention(model, torch):
-        """Temporarily force Flash SDPA and cast only its Q/K/V tensors to FP16.
+    def _apply_cuda_fp16_attention_backend(model, torch, backend_name: str):
+        """Use one exclusive fused SDPA backend with FP16 Q/K/V for benchmarking only.
 
-        Pocket TTS 4.0.1 already calls F.scaled_dot_product_attention. This patch
-        keeps its projections, KV cache, output projection and residual path in
-        FP32, while the SDPA kernel itself receives FP16 Q/K/V. The SDPA output
-        is converted back to the query dtype before Pocket TTS continues.
+        Pocket TTS already calls scaled_dot_product_attention. Projections, KV cache,
+        output projection, residual path, FlowNet, Mimi and normal generation stay FP32.
         """
         try:
             from torch.nn.attention import SDPBackend, sdpa_kernel
             import importlib
+            import warnings
 
             attention_module = importlib.import_module("pocket_tts.modules.attention")
         except Exception as exc:  # noqa: BLE001
             raise RuntimeError(
-                "O Pocket TTS/PyTorch instalado não expõe o módulo de atenção SDPA "
-                "ou o seletor de backend Flash Attention."
+                "O Pocket TTS/PyTorch instalado não expõe o módulo SDPA ou o seletor "
+                "de backend fused de atenção."
             ) from exc
 
         method_names = ("_generate", "_autoregressive_generation")
@@ -141,7 +140,7 @@ class PocketTTSService:
         if missing:
             raise RuntimeError(
                 "A versão instalada do Pocket TTS não expõe os pontos internos "
-                "necessários para limitar o backend Flash à geração Flow LM: "
+                "necessários para limitar a atenção fused à geração Flow LM: "
                 + ", ".join(missing)
             )
 
@@ -149,45 +148,133 @@ class PocketTTSService:
         original_sdpa = getattr(functional, "scaled_dot_product_attention", None)
         if not callable(original_sdpa):
             raise RuntimeError(
-                "A atenção interna do Pocket TTS não usa a API "
-                "scaled_dot_product_attention esperada."
+                "A atenção interna do Pocket TTS não usa scaled_dot_product_attention."
             )
 
-        flash_backend = getattr(SDPBackend, "FLASH_ATTENTION", None)
-        if flash_backend is None:
+        backend = getattr(SDPBackend, backend_name, None)
+        if backend is None:
             raise RuntimeError(
-                "Esta versão do PyTorch não oferece SDPBackend.FLASH_ATTENTION."
+                f"Esta versão do PyTorch não oferece SDPBackend.{backend_name}."
             )
+        backend_label = (
+            "Flash Attention" if backend_name == "FLASH_ATTENTION"
+            else "Memory-Efficient Attention"
+        )
+        eligibility_checked = False
 
-        class _FlashAttentionFunctional:
+        def inspect_eligibility(query, key, value, mask, dropout_p, is_causal):
+            nonlocal eligibility_checked
+            if eligibility_checked:
+                return ""
+            eligibility_checked = True
+
+            cuda_api = getattr(getattr(torch, "backends", None), "cuda", None)
+            can_use_name = (
+                "can_use_flash_attention"
+                if backend_name == "FLASH_ATTENTION"
+                else "can_use_efficient_attention"
+            )
+            can_use = getattr(cuda_api, can_use_name, None)
+            params_type = getattr(cuda_api, "SDPAParams", None)
+            eligible = None
+            warning_messages = []
+            if callable(can_use) and callable(params_type):
+                try:
+                    try:
+                        params = params_type(
+                            query, key, value, mask, float(dropout_p),
+                            bool(is_causal), False
+                        )
+                    except TypeError:
+                        params = params_type(
+                            query, key, value, mask, float(dropout_p),
+                            bool(is_causal)
+                        )
+                    with warnings.catch_warnings(record=True) as caught:
+                        warnings.simplefilter("always")
+                        eligible = bool(can_use(params, debug=True))
+                    warning_messages = [str(item.message) for item in caught]
+                except Exception as exc:  # noqa: BLE001
+                    warning_messages.append(
+                        f"checagem de elegibilidade indisponível: {type(exc).__name__}: {exc}"
+                    )
+
+            flash_available = None
+            flash_check = getattr(cuda_api, "is_flash_attention_available", None)
+            if callable(flash_check):
+                try:
+                    flash_available = bool(flash_check())
+                except Exception:  # noqa: BLE001
+                    pass
+
+            version = getattr(torch, "__version__", "desconhecida")
+            cuda_build = getattr(getattr(torch, "version", None), "cuda", None)
+            device_name = "desconhecida"
+            capability = "desconhecida"
+            try:
+                device = query.device
+                device_name = torch.cuda.get_device_name(device)
+                cap = torch.cuda.get_device_capability(device)
+                capability = f"{cap[0]}.{cap[1]}"
+            except Exception:  # noqa: BLE001
+                pass
+
+            mask_info = (
+                "None" if mask is None
+                else f"shape={tuple(mask.shape)}, dtype={mask.dtype}, "
+                     f"stride={tuple(mask.stride())}"
+            )
+            details = (
+                f"backend={backend_name}; PyTorch={version}; CUDA build={cuda_build}; "
+                f"GPU={device_name}; compute capability={capability}; "
+                f"Flash compilado={flash_available}; elegível={eligible}; "
+                f"Q={tuple(query.shape)}/{query.dtype}/stride={tuple(query.stride())}; "
+                f"K={tuple(key.shape)}/{key.dtype}/stride={tuple(key.stride())}; "
+                f"V={tuple(value.shape)}/{value.dtype}/stride={tuple(value.stride())}; "
+                f"mask={mask_info}; dropout={dropout_p}; causal={is_causal}"
+            )
+            if warning_messages:
+                details += "; avisos: " + " | ".join(warning_messages)
+            return details
+
+        class _FusedAttentionFunctional:
             @staticmethod
             def scaled_dot_product_attention(query, key, value, *args, **kwargs):
                 if (
-                    getattr(getattr(query, "device", None), "type", None) == "cuda"
-                    and getattr(query, "dtype", None) == torch.float32
+                    getattr(getattr(query, "device", None), "type", None) != "cuda"
+                    or getattr(query, "dtype", None) != torch.float32
                 ):
-                    query_dtype = query.dtype
-                    output = original_sdpa(
-                        query.to(dtype=torch.float16),
-                        key.to(dtype=torch.float16),
-                        value.to(dtype=torch.float16),
-                        *args,
-                        **kwargs,
+                    return original_sdpa(query, key, value, *args, **kwargs)
+
+                query_dtype = query.dtype
+                query_half = query.to(dtype=torch.float16)
+                key_half = key.to(dtype=torch.float16)
+                value_half = value.to(dtype=torch.float16)
+                mask = kwargs.get("attn_mask")
+                if mask is None and args:
+                    mask = args[0]
+                dropout_p = kwargs.get("dropout_p", args[1] if len(args) > 1 else 0.0)
+                is_causal = kwargs.get("is_causal", args[2] if len(args) > 2 else False)
+                details = inspect_eligibility(
+                    query_half, key_half, value_half, mask, dropout_p, is_causal
+                )
+                if "elegível=False" in details:
+                    raise RuntimeError(
+                        f"{backend_label} não é elegível para esta chamada SDPA. {details}"
                     )
-                    return output.to(dtype=query_dtype)
-                return original_sdpa(query, key, value, *args, **kwargs)
+                try:
+                    with sdpa_kernel(backend):
+                        output = original_sdpa(
+                            query_half, key_half, value_half, *args, **kwargs
+                        )
+                except RuntimeError as exc:
+                    raise RuntimeError(
+                        f"{backend_label} falhou na chamada SDPA. {details}. "
+                        f"Erro original: {type(exc).__name__}: {exc}"
+                    ) from exc
+                return output.to(dtype=query_dtype)
 
-        def with_flash_backend(original):
-            def run_with_flash(*args, **kwargs):
-                with sdpa_kernel(flash_backend):
-                    return original(*args, **kwargs)
-
-            return run_with_flash
-
-        attention_module.F = _FlashAttentionFunctional()
-        for name, original in originals.items():
-            setattr(model, name, with_flash_backend(original))
-
+        attention_module.F = _FusedAttentionFunctional()
         restored = False
 
         def restore() -> None:
@@ -200,6 +287,20 @@ class PocketTTSService:
             restored = True
 
         return restore
+
+    @staticmethod
+    def _apply_cuda_flash_fp16_attention(model, torch):
+        """Compatibility wrapper for the Flash-only experimental benchmark."""
+        return PocketTTSService._apply_cuda_fp16_attention_backend(
+            model, torch, "FLASH_ATTENTION"
+        )
+
+    @staticmethod
+    def _apply_cuda_efficient_fp16_attention(model, torch):
+        """Use PyTorch's memory-efficient fused SDPA backend with FP16 Q/K/V."""
+        return PocketTTSService._apply_cuda_fp16_attention_backend(
+            model, torch, "EFFICIENT_ATTENTION"
+        )
 
     def _get_model(
         self,
@@ -1091,6 +1192,7 @@ class PocketTTSService:
             return [
                 TTSCudaAttentionBenchmarkResult(mode="FP32 SDPA", error=error),
                 TTSCudaAttentionBenchmarkResult(mode="Flash FP16 SDPA", error=error),
+                TTSCudaAttentionBenchmarkResult(mode="Efficient FP16 SDPA", error=error),
             ]
 
         self._configure_torch(torch, cpu_threads)
@@ -1100,8 +1202,13 @@ class PocketTTSService:
         )
         results: list[TTSCudaAttentionBenchmarkResult] = []
 
-        for use_flash in (False, True):
-            mode = "Flash FP16 SDPA" if use_flash else "FP32 SDPA"
+        benchmark_modes = (
+            ("FP32 SDPA", None),
+            ("Flash FP16 SDPA", "FLASH_ATTENTION"),
+            ("Efficient FP16 SDPA", "EFFICIENT_ATTENTION"),
+        )
+        for mode, backend_name in benchmark_modes:
+            use_fused_attention = backend_name is not None
             model = None
             voice_state = None
             restore_flash = None
@@ -1133,8 +1240,10 @@ class PocketTTSService:
                 torch.cuda.synchronize()
                 voice_prepare_seconds = time.perf_counter() - voice_started
 
-                if use_flash:
-                    restore_flash = self._apply_cuda_flash_fp16_attention(model, torch)
+                if use_fused_attention:
+                    restore_flash = self._apply_cuda_fp16_attention_backend(
+                        model, torch, backend_name
+                    )
 
                 def generate_once(seed_index: int) -> float:
                     seed = 1729 + int(seed_index)

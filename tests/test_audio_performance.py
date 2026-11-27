@@ -370,7 +370,7 @@ def test_cuda_attention_report_compares_default_sdpa_and_flash_fp16():
     )
 
     assert "scaled_dot_product_attention" in report
-    assert "Flash Attention FP16" in report
+    assert "Flash Attention" in report
     assert "somente Q/K/V" in report
     assert "Flash FP16 foi 1,25× mais rápido" in report
     assert "não altera a precisão usada nas gerações normais" in report
@@ -398,3 +398,36 @@ def test_cuda_attention_report_exposes_flash_backend_failures():
     assert "Flash kernel does not support this mask" in report
     assert "Comparação inconclusiva" in report
     assert "sem fallback silencioso" in report
+
+
+def test_cuda_attention_report_includes_memory_efficient_backend():
+    from joe.audio_performance import (
+        TTSCudaAttentionBenchmarkResult,
+        format_cuda_attention_benchmark_report,
+    )
+
+    report = format_cuda_attention_benchmark_report(
+        [
+            TTSCudaAttentionBenchmarkResult(
+                mode="FP32 SDPA",
+                generation_times=(5.0, 5.1, 4.9),
+                audio_durations_seconds=(6.0, 6.0, 6.0),
+                warmup_runs=2,
+            ),
+            TTSCudaAttentionBenchmarkResult(
+                mode="Flash FP16 SDPA",
+                error="Flash kernel not eligible",
+            ),
+            TTSCudaAttentionBenchmarkResult(
+                mode="Efficient FP16 SDPA",
+                generation_times=(4.0, 4.1, 3.9),
+                audio_durations_seconds=(6.0, 6.0, 6.0),
+                warmup_runs=2,
+            ),
+        ]
+    )
+
+    assert "Flash kernel not eligible" in report
+    assert "Memory-Efficient FP16" in report
+    assert "Flash e Memory-Efficient são testados separadamente" in report
+    assert "Memory-Efficient FP16 foi 1,25× mais rápido" in report

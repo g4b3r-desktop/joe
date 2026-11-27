@@ -2699,10 +2699,10 @@ class JoeWindow(QMainWindow):
             self._benchmark_tts_cuda_profile
         )
         self.tts_cuda_attention_benchmark_button = QPushButton(
-            "Comparar SDPA FP32 × Flash FP16"
+            "Comparar SDPA FP32 × fused FP16"
         )
         self.tts_cuda_attention_benchmark_button.setToolTip(
-            "Compara a atenção SDPA padrão FP32 com Flash Attention FP16 somente nos "
+            "Compara a atenção SDPA padrão FP32 com Flash e Memory-Efficient FP16 somente nos "
             "tensores Q/K/V. Projeções e restante do Flow LM continuam FP32; o modo "
             "experimental nunca é usado nas gerações normais."
         )
@@ -4781,12 +4781,12 @@ class JoeWindow(QMainWindow):
         def completed(report: object) -> None:
             QMessageBox.information(
                 self,
-                "Comparação CUDA — SDPA FP32 × Flash FP16",
+                "Comparação CUDA — SDPA FP32 × backends fused FP16",
                 str(report),
             )
 
         self._run_task(
-            f"Comparando SDPA FP32 com Flash FP16: 2 aquecimentos + "
+            f"Comparando SDPA FP32 com backends fused FP16: 2 aquecimentos + "
             f"{measured_runs} gerações por modo…",
             benchmark,
             completed,

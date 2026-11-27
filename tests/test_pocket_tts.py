@@ -1144,6 +1144,7 @@ def test_flash_fp16_attention_patch_casts_only_sdpa_and_restores(monkeypatch):
 
     class FakeSDPBackend:
         FLASH_ATTENTION = backend_marker
+        EFFICIENT_ATTENTION = object()
 
     fake_torch_attention.SDPBackend = FakeSDPBackend
     fake_torch_attention.sdpa_kernel = fake_sdpa_kernel
@@ -1152,6 +1153,10 @@ def test_flash_fp16_attention_patch_casts_only_sdpa_and_restores(monkeypatch):
         def __init__(self, dtype):
             self.dtype = dtype
             self.device = SimpleNamespace(type="cuda")
+            self.shape = (1, 2, 3, 4)
+
+        def stride(self):
+            return (24, 12, 4, 1)
 
         def to(self, *, dtype):
             return FakeTensor(dtype)
@@ -1393,6 +1398,7 @@ def test_cuda_attention_benchmark_runs_reference_and_flash_and_restores(monkeypa
     assert [result.mode for result in results] == [
         "FP32 SDPA",
         "Flash FP16 SDPA",
+        "Efficient FP16 SDPA",
     ]
     assert all(not result.error for result in results)
     assert all(len(result.generation_times) == 3 for result in results)
@@ -1401,13 +1407,13 @@ def test_cuda_attention_benchmark_runs_reference_and_flash_and_restores(monkeypa
     assert all(result.audio_rms_levels == (0.0, 0.0, 0.0) for result in results)
     assert all(result.peak_vram_mb == 256 for result in results)
     assert all(result.peak_vram_reserved_mb == 384 for result in results)
-    assert [model.generation_calls for model in models] == [5, 5]
+    assert [model.generation_calls for model in models] == [5, 5, 5]
     assert sdpa_dtypes[:5] == [("float32",) * 3] * 5
-    assert sdpa_dtypes[5:] == [("float16",) * 3] * 5
-    assert len(entered_backends) == 10
+    assert sdpa_dtypes[5:] == [("float16",) * 3] * 10
+    assert len(entered_backends) == 20
     assert seeds == [
         (device, 1729 + index)
-        for _mode in range(2)
+        for _mode in range(3)
         for index in range(5)
         for device in ("cpu", "cuda")
     ]
