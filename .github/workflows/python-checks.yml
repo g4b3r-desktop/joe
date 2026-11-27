@@ -16,6 +16,7 @@ on:
       - feature/clipboard-dialog-redesign
       - feature/clipboard-dialog-appearance-settings
       - feature/pocket-tts-generation-controls
+      - feature/pocket-tts-flash-attention-benchmark
       - fix/colab-safetensors-voice-state
       - feat/colab-drive-model-autosync
       - fix/colab-tts-safetensors-diagnostics
@@ -29,6 +30,7 @@ on:
   pull_request:
     branches:
       - main
+      - feature/pocket-tts-generation-controls
 
 jobs:
   tests:

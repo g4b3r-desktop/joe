@@ -336,3 +336,113 @@ def test_cuda_profile_report_handles_failed_diagnostic():
     assert "missing internal Pocket TTS hooks" in report
     assert "Diagnóstico inconclusivo" in report
 
+
+
+def test_cuda_attention_report_compares_default_sdpa_and_flash_fp16():
+    from joe.audio_performance import (
+        TTSCudaAttentionBenchmarkResult,
+        format_cuda_attention_benchmark_report,
+    )
+
+    report = format_cuda_attention_benchmark_report(
+        [
+            TTSCudaAttentionBenchmarkResult(
+                mode="FP32 SDPA",
+                generation_times=(5.0, 5.1, 4.9),
+                audio_durations_seconds=(6.0, 6.0, 6.0),
+                audio_peak_amplitudes=(0.50, 0.50, 0.50),
+                audio_rms_levels=(0.10, 0.10, 0.10),
+                warmup_runs=2,
+                peak_vram_mb=1500,
+                peak_vram_reserved_mb=1700,
+            ),
+            TTSCudaAttentionBenchmarkResult(
+                mode="Flash FP16 SDPA",
+                generation_times=(4.0, 4.1, 3.9),
+                audio_durations_seconds=(6.0, 6.0, 6.0),
+                audio_peak_amplitudes=(0.49, 0.49, 0.49),
+                audio_rms_levels=(0.099, 0.099, 0.099),
+                warmup_runs=2,
+                peak_vram_mb=1450,
+                peak_vram_reserved_mb=1650,
+            ),
+        ]
+    )
+
+    assert "scaled_dot_product_attention" in report
+    assert "Flash Attention" in report
+    assert "somente Q/K/V" in report
+    assert "Flash FP16 foi 1,25× mais rápido" in report
+    assert "não altera a precisão usada nas gerações normais" in report
+
+
+def test_cuda_attention_report_exposes_flash_backend_failures():
+    from joe.audio_performance import (
+        TTSCudaAttentionBenchmarkResult,
+        format_cuda_attention_benchmark_report,
+    )
+
+    report = format_cuda_attention_benchmark_report(
+        [
+            TTSCudaAttentionBenchmarkResult(
+                mode="FP32 SDPA",
+                error="baseline failed",
+            ),
+            TTSCudaAttentionBenchmarkResult(
+                mode="Flash FP16 SDPA",
+                error="Flash kernel does not support this mask",
+            ),
+            TTSCudaAttentionBenchmarkResult(
+                mode="cuDNN FP16 SDPA",
+                error="cuDNN rejected the boolean attention mask",
+            ),
+        ]
+    )
+
+    assert "Flash kernel does not support this mask" in report
+    assert "Comparação Flash FP16: inconclusiva" in report
+    assert "cuDNN rejected the boolean attention mask" in report
+    assert "Comparação cuDNN FP16: inconclusiva" in report
+    assert "sem fallback silencioso" in report
+
+
+def test_cuda_attention_report_includes_memory_efficient_backend():
+    from joe.audio_performance import (
+        TTSCudaAttentionBenchmarkResult,
+        format_cuda_attention_benchmark_report,
+    )
+
+    report = format_cuda_attention_benchmark_report(
+        [
+            TTSCudaAttentionBenchmarkResult(
+                mode="FP32 SDPA",
+                generation_times=(5.0, 5.1, 4.9),
+                audio_durations_seconds=(6.0, 6.0, 6.0),
+                warmup_runs=2,
+            ),
+            TTSCudaAttentionBenchmarkResult(
+                mode="Flash FP16 SDPA",
+                error="Flash kernel not eligible",
+            ),
+            TTSCudaAttentionBenchmarkResult(
+                mode="Efficient FP16 SDPA",
+                generation_times=(4.0, 4.1, 3.9),
+                audio_durations_seconds=(6.0, 6.0, 6.0),
+                warmup_runs=2,
+            ),
+            TTSCudaAttentionBenchmarkResult(
+                mode="cuDNN FP16 SDPA",
+                generation_times=(3.0, 3.1, 2.9),
+                audio_durations_seconds=(6.0, 6.0, 6.0),
+                warmup_runs=2,
+            ),
+        ]
+    )
+
+    assert "Flash kernel not eligible" in report
+    assert "Memory-Efficient FP16" in report
+    assert "Flash, Memory-Efficient e cuDNN são testados separadamente" in report
+    assert "Memory-Efficient FP16 foi 1,25× mais rápido" in report
+    assert "cuDNN Attention — SDPA FP16 somente na atenção" in report
+    assert "cuDNN FP16 foi 1,67× mais rápido" in report
+    assert "A máscara original da atenção é preservada" in report
