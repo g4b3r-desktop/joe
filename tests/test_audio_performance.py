@@ -286,6 +286,23 @@ def test_cuda_profile_report_separates_flow_lm_mimi_and_queue_wait():
                 flow_autoregressive_wall_seconds=(2.0, 2.1, 2.0),
                 flow_autoregressive_gpu_seconds=(1.5, 1.6, 1.5),
                 flow_step_counts=(30, 31, 30),
+                flow_ar_loop_wall_seconds=(2.4, 2.5, 2.4),
+                flow_ar_control_wall_seconds=(0.4, 0.4, 0.4),
+                flow_component_wall_seconds={
+                    "attention_qkv_projection": (0.03, 0.03, 0.03),
+                    "kv_cache_write": (0.02, 0.02, 0.02),
+                    "attention_sdpa": (0.06, 0.06, 0.06),
+                },
+                flow_component_gpu_seconds={
+                    "attention_qkv_projection": (0.02, 0.02, 0.02),
+                    "kv_cache_write": (0.01, 0.01, 0.01),
+                    "attention_sdpa": (0.05, 0.05, 0.05),
+                },
+                flow_component_calls={
+                    "attention_qkv_projection": (30, 31, 30),
+                    "kv_cache_write": (30, 31, 30),
+                    "attention_sdpa": (30, 31, 30),
+                },
                 flow_attention_wall_seconds=(0.2, 0.2, 0.2),
                 flow_attention_gpu_seconds=(0.15, 0.16, 0.15),
                 flow_attention_calls=(30, 31, 30),
@@ -315,6 +332,12 @@ def test_cuda_profile_report_separates_flow_lm_mimi_and_queue_wait():
     assert "Atenção (self-attention) — GPU" in report
     assert "FFN (MLP do Transformer) — GPU" in report
     assert "FlowNet (projeção do latente) — GPU" in report
+    assert "FLOW LM — MICROPERFIL AUTORREGRESSIVO" in report
+    assert "Controle Python + verificações EOS/fila" in report
+    assert "Projeção Q/K/V" in report
+    assert "KV cache — gravação K/V" in report
+    assert "SDPA (kernel de atenção)" in report
+    assert "CPU/lançamento/sincronização" in report
     assert "MIMI DECODER" in report
     assert "decode_from_latent — GPU" in report
     assert "Worker Mimi total (inclui espera)" in report
