@@ -156,10 +156,12 @@ class PocketTTSService:
             raise RuntimeError(
                 f"Esta versão do PyTorch não oferece SDPBackend.{backend_name}."
             )
-        backend_label = (
-            "Flash Attention" if backend_name == "FLASH_ATTENTION"
-            else "Memory-Efficient Attention"
-        )
+        backend_labels = {
+            "FLASH_ATTENTION": "Flash Attention",
+            "EFFICIENT_ATTENTION": "Memory-Efficient Attention",
+            "CUDNN_ATTENTION": "cuDNN Attention",
+        }
+        backend_label = backend_labels.get(backend_name, f"SDPA {backend_name}")
         eligibility_checked = False
 
         def inspect_eligibility(query, key, value, mask, dropout_p, is_causal):
@@ -169,11 +171,12 @@ class PocketTTSService:
             eligibility_checked = True
 
             cuda_api = getattr(getattr(torch, "backends", None), "cuda", None)
-            can_use_name = (
-                "can_use_flash_attention"
-                if backend_name == "FLASH_ATTENTION"
-                else "can_use_efficient_attention"
-            )
+            can_use_names = {
+                "FLASH_ATTENTION": "can_use_flash_attention",
+                "EFFICIENT_ATTENTION": "can_use_efficient_attention",
+                "CUDNN_ATTENTION": "can_use_cudnn_attention",
+            }
+            can_use_name = can_use_names.get(backend_name, "")
             can_use = getattr(cuda_api, can_use_name, None)
             params_type = getattr(cuda_api, "SDPAParams", None)
             eligible = None
@@ -207,6 +210,29 @@ class PocketTTSService:
                 except Exception:  # noqa: BLE001
                     pass
 
+            cudnn_api = getattr(getattr(torch, "backends", None), "cudnn", None)
+            cudnn_available = None
+            cudnn_is_available = getattr(cudnn_api, "is_available", None)
+            if callable(cudnn_is_available):
+                try:
+                    cudnn_available = bool(cudnn_is_available())
+                except Exception:  # noqa: BLE001
+                    pass
+            cudnn_version = None
+            cudnn_version_fn = getattr(cudnn_api, "version", None)
+            if callable(cudnn_version_fn):
+                try:
+                    cudnn_version = cudnn_version_fn()
+                except Exception:  # noqa: BLE001
+                    pass
+            cudnn_enabled = None
+            cudnn_enabled_fn = getattr(cuda_api, "cudnn_sdp_enabled", None)
+            if callable(cudnn_enabled_fn):
+                try:
+                    cudnn_enabled = bool(cudnn_enabled_fn())
+                except Exception:  # noqa: BLE001
+                    pass
+
             version = getattr(torch, "__version__", "desconhecida")
             cuda_build = getattr(getattr(torch, "version", None), "cuda", None)
             device_name = "desconhecida"
@@ -227,7 +253,9 @@ class PocketTTSService:
             details = (
                 f"backend={backend_name}; PyTorch={version}; CUDA build={cuda_build}; "
                 f"GPU={device_name}; compute capability={capability}; "
-                f"Flash compilado={flash_available}; elegível={eligible}; "
+                f"Flash compilado={flash_available}; "
+                f"cuDNN disponível={cudnn_available}; cuDNN habilitado={cudnn_enabled}; "
+                f"cuDNN versão={cudnn_version}; elegível={eligible}; "
                 f"Q={tuple(query.shape)}/{query.dtype}/stride={tuple(query.stride())}; "
                 f"K={tuple(key.shape)}/{key.dtype}/stride={tuple(key.stride())}; "
                 f"V={tuple(value.shape)}/{value.dtype}/stride={tuple(value.stride())}; "
@@ -300,6 +328,13 @@ class PocketTTSService:
         """Use PyTorch's memory-efficient fused SDPA backend with FP16 Q/K/V."""
         return PocketTTSService._apply_cuda_fp16_attention_backend(
             model, torch, "EFFICIENT_ATTENTION"
+        )
+
+    @staticmethod
+    def _apply_cuda_cudnn_fp16_attention(model, torch):
+        """Use PyTorch's cuDNN fused SDPA backend with FP16 Q/K/V."""
+        return PocketTTSService._apply_cuda_fp16_attention_backend(
+            model, torch, "CUDNN_ATTENTION"
         )
 
     def _get_model(
@@ -1166,7 +1201,7 @@ class PocketTTSService:
         warmup_runs: int = 2,
         measured_runs: int = 7,
     ) -> list[TTSCudaAttentionBenchmarkResult]:
-        """Compare default FP32 SDPA with forced Flash SDPA using FP16 Q/K/V only."""
+        """Compare FP32 SDPA with forced Flash, efficient and cuDNN FP16 backends."""
         if not text.strip():
             raise ValueError("Informe um texto para comparar os backends de atenção CUDA.")
         warmup_count = max(1, int(warmup_runs))
@@ -1193,6 +1228,7 @@ class PocketTTSService:
                 TTSCudaAttentionBenchmarkResult(mode="FP32 SDPA", error=error),
                 TTSCudaAttentionBenchmarkResult(mode="Flash FP16 SDPA", error=error),
                 TTSCudaAttentionBenchmarkResult(mode="Efficient FP16 SDPA", error=error),
+                TTSCudaAttentionBenchmarkResult(mode="cuDNN FP16 SDPA", error=error),
             ]
 
         self._configure_torch(torch, cpu_threads)
@@ -1206,6 +1242,7 @@ class PocketTTSService:
             ("FP32 SDPA", None),
             ("Flash FP16 SDPA", "FLASH_ATTENTION"),
             ("Efficient FP16 SDPA", "EFFICIENT_ATTENTION"),
+            ("cuDNN FP16 SDPA", "CUDNN_ATTENTION"),
         )
         for mode, backend_name in benchmark_modes:
             use_fused_attention = backend_name is not None
