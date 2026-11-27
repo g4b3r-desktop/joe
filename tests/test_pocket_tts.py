@@ -1251,3 +1251,164 @@ def test_flash_fp16_attention_patch_refuses_missing_worker_methods(monkeypatch):
         PocketTTSService._apply_cuda_flash_fp16_attention(
             UnsupportedModel(), fake_torch
         )
+
+
+def test_cuda_attention_benchmark_runs_reference_and_flash_and_restores(monkeypatch):
+    import sys
+    from contextlib import contextmanager
+    from types import ModuleType, SimpleNamespace
+
+    from joe.services.pocket_tts import PocketTTSService
+
+    backend_marker = object()
+    entered_backends = []
+    sdpa_dtypes = []
+    seeds = []
+    generated = []
+    models = []
+
+    @contextmanager
+    def fake_sdpa_kernel(backend):
+        entered_backends.append(backend)
+        yield
+
+    class FakeSDPBackend:
+        FLASH_ATTENTION = backend_marker
+
+    class FakeTensor:
+        def __init__(self, dtype):
+            self.dtype = dtype
+            self.device = SimpleNamespace(type="cuda")
+
+        def to(self, *, dtype):
+            return FakeTensor(dtype)
+
+    def original_sdpa(query, key, value, *_args, **_kwargs):
+        sdpa_dtypes.append((query.dtype, key.dtype, value.dtype))
+        return FakeTensor(query.dtype)
+
+    original_functional = SimpleNamespace(
+        scaled_dot_product_attention=original_sdpa
+    )
+    attention_module = ModuleType("pocket_tts.modules.attention")
+    attention_module.F = original_functional
+
+    fake_torch = ModuleType("torch")
+    fake_torch.__path__ = []
+    fake_torch.float32 = "float32"
+    fake_torch.float16 = "float16"
+    fake_torch.set_num_threads = lambda _threads: None
+    fake_torch.manual_seed = lambda seed: seeds.append(("cpu", seed))
+    fake_torch.cuda = SimpleNamespace(
+        is_available=lambda: True,
+        empty_cache=lambda: None,
+        reset_peak_memory_stats=lambda: None,
+        synchronize=lambda: None,
+        manual_seed_all=lambda seed: seeds.append(("cuda", seed)),
+        max_memory_allocated=lambda: 256 * 1024 * 1024,
+        max_memory_reserved=lambda: 384 * 1024 * 1024,
+    )
+
+    fake_torch_nn = ModuleType("torch.nn")
+    fake_torch_nn.__path__ = []
+    fake_torch_attention = ModuleType("torch.nn.attention")
+    fake_torch_attention.SDPBackend = FakeSDPBackend
+    fake_torch_attention.sdpa_kernel = fake_sdpa_kernel
+
+    pocket_tts = ModuleType("pocket_tts")
+    pocket_tts.__path__ = []
+    pocket_modules = ModuleType("pocket_tts.modules")
+    pocket_modules.__path__ = []
+
+    class FakeAudio:
+        def detach(self):
+            return self
+
+        def cpu(self):
+            return self
+
+        def numpy(self):
+            return np.zeros((1, 12_000), dtype=np.float32)
+
+    class FakeModel:
+        sample_rate = 24_000
+
+        def __init__(self):
+            self.generation_calls = 0
+            models.append(self)
+
+        def to(self, device):
+            assert device == "cuda"
+            return self
+
+        def get_state_for_audio_prompt(self, _voice):
+            return object()
+
+        def _generate(self):
+            return self._autoregressive_generation()
+
+        def _autoregressive_generation(self):
+            tensor = FakeTensor("float32")
+            return attention_module.F.scaled_dot_product_attention(
+                tensor, tensor, tensor, dropout_p=0.0
+            )
+
+        def generate_audio(self, _state, _text, *, copy_state=True):
+            assert copy_state is True
+            self.generation_calls += 1
+            self._generate()
+            generated.append(self)
+            return FakeAudio()
+
+    class FakeTTSModel:
+        @staticmethod
+        def load_model(**kwargs):
+            assert kwargs["quantize"] is False
+            return FakeModel()
+
+    pocket_tts.TTSModel = FakeTTSModel
+
+    for name, module in (
+        ("torch", fake_torch),
+        ("torch.nn", fake_torch_nn),
+        ("torch.nn.attention", fake_torch_attention),
+        ("pocket_tts", pocket_tts),
+        ("pocket_tts.modules", pocket_modules),
+        ("pocket_tts.modules.attention", attention_module),
+    ):
+        monkeypatch.setitem(sys.modules, name, module)
+
+    monkeypatch.setattr(
+        "joe.services.pocket_tts.configure_model_cache", lambda: None
+    )
+
+    results = PocketTTSService().benchmark_cuda_attention(
+        "Texto idêntico nos dois modos.",
+        "portuguese",
+        model_variant="portuguese",
+        warmup_runs=2,
+        measured_runs=3,
+    )
+
+    assert [result.mode for result in results] == [
+        "FP32 SDPA",
+        "Flash FP16 SDPA",
+    ]
+    assert all(not result.error for result in results)
+    assert all(len(result.generation_times) == 3 for result in results)
+    assert all(result.audio_durations_seconds == (0.5, 0.5, 0.5) for result in results)
+    assert all(result.audio_peak_amplitudes == (0.0, 0.0, 0.0) for result in results)
+    assert all(result.audio_rms_levels == (0.0, 0.0, 0.0) for result in results)
+    assert all(result.peak_vram_mb == 256 for result in results)
+    assert all(result.peak_vram_reserved_mb == 384 for result in results)
+    assert [model.generation_calls for model in models] == [5, 5]
+    assert sdpa_dtypes[:5] == [("float32",) * 3] * 5
+    assert sdpa_dtypes[5:] == [("float16",) * 3] * 5
+    assert len(entered_backends) == 10
+    assert seeds == [
+        (device, 1729 + index)
+        for _mode in range(2)
+        for index in range(5)
+        for device in ("cpu", "cuda")
+    ]
+    assert attention_module.F is original_functional
