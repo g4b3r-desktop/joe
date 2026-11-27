@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -7,6 +8,7 @@ import pytest
 
 from scripts.benchmark_cuda_rope_scaling import (
     DEFAULT_MODEL_CACHE,
+    _configure_hf_token,
     measured_audio_duration,
     normalize_text,
     reduce_text_to_duration,
@@ -71,3 +73,40 @@ def test_default_model_cache_points_to_the_user_models_directory():
         "/mnt/46d6d246-1a5f-4388-b273-2ace8e54f409/"
         ".llms/.AUDIO/joe/.models/huggingface"
     )
+
+
+
+def test_hf_token_prefers_existing_environment_variable(tmp_path, monkeypatch):
+    monkeypatch.setenv("HF_TOKEN", "token-from-env")
+    cache_token = tmp_path / "token"
+    cache_token.write_text("token-from-file", encoding="utf-8")
+
+    source = _configure_hf_token(tmp_path)
+
+    assert source == "variável de ambiente"
+    assert os.environ["HF_TOKEN"] == "token-from-env"
+
+
+def test_hf_token_loads_from_custom_model_cache_without_printing(tmp_path, monkeypatch):
+    monkeypatch.delenv("HF_TOKEN", raising=False)
+    token_file = tmp_path / "token"
+    token_file.write_text("hf_example_secret_value", encoding="utf-8")
+
+    source = _configure_hf_token(tmp_path)
+
+    assert source == "cache de modelos"
+    assert os.environ["HF_TOKEN"] == "hf_example_secret_value"
+
+
+def test_hf_token_falls_back_to_default_user_cache(tmp_path, monkeypatch):
+    monkeypatch.delenv("HF_TOKEN", raising=False)
+    model_cache = tmp_path / "models"
+    model_cache.mkdir()
+    user_token = tmp_path / "user-cache" / "token"
+    user_token.parent.mkdir()
+    user_token.write_text("hf_user_cache_secret", encoding="utf-8")
+
+    source = _configure_hf_token(model_cache, user_token_file=user_token)
+
+    assert source == "cache padrão do usuário"
+    assert os.environ["HF_TOKEN"] == "hf_user_cache_secret"
