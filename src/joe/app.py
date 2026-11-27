@@ -1800,6 +1800,18 @@ class JoeWindow(QMainWindow):
         self.colab_tts_cpu_threads.valueChanged.connect(self._save_colab_tts_settings)
         self.colab_tts_sampler_steps.valueChanged.connect(self._save_colab_tts_settings)
 
+        self.colab_tts_quantize_int8 = QCheckBox(
+            "Ativar quantização INT8 no Pocket TTS do Colab"
+        )
+        self.colab_tts_quantize_int8.setChecked(
+            self.app_settings.value("colab_tts_quantize_int8", False, type=bool)
+        )
+        self.colab_tts_quantize_int8.setToolTip(
+            "Desmarcada por padrão. Quando marcada, ativa INT8 nas camadas de atenção e FFN. "
+            "Na GPU exige TorchAO; desmarcada, a inferência atual sem quantização é preservada."
+        )
+        self.colab_tts_quantize_int8.toggled.connect(self._save_colab_tts_settings)
+
         colab_tts_form = QFormLayout()
         colab_tts_form.setFieldGrowthPolicy(
             QFormLayout.FieldGrowthPolicy.FieldsStayAtSizeHint
@@ -1811,8 +1823,10 @@ class JoeWindow(QMainWindow):
         colab_tts_form.setVerticalSpacing(10)
         colab_tts_form.addRow("Threads CPU:", self.colab_tts_cpu_threads)
         colab_tts_form.addRow("Qualidade (passos):", self.colab_tts_sampler_steps)
+        colab_tts_form.addRow("Quantização INT8:", self.colab_tts_quantize_int8)
         self.colab_tts_settings_status = QLabel(
-            "Padrão: 2 threads CPU e qualidade 4. Ajuste aqui e aplique no runtime conectado."
+            "Padrão: 2 threads CPU, qualidade 4 e quantização desativada. "
+            "Aplique no runtime conectado para ativar."
         )
         self.colab_tts_settings_status.setObjectName("muted")
         self.colab_tts_settings_status.setWordWrap(True)
@@ -1829,9 +1843,9 @@ class JoeWindow(QMainWindow):
         colab_tts_layout.addLayout(colab_tts_form)
         colab_tts_note = QLabel(
             "Threads CPU é limitado automaticamente à quantidade disponível no Colab. "
-            "Ao alterar a qualidade, o modelo é removido apenas do cache em memória e "
-            "recarregado na próxima síntese; os modelos e as vozes salvos no Google Drive "
-            "não são modificados."
+            "Mudanças de qualidade ou INT8 removem apenas o modelo do cache em memória "
+            "e recarregam na próxima síntese; os modelos e as vozes no Google Drive não "
+            "são modificados. Com INT8 desmarcada, o modelo segue sem quantização."
         )
         colab_tts_note.setObjectName("muted")
         colab_tts_note.setWordWrap(True)
@@ -2061,6 +2075,10 @@ class JoeWindow(QMainWindow):
             self.app_settings.setValue(
                 "colab_tts_sampler_steps", int(self.colab_tts_sampler_steps.value())
             )
+        if hasattr(self, "colab_tts_quantize_int8"):
+            self.app_settings.setValue(
+                "colab_tts_quantize_int8", bool(self.colab_tts_quantize_int8.isChecked())
+            )
         if hasattr(self, "colab_tts_settings_status"):
             self.colab_tts_settings_status.setText(
                 "Configurações salvas localmente. Clique em 'Aplicar configurações no Colab' "
@@ -2081,13 +2099,16 @@ class JoeWindow(QMainWindow):
 
         cpu_threads = int(self.colab_tts_cpu_threads.value())
         sampler_steps = int(self.colab_tts_sampler_steps.value())
+        quantize_int8 = bool(self.colab_tts_quantize_int8.isChecked())
         self._save_colab_tts_settings()
         self.colab_tts_apply_button.setEnabled(False)
         self.colab_tts_settings_status.setText(
             "Enviando as configurações para o Google Colab…"
         )
         worker = FunctionWorker(
-            lambda: client.update_tts_settings(cpu_threads, sampler_steps)
+            lambda: client.update_tts_settings(
+                cpu_threads, sampler_steps, quantize_int8=quantize_int8
+            )
         )
         self.colab_tts_settings_worker = worker
         worker.signals.finished.connect(self._colab_tts_settings_applied)
@@ -2104,9 +2125,14 @@ class JoeWindow(QMainWindow):
         sampler_steps = data.get(
             "tts_sampler_decode_steps", self.colab_tts_sampler_steps.value()
         )
+        quantization_label = (
+            "INT8 solicitada" if data.get("tts_quantize_int8_requested")
+            else "sem quantização"
+        )
         message = (
             f"Aplicado no Colab: {applied_threads} thread(s) CPU "
-            f"(de {available_threads} disponível(is)) e qualidade {sampler_steps}."
+            f"(de {available_threads} disponível(is)), qualidade {sampler_steps} "
+            f"e {quantization_label}."
         )
         if requested_threads != applied_threads:
             message += (
@@ -2205,6 +2231,14 @@ class JoeWindow(QMainWindow):
         tts_threads = data.get("tts_cpu_threads", "—")
         tts_available_threads = data.get("tts_available_cpu_threads", "—")
         tts_steps = data.get("tts_sampler_decode_steps", "—")
+        tts_quant_requested = bool(data.get("tts_quantize_int8_requested", False))
+        tts_quant_active = bool(data.get("tts_quantize_int8_active", False))
+        tts_quant_devices = data.get("tts_quantization_status") or {}
+        tts_quant_summary = ", ".join(
+            f"{variant}: {details.get('backend', '—')} em {details.get('device', '—')}"
+            for variant, details in tts_quant_devices.items()
+            if isinstance(details, dict) and details.get("active")
+        )
         last_tts = data.get("last_tts_generation") or {}
         last_tts_status = (
             f"Última síntese: {last_tts.get('device')} | "
@@ -2240,6 +2274,8 @@ class JoeWindow(QMainWindow):
             f"GPU disponível: {gpu}\n"
             f"Pocket TTS: versão {pocket_tts_version} | {tts_device} (modo {tts_mode}) | "
             f"threads CPU: {tts_threads}/{tts_available_threads} | qualidade configurada: {tts_steps}\n"
+            f"Quantização INT8: {'solicitada' if tts_quant_requested else 'desativada'} "
+            f"({'ativa: ' + tts_quant_summary if tts_quant_active else 'ainda não aplicada nesta sessão'})\n"
             f"Modelos carregados: {loaded_model_summary}\n"
             f"{last_tts_status}\n"
             f"Parakeet carregado: {'sim' if data.get('asr_loaded') else 'ainda não'}\n"
