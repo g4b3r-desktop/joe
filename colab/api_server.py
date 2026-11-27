@@ -291,6 +291,7 @@ def _get_tts_model(
         _tts_models.clear()
         _tts_model_settings.clear()
         _tts_loaded_devices.clear()
+        _tts_quantization_status.clear()
         model = None
     if model is None:
         # The worker is sequential; retain only the selected variant in memory.
@@ -298,6 +299,7 @@ def _get_tts_model(
         _tts_models.clear()
         _tts_loaded_devices.clear()
         _tts_model_settings.clear()
+        _tts_quantization_status.clear()
 
         model_load_options: dict[str, Any] = {}
         if temperature is not None:
