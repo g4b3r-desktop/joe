@@ -977,15 +977,15 @@ def test_cuda_profile_measures_flow_mimi_and_latent_queue_on_worker_thread(monke
             return None
 
     class FakeSelfAttention:
-        def __init__(self):
+        def __init__(self, shared_rope):
             self.in_proj = FakeComponent()
-            self.rope = FakeComponent()
+            self.rope = shared_rope
             self.out_proj = FakeComponent()
             self._cache_backend = FakeCacheBackend()
 
     class FakeTransformerLayer:
-        def __init__(self):
-            self.self_attn = FakeSelfAttention()
+        def __init__(self, shared_rope):
+            self.self_attn = FakeSelfAttention(shared_rope)
             self.norm1 = FakeComponent()
             self.norm2 = FakeComponent()
             self.linear1 = FakeComponent()
@@ -1025,8 +1025,17 @@ def test_cuda_profile_measures_flow_mimi_and_latent_queue_on_worker_thread(monke
 
         def __init__(self):
             self.mimi = FakeMimi()
+            # Same RotaryEmbedding object is shared by all transformer layers,
+            # matching Pocket TTS 4.0.1's StreamingTransformer construction.
+            shared_rope = FakeComponent()
+            self.shared_rope_original_forward = shared_rope.forward
             self.flow_lm = SimpleNamespace(
-                transformer=SimpleNamespace(layers=[FakeTransformerLayer()]),
+                transformer=SimpleNamespace(
+                    layers=[
+                        FakeTransformerLayer(shared_rope),
+                        FakeTransformerLayer(shared_rope),
+                    ]
+                ),
                 flow_net=FakeFlowNet(),
                 input_linear=FakeComponent(),
                 out_norm=FakeComponent(),
@@ -1046,9 +1055,9 @@ def test_cuda_profile_measures_flow_mimi_and_latent_queue_on_worker_thread(monke
             self.flow_lm.out_norm.forward()
             self.flow_lm.out_eos.forward()
             if kwargs.get("text_tokens") is None:
-                layer = self.flow_lm.transformer.layers[0]
-                layer._sa_block()
-                layer._ff_block()
+                for layer in self.flow_lm.transformer.layers:
+                    layer._sa_block()
+                    layer._ff_block()
                 self.flow_lm.flow_net.forward()
             return None
 
@@ -1122,20 +1131,23 @@ def test_cuda_profile_measures_flow_mimi_and_latent_queue_on_worker_thread(monke
     assert result.flow_step_counts == (2, 2, 2)
     assert all(value > 0 for value in result.flow_ar_loop_wall_seconds)
     assert all(value >= 0 for value in result.flow_ar_control_wall_seconds)
-    assert result.flow_component_calls["attention_qkv_projection"] == (2, 2, 2)
-    assert result.flow_component_calls["attention_rope"] == (2, 2, 2)
-    assert result.flow_component_calls["kv_cache_write"] == (2, 2, 2)
-    assert result.flow_component_calls["attention_sdpa"] == (2, 2, 2)
-    assert result.flow_component_calls["ffn_linear1"] == (2, 2, 2)
+    # Two Transformer layers run per autoregressive step, but the shared RoPE
+    # module is instrumented once: exactly one event per layer call, not 2x.
+    assert result.flow_component_calls["attention_qkv_projection"] == (4, 4, 4)
+    assert result.flow_component_calls["attention_rope"] == (4, 4, 4)
+    assert result.flow_component_calls["kv_cache_write"] == (4, 4, 4)
+    assert result.flow_component_calls["attention_sdpa"] == (4, 4, 4)
+    assert result.flow_component_calls["ffn_linear1"] == (4, 4, 4)
     assert result.flow_component_calls["flow_net_residual_blocks"] == (2, 2, 2)
-    assert result.flow_component_gpu_seconds["attention_sdpa"] == (0.002, 0.002, 0.002)
+    assert result.flow_component_gpu_seconds["attention_rope"] == (0.004, 0.004, 0.004)
+    assert result.flow_component_gpu_seconds["attention_sdpa"] == (0.004, 0.004, 0.004)
     assert result.flow_prefill_gpu_seconds == (0.001, 0.001, 0.001)
     assert result.flow_autoregressive_gpu_seconds == (0.002, 0.002, 0.002)
-    assert result.flow_attention_gpu_seconds == (0.002, 0.002, 0.002)
-    assert result.flow_ffn_gpu_seconds == (0.002, 0.002, 0.002)
+    assert result.flow_attention_gpu_seconds == (0.004, 0.004, 0.004)
+    assert result.flow_ffn_gpu_seconds == (0.004, 0.004, 0.004)
     assert result.flow_net_gpu_seconds == (0.002, 0.002, 0.002)
-    assert result.flow_attention_calls == (2, 2, 2)
-    assert result.flow_ffn_calls == (2, 2, 2)
+    assert result.flow_attention_calls == (4, 4, 4)
+    assert result.flow_ffn_calls == (4, 4, 4)
     assert result.flow_net_calls == (2, 2, 2)
     assert result.mimi_decode_calls == (1, 1, 1)
     assert result.mimi_decode_gpu_seconds == (0.001, 0.001, 0.001)
@@ -1143,6 +1155,8 @@ def test_cuda_profile_measures_flow_mimi_and_latent_queue_on_worker_thread(monke
     assert result.peak_vram_mb == 256
     assert result.peak_vram_reserved_mb == 384
     assert models[0].generation_calls == 5
+    assert models[0].flow_lm.transformer.layers[0].self_attn.rope.forward == models[0].shared_rope_original_forward
+    assert models[0].flow_lm.transformer.layers[1].self_attn.rope.forward == models[0].shared_rope_original_forward
 
 
 def test_cuda_profile_refuses_unknown_pocket_tts_internal_methods(monkeypatch):
