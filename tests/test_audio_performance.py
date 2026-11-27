@@ -73,6 +73,9 @@ def test_tts_benchmark_report_compares_cpu_and_cuda_results():
                 model_load_seconds=3.0,
                 voice_prepare_seconds=1.0,
                 generation_seconds=2.0,
+                generation_min_seconds=1.8,
+                generation_median_seconds=2.0,
+                generation_max_seconds=2.2,
                 audio_duration_seconds=4.0,
                 peak_vram_mb=0.0,
                 quantized=True,
@@ -97,6 +100,8 @@ def test_tts_benchmark_report_compares_cpu_and_cuda_results():
     assert "NVIDIA CUDA" in report
     assert "Carregamento do modelo" in report
     assert "Preparação da voz" in report
+    assert "Faixa por execução: 1,8s – 2,2s" in report
+    assert "Mediana por execução: 2,0s" in report
     assert "Memória de VRAM de pico: 1200 MB" in report
     assert "CUDA foi 2,00× mais rápida" in report
     assert "não altera a configuração escolhida" in report
