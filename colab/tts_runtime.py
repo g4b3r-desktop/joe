@@ -126,3 +126,52 @@ def voice_state_for_safetensors_export(voice_state: dict[str, dict[str, Any]]) -
                 )
             cpu_state[module_name][tensor_name] = tensor.detach().to("cpu").contiguous()
     return cpu_state
+
+
+def apply_tts_int8_quantization(
+    model: Any,
+    device: str,
+    *,
+    requested: bool,
+) -> str | None:
+    """Apply Pocket TTS INT8 only after an explicit request.
+
+    Returning early before importing the optional quantization backend is
+    intentional: unquantized inference follows the pre-existing model path.
+    """
+    if not requested:
+        return None
+    if device not in {"cpu", "cuda"}:
+        raise ValueError("Dispositivo inválido para quantização Pocket TTS.")
+
+    try:
+        from pocket_tts.quantization import (
+            RECOMMENDED_CONFIG,
+            _get_backend,
+            apply_dynamic_int8,
+        )
+    except ImportError as exc:
+        raise RuntimeError(
+            "A quantização INT8 exige o extra pocket-tts[quantize], que instala TorchAO."
+        ) from exc
+
+    backend = _get_backend()
+    if device == "cuda" and backend != "torchao":
+        raise RuntimeError(
+            "A quantização INT8 na CUDA exige TorchAO com extensões nativas disponíveis. "
+            "O backend torch.ao/FBGEMM é exclusivo da CPU."
+        )
+
+    flow_lm = getattr(model, "flow_lm", None)
+    if flow_lm is None:
+        raise RuntimeError(
+            "O modelo Pocket TTS carregado não expõe flow_lm para quantização."
+        )
+    try:
+        apply_dynamic_int8(flow_lm, RECOMMENDED_CONFIG)
+    except Exception as exc:  # noqa: BLE001
+        raise RuntimeError(
+            f"Falha ao aplicar INT8 via {backend} em {device}: "
+            f"{type(exc).__name__}: {exc}"
+        ) from exc
+    return backend
