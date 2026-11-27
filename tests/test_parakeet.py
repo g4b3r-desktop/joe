@@ -45,7 +45,6 @@ def test_transformers_backend_pins_processor_and_weights_to_same_revision(monkey
 
 def test_transformers_transcription_runs_inside_inference_mode(monkeypatch, tmp_path):
     import sys
-    from contextlib import contextmanager
     from types import SimpleNamespace
 
     state = {"active": False}
@@ -106,7 +105,6 @@ def test_cuda_preference_uses_photon_cuda_before_transformers(monkeypatch, tmp_p
     moondream.photon = photon
     fake_torch = SimpleNamespace(
         cuda=SimpleNamespace(is_available=lambda: True),
-        inference_mode=lambda: contextmanager(lambda: (yield))(),
     )
     monkeypatch.setitem(sys.modules, "moondream", moondream)
     monkeypatch.setitem(sys.modules, "torch", fake_torch)
