@@ -70,6 +70,9 @@ MAX_VOICE_ASSET_BYTES = 80 * 1024 * 1024
 # Pocket TTS remains CPU-first, but this Colab worker can explicitly move the
 # nn.Module to CUDA. Auto prefers CUDA when available and safely falls back.
 TTS_DEVICE_MODE = os.environ.get("JOE_TTS_DEVICE", "auto").strip().lower()
+TTS_QUANTIZE_INT8_REQUESTED = os.environ.get(
+    "JOE_TTS_QUANTIZE_INT8", "0"
+).strip().lower() in {"1", "true", "yes", "on"}
 TTS_SAMPLER_ERROR: str | None = None
 try:
     TTS_SAMPLER_DECODE_STEPS = int(
@@ -112,8 +115,11 @@ app = FastAPI(
 _tts_lock = threading.Lock()
 _asr_lock = threading.Lock()
 _tts_models: dict[str, Any] = {}
-_tts_model_settings: dict[str, tuple[int, float | None, float | None]] = {}
+_tts_model_settings: dict[
+    str, tuple[int, float | None, float | None, bool]
+] = {}
 _tts_loaded_devices: dict[str, str] = {}
+_tts_quantization_status: dict[str, dict[str, Any]] = {}
 _tts_device_fallback_reason: str | None = None
 _last_tts_metrics: dict[str, Any] | None = None
 _tts_voice_states: dict[tuple[str, str], Any] = {}
@@ -229,6 +235,38 @@ def _tts_model_diagnostics(model: Any) -> dict[str, Any]:
     }
 
 
+def _apply_tts_int8_quantization(model: Any, device: str) -> str:
+    """Apply Pocket TTS' recommended dynamic INT8 groups on CPU or CUDA."""
+    try:
+        from pocket_tts.quantization import (
+            RECOMMENDED_CONFIG,
+            _get_backend,
+            apply_dynamic_int8,
+        )
+    except ImportError as exc:
+        raise RuntimeError(
+            "A quantização INT8 exige o extra pocket-tts[quantize], que instala TorchAO."
+        ) from exc
+
+    backend = _get_backend()
+    if device == "cuda" and backend != "torchao":
+        raise RuntimeError(
+            "A quantização INT8 na CUDA exige TorchAO com extensões nativas disponíveis. "
+            "O backend torch.ao/FBGEMM é exclusivo da CPU."
+        )
+    flow_lm = getattr(model, "flow_lm", None)
+    if flow_lm is None:
+        raise RuntimeError("O modelo Pocket TTS carregado não expõe flow_lm para quantização.")
+    try:
+        apply_dynamic_int8(flow_lm, RECOMMENDED_CONFIG)
+    except Exception as exc:  # noqa: BLE001
+        raise RuntimeError(
+            f"Falha ao aplicar INT8 via {backend} em {device}: "
+            f"{type(exc).__name__}: {exc}"
+        ) from exc
+    return backend
+
+
 def _get_tts_model(
     language: str,
     model_variant: str,
@@ -241,7 +279,12 @@ def _get_tts_model(
         if sampler_decode_steps is not None
         else TTS_SAMPLER_DECODE_STEPS
     )
-    settings_key = (effective_steps, temperature, eos_threshold)
+    settings_key = (
+        effective_steps,
+        temperature,
+        eos_threshold,
+        bool(TTS_QUANTIZE_INT8_REQUESTED),
+    )
     model = _tts_models.get(model_variant)
     if model is not None and _tts_model_settings.get(model_variant) != settings_key:
         _tts_voice_states.clear()
@@ -322,6 +365,34 @@ def _get_tts_model(
                 )
 
         model = _load_tts_model_for_inference(loader, model_variant)
+        actual_device = _tts_loaded_devices.get(model_variant, TTS_DEVICE_SELECTED)
+        if TTS_QUANTIZE_INT8_REQUESTED:
+            try:
+                backend = _apply_tts_int8_quantization(model, actual_device)
+            except Exception:
+                _tts_models.clear()
+                _tts_model_settings.clear()
+                _tts_loaded_devices.clear()
+                _tts_quantization_status.clear()
+                _tts_voice_states.clear()
+                del model
+                gc.collect()
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+                raise
+            _tts_quantization_status[model_variant] = {
+                "requested": True,
+                "active": True,
+                "backend": backend,
+                "device": actual_device,
+            }
+        else:
+            _tts_quantization_status[model_variant] = {
+                "requested": False,
+                "active": False,
+                "backend": "none",
+                "device": actual_device,
+            }
         _tts_models[model_variant] = model
         _tts_model_settings[model_variant] = settings_key
     return model
@@ -1068,6 +1139,15 @@ def health(_: None = Depends(require_token)) -> dict[str, Any]:
         "tts_device_mode": TTS_DEVICE_MODE,
         "tts_device_selected": TTS_DEVICE_SELECTED,
         "tts_loaded_devices": dict(_tts_loaded_devices),
+        "tts_quantize_int8_requested": TTS_QUANTIZE_INT8_REQUESTED,
+        "tts_quantization_status": {
+            variant: dict(status)
+            for variant, status in _tts_quantization_status.items()
+        },
+        "tts_quantize_int8_active": any(
+            bool(status.get("active"))
+            for status in _tts_quantization_status.values()
+        ),
         "tts_cpu_threads": TTS_CPU_THREADS,
         "tts_sampler_decode_steps": TTS_SAMPLER_DECODE_STEPS,
         "tts_sampler_error": TTS_SAMPLER_ERROR,
@@ -1083,7 +1163,7 @@ def health(_: None = Depends(require_token)) -> dict[str, Any]:
 @app.post("/v1/settings/tts", dependencies=[Depends(require_token)])
 def update_tts_settings(payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
     """Apply Colab TTS settings without restarting the API process."""
-    global TTS_CPU_THREADS, TTS_SAMPLER_DECODE_STEPS
+    global TTS_CPU_THREADS, TTS_SAMPLER_DECODE_STEPS, TTS_QUANTIZE_INT8_REQUESTED
     global TTS_THREADS_ERROR, TTS_SAMPLER_ERROR
 
     try:
@@ -1107,6 +1187,14 @@ def update_tts_settings(payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
             status_code=422,
             detail="Qualidade deve ficar entre 1 e 16.",
         )
+    requested_quantization = payload.get(
+        "quantize_int8", TTS_QUANTIZE_INT8_REQUESTED
+    )
+    if not isinstance(requested_quantization, bool):
+        raise HTTPException(
+            status_code=422,
+            detail="quantize_int8 precisa ser verdadeiro ou falso.",
+        )
 
     # Serialize with both TTS and ASR inference because torch.set_num_threads()
     # affects PyTorch process-wide. Jobs submitted after this section will wait
@@ -1127,6 +1215,7 @@ def update_tts_settings(payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
                 )
 
             previous_steps = TTS_SAMPLER_DECODE_STEPS
+            previous_quantization = TTS_QUANTIZE_INT8_REQUESTED
             try:
                 applied_threads = configure_torch_threads(torch, requested_threads)
             except (TypeError, ValueError, RuntimeError) as exc:
@@ -1139,19 +1228,24 @@ def update_tts_settings(payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
             TTS_THREADS_ERROR = None
             TTS_SAMPLER_DECODE_STEPS = requested_steps
             TTS_SAMPLER_ERROR = None
+            TTS_QUANTIZE_INT8_REQUESTED = requested_quantization
             os.environ["JOE_TTS_CPU_THREADS"] = str(applied_threads)
             os.environ["JOE_TTS_SAMPLER_DECODE_STEPS"] = str(requested_steps)
+            os.environ["JOE_TTS_QUANTIZE_INT8"] = "1" if requested_quantization else "0"
 
             sampler_changed = requested_steps != previous_steps
-            if sampler_changed:
+            quantization_changed = requested_quantization != previous_quantization
+            model_settings_changed = sampler_changed or quantization_changed
+            if model_settings_changed:
                 # These are process-memory caches only. Drive models and voice
                 # assets remain untouched and will be loaded on the next request.
                 _tts_models.clear()
                 _tts_model_settings.clear()
                 _tts_loaded_devices.clear()
+                _tts_quantization_status.clear()
                 _tts_voice_states.clear()
 
-    if sampler_changed:
+    if model_settings_changed:
         gc.collect()
         if torch.cuda.is_available():
             try:
@@ -1165,7 +1259,9 @@ def update_tts_settings(payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
         "tts_requested_cpu_threads": requested_threads,
         "tts_available_cpu_threads": available_cpu_count(),
         "tts_sampler_decode_steps": TTS_SAMPLER_DECODE_STEPS,
-        "tts_model_reloaded_on_next_generation": sampler_changed,
+        "tts_quantize_int8_requested": TTS_QUANTIZE_INT8_REQUESTED,
+        "tts_quantize_int8_changed": quantization_changed,
+        "tts_model_reloaded_on_next_generation": model_settings_changed,
         "tts_loaded_model_variants": sorted(_tts_models),
     }
 
