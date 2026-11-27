@@ -28,6 +28,14 @@ A inferência é carregada sob demanda. Use o header:
 Authorization: Bearer <JOE_API_TOKEN>
 ~~~
 
+## Quantização INT8 opcional
+
+A API inicia com `JOE_TTS_QUANTIZE_INT8=0`: a inferência do Pocket TTS continua sem quantização, sem chamar TorchAO. Para ativar INT8, marque **Ativar quantização INT8 no Pocket TTS do Colab** na aba Google Colab / API do Joe e clique em **Aplicar configurações no Colab**. A mudança limpa somente o cache do modelo em memória; a próxima geração recarrega o modelo e aplica os grupos recomendados de atenção e FFN.
+
+Na CUDA, a quantização exige o backend TorchAO com extensões nativas disponíveis. Se o runtime estiver em CPU, o Pocket TTS usa o backend TorchAO ou o fallback `torch.ao`, conforme a instalação. Se CUDA foi selecionada e TorchAO não estiver disponível, a API retorna um erro explícito: não faz fallback silencioso para inferência sem quantização. O estado solicitado e o estado realmente aplicado aparecem em `/health`.
+
+A quantização não é prometida como ganho de velocidade em GPU; compare tempo de geração, VRAM e qualidade no hardware real. Desmarcar a opção restaura o carregamento normal sem INT8 na próxima geração.
+
 ## Rotas
 
 - GET /health: status do servidor, GPU e estado dos modelos.
