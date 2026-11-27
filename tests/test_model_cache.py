@@ -9,7 +9,7 @@ from joe.model_cache import configure_model_cache
 
 
 def test_configure_model_cache_uses_explicit_directory(tmp_path, monkeypatch):
-    cache_root = tmp_path / ".models" / "huggingface" 
+    cache_root = tmp_path / ".models" / "huggingface"
     monkeypatch.setenv("HF_HOME", "/old/hf")
     monkeypatch.setenv("HF_HUB_CACHE", "/old/hub")
 
