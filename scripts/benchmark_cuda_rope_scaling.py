@@ -30,7 +30,10 @@ from joe.audio_performance import format_cuda_rope_cache_benchmark_report  # noq
 from joe.pocket_tts_models import default_model_variant  # noqa: E402
 
 
-def _configure_hf_token(model_cache_directory: Path) -> str:
+def _configure_hf_token(
+    model_cache_directory: Path,
+    user_token_file: Path | None = None,
+) -> str:
     """Reuse an existing Hugging Face token without printing or exposing it.
 
     HF_HOME is redirected to the Joe model cache later in the benchmark, so
@@ -43,7 +46,7 @@ def _configure_hf_token(model_cache_directory: Path) -> str:
         ("cache de modelos", model_cache_directory.expanduser() / "token"),
         (
             "cache padrão do usuário",
-            Path.home() / ".cache" / "huggingface" / "token",
+            user_token_file or Path.home() / ".cache" / "huggingface" / "token",
         ),
     )
     checked: set[Path] = set()
