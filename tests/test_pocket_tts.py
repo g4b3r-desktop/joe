@@ -1134,6 +1134,7 @@ def test_flash_fp16_attention_patch_casts_only_sdpa_and_restores(monkeypatch):
         yield
 
     fake_torch = ModuleType("torch")
+    fake_torch.__path__ = []
     fake_torch.float32 = "float32"
     fake_torch.float16 = "float16"
 
@@ -1204,13 +1205,14 @@ def test_flash_fp16_attention_patch_casts_only_sdpa_and_restores(monkeypatch):
     assert len(entered_backends) == 2
 
 
-def test_flash_fp16_attention_patch_refuses_missing_worker_methods():
+def test_flash_fp16_attention_patch_refuses_missing_worker_methods(monkeypatch):
     from types import ModuleType, SimpleNamespace
     import sys
 
     from joe.services.pocket_tts import PocketTTSService
 
     fake_torch = ModuleType("torch")
+    fake_torch.__path__ = []
     fake_attention_api = ModuleType("torch.nn.attention")
     fake_attention_api.SDPBackend = SimpleNamespace(FLASH_ATTENTION=object())
 
@@ -1233,28 +1235,19 @@ def test_flash_fp16_attention_patch_refuses_missing_worker_methods():
     fake_modules = ModuleType("pocket_tts.modules")
     fake_modules.__path__ = []
 
-    sys.modules["torch"] = fake_torch
-    sys.modules["torch.nn"] = fake_torch_nn
-    sys.modules["torch.nn.attention"] = fake_attention_api
-    sys.modules["pocket_tts"] = fake_pocket
-    sys.modules["pocket_tts.modules"] = fake_modules
-    sys.modules["pocket_tts.modules.attention"] = fake_module
+    monkeypatch.setitem(sys.modules, "torch", fake_torch)
+    monkeypatch.setitem(sys.modules, "torch.nn", fake_torch_nn)
+    monkeypatch.setitem(sys.modules, "torch.nn.attention", fake_attention_api)
+    monkeypatch.setitem(sys.modules, "pocket_tts", fake_pocket)
+    monkeypatch.setitem(sys.modules, "pocket_tts.modules", fake_modules)
+    monkeypatch.setitem(
+        sys.modules, "pocket_tts.modules.attention", fake_module
+    )
 
     class UnsupportedModel:
         pass
 
-    try:
-        with pytest.raises(RuntimeError, match="não expõe os pontos internos"):
-            PocketTTSService._apply_cuda_flash_fp16_attention(
-                UnsupportedModel(), fake_torch
-            )
-    finally:
-        for key in (
-            "torch",
-            "torch.nn",
-            "torch.nn.attention",
-            "pocket_tts",
-            "pocket_tts.modules",
-            "pocket_tts.modules.attention",
-        ):
-            sys.modules.pop(key, None)
+    with pytest.raises(RuntimeError, match="não expõe os pontos internos"):
+        PocketTTSService._apply_cuda_flash_fp16_attention(
+            UnsupportedModel(), fake_torch
+        )
