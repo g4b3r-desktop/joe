@@ -2669,7 +2669,7 @@ class JoeWindow(QMainWindow):
             "Medir CUDA: FP32 × FP16"
         )
         self.tts_cuda_fp16_benchmark_button.setToolTip(
-            "Compara CUDA FP32 com FP16 autocast experimental nas threads internas "
+            "Compara CUDA FP32 com FP16 autocast experimental nos três pontos internos "
             "do Pocket TTS. Mantém os pesos FP32 e não altera as próximas gerações."
         )
         self.tts_cuda_fp16_benchmark_button.clicked.connect(
