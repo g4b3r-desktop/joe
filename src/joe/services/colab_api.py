@@ -460,6 +460,12 @@ class ColabAPIClient:
         cancel_event: Event | None = None,
         model_variant: str | None = None,
         voice_id: str | None = None,
+        sampler_decode_steps: int | None = None,
+        temperature: float | None = None,
+        eos_threshold: float | None = None,
+        frames_after_eos: int | None = None,
+        max_tokens: int | None = None,
+        teacher_force_previous_chunk: bool = False,
     ) -> bytes:
         data = {
             "text": text,
@@ -468,6 +474,19 @@ class ColabAPIClient:
         }
         if voice_id:
             data["voice_id"] = voice_id
+        optional_parameters = {
+            "sampler_decode_steps": sampler_decode_steps,
+            "temperature": temperature,
+            "eos_threshold": eos_threshold,
+            "frames_after_eos": frames_after_eos,
+            "max_tokens": max_tokens,
+        }
+        data.update({
+            key: value for key, value in optional_parameters.items()
+            if value is not None
+        })
+        if teacher_force_previous_chunk:
+            data["teacher_force_previous_chunk"] = True
         files: list[Any] = []
         opened = None
         try:
@@ -568,6 +587,13 @@ class ColabVoiceSession:
         self,
         text: str,
         cancel_event: Event | None = None,
+        *,
+        sampler_decode_steps: int | None = None,
+        temperature: float | None = None,
+        eos_threshold: float | None = None,
+        frames_after_eos: int | None = None,
+        max_tokens: int | None = None,
+        teacher_force_previous_chunk: bool = False,
     ) -> bytes:
         """Generate one chunk using the already prepared Drive voice, never multipart."""
         self.prepare()
@@ -578,4 +604,10 @@ class ColabVoiceSession:
             cancel_event=cancel_event,
             model_variant=self.model_variant,
             voice_id=self._voice_id,
+            sampler_decode_steps=sampler_decode_steps,
+            temperature=temperature,
+            eos_threshold=eos_threshold,
+            frames_after_eos=frames_after_eos,
+            max_tokens=max_tokens,
+            teacher_force_previous_chunk=teacher_force_previous_chunk,
         )
