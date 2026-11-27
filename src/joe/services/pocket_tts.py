@@ -37,6 +37,40 @@ class PocketTTSService:
             # PyTorch can reject changes after parallel work has already started.
             pass
 
+    @staticmethod
+    def _apply_cuda_int8_quantization(model) -> None:
+        """Use Pocket TTS' TorchAO INT8 path after the model is on CUDA."""
+        try:
+            from pocket_tts.quantization import (
+                RECOMMENDED_CONFIG,
+                _get_backend,
+                apply_dynamic_int8,
+            )
+        except ImportError as exc:
+            raise RuntimeError(
+                "A quantização INT8 na GPU requer o extra TorchAO do Pocket TTS. "
+                "Reinstale as dependências do Joe com pocket-tts[quantize]."
+            ) from exc
+
+        backend = _get_backend()
+        if backend != "torchao":
+            raise RuntimeError(
+                "A quantização INT8 na CUDA exige o backend TorchAO com extensões "
+                "nativas disponíveis. O backend torch.ao/FBGEMM é exclusivo da CPU."
+            )
+        flow_lm = getattr(model, "flow_lm", None)
+        if flow_lm is None:
+            raise RuntimeError(
+                "A versão deste Pocket TTS não expõe flow_lm para quantização CUDA."
+            )
+        try:
+            apply_dynamic_int8(flow_lm, RECOMMENDED_CONFIG)
+        except Exception as exc:  # noqa: BLE001
+            raise RuntimeError(
+                "TorchAO não conseguiu aplicar INT8 às camadas de atenção e FFN "
+                f"do Pocket TTS na GPU: {type(exc).__name__}: {exc}"
+            ) from exc
+
     def _get_model(
         self,
         torch,
@@ -57,8 +91,10 @@ class PocketTTSService:
                 "que o driver NVIDIA está funcionando."
             )
 
-        # Pocket TTS dynamic INT8 quantization is supported on CPU only.
-        effective_quantize = bool(quantize) and device == "cpu"
+        # CPU uses Pocket TTS' standard dynamic INT8 path. CUDA uses TorchAO
+        # after the float model has been moved to the GPU.
+        effective_quantize = bool(quantize)
+        quantize_on_load = effective_quantize and device == "cpu"
         cache_key = (
             model_variant,
             device,
@@ -83,18 +119,21 @@ class PocketTTSService:
             model_load_options["eos_threshold"] = float(eos_threshold)
         model = tts_model_class.load_model(
             **model_loading_options(model_variant),
-            quantize=effective_quantize,
+            quantize=quantize_on_load,
             **model_load_options,
         )
         if device == "cuda":
             try:
-                # Pocket TTS is moved to CUDA after loading; dynamic INT8 is CPU-only.
                 model.to("cuda")
+                if effective_quantize:
+                    self._apply_cuda_int8_quantization(model)
             except Exception as exc:  # noqa: BLE001
                 del model
                 torch.cuda.empty_cache()
+                if isinstance(exc, RuntimeError) and "quantização INT8" in str(exc):
+                    raise
                 raise RuntimeError(
-                    f"Não foi possível mover o Pocket TTS para a GPU CUDA: {exc}"
+                    f"Não foi possível preparar o Pocket TTS na GPU CUDA: {exc}"
                 ) from exc
         self._models[cache_key] = model
         return model
@@ -137,7 +176,7 @@ class PocketTTSService:
             )
 
         self._configure_torch(torch, cpu_threads)
-        effective_quantize = bool(quantize) and device_preference == "cpu"
+        effective_quantize = bool(quantize)
         if sampler_decode_steps is not None and not 1 <= int(sampler_decode_steps) <= 16:
             raise ValueError("sampler_decode_steps deve ficar entre 1 e 16.")
         if temperature is not None and not 0.05 <= float(temperature) <= 2.0:
@@ -216,7 +255,7 @@ class PocketTTSService:
                 f"A versão {model_variant!r} não está disponível para o idioma {language!r}."
             )
         self._configure_torch(torch, cpu_threads)
-        effective_quantize = bool(quantize) and device_preference == "cpu"
+        effective_quantize = bool(quantize)
         model = self._get_model(
             torch, TTSModel, model_variant, device_preference, effective_quantize
         )
@@ -293,12 +332,14 @@ class PocketTTSService:
                     torch.cuda.empty_cache()
                     torch.cuda.reset_peak_memory_stats()
                 model_started = time.perf_counter()
-                model = TTSModel.load_model(
-                    **model_loading_options(model_variant),
-                    quantize=(device == "cpu" and bool(quantize)),
+                model = self._get_model(
+                    torch,
+                    TTSModel,
+                    model_variant,
+                    device,
+                    bool(quantize),
                 )
                 if device == "cuda":
-                    model.to("cuda")
                     torch.cuda.synchronize()
                 model_load_seconds = time.perf_counter() - model_started
 
@@ -337,7 +378,7 @@ class PocketTTSService:
                         audio_duration_seconds=audio_duration_seconds,
                         character_count=len(text.strip()),
                         peak_vram_mb=peak_vram_mb,
-                        quantized=(device == "cpu" and bool(quantize)),
+                        quantized=bool(quantize),
                         repeats=repeat_count,
                     )
                 )
@@ -347,12 +388,14 @@ class PocketTTSService:
                         device=device,
                         cpu_threads=cpu_threads,
                         error=f"{type(exc).__name__}: {exc}",
-                        quantized=(device == "cpu" and bool(quantize)),
+                        quantized=bool(quantize),
                     )
                 )
             finally:
                 voice_state = None
                 model = None
+                self._models.clear()
+                self._voice_states.clear()
                 gc.collect()
                 if device == "cuda" and torch.cuda.is_available():
                     torch.cuda.empty_cache()
