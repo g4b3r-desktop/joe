@@ -1,8 +1,8 @@
 """Experimental cached RoPE tables for the CUDA Pocket TTS path.
 
 The upstream Pocket TTS 4.0.1 implementation rebuilds frequencies and trigonometric
-values for every attention call.  This adapter caches FP32 cos/sin tables per shared
-RotaryEmbedding instance.  It is opt-in and restores every patched method on close.
+values for every attention call. This adapter caches FP32 cos/sin tables per shared
+RotaryEmbedding instance. It is opt-in and can be toggled without rebuilding the model.
 """
 from __future__ import annotations
 
@@ -30,7 +30,26 @@ class _SingleRotaryCache:
             return self.forward(q, k, offset)
 
         self._patched_forward = cached_forward
-        setattr(rope, "forward", cached_forward)
+        self._enabled = False
+        self.set_enabled(True)
+
+    def _restore_forward(self) -> None:
+        if getattr(self.rope, "forward", None) is self._patched_forward:
+            if self._had_instance_forward:
+                setattr(self.rope, "forward", self._original_instance_forward)
+            else:
+                delattr(self.rope, "forward")
+
+    def set_enabled(self, enabled: bool) -> None:
+        """Switch between the exact upstream method and the cached wrapper."""
+        enabled = bool(enabled)
+        if enabled == self._enabled:
+            return
+        if enabled:
+            setattr(self.rope, "forward", self._patched_forward)
+        else:
+            self._restore_forward()
+        self._enabled = enabled
 
     def _build_table(self, device, head_dim: int, capacity: int):
         torch = self.torch
@@ -154,16 +173,12 @@ class _SingleRotaryCache:
         )
 
     def close(self) -> None:
-        if getattr(self.rope, "forward", None) is self._patched_forward:
-            if self._had_instance_forward:
-                setattr(self.rope, "forward", self._original_instance_forward)
-            else:
-                delattr(self.rope, "forward")
+        self.set_enabled(False)
         self.tables.clear()
 
 
 class PocketTTSRopeCache:
-    """Own and restore the shared RoPE and KV-cache-expansion patches."""
+    """Own, toggle, and restore the shared RoPE and KV-cache-expansion patches."""
 
     def __init__(self, model, torch, *, initial_positions: int = 8192) -> None:
         flow_lm = getattr(model, "flow_lm", None)
@@ -194,6 +209,7 @@ class PocketTTSRopeCache:
         ]
         self._model = model
         self._closed = False
+        self._enabled = True
         self._original_expand = getattr(model, "_expand_kv_cache", None)
         if not callable(self._original_expand):
             for cache in reversed(self._caches):
@@ -215,6 +231,31 @@ class PocketTTSRopeCache:
         self._patched_expand = expand_with_rope_cache
         setattr(model, "_expand_kv_cache", expand_with_rope_cache)
 
+    def _restore_expand(self) -> None:
+        if getattr(self._model, "_expand_kv_cache", None) is self._patched_expand:
+            if self._had_instance_expand:
+                setattr(self._model, "_expand_kv_cache", self._original_instance_expand)
+            else:
+                delattr(self._model, "_expand_kv_cache")
+
+    def set_enabled(self, enabled: bool) -> None:
+        """Enable cached RoPE or restore upstream methods for the reference mode."""
+        if self._closed:
+            raise RuntimeError("O cache RoPE já foi encerrado.")
+        enabled = bool(enabled)
+        if enabled == self._enabled:
+            return
+
+        if enabled:
+            for cache in self._caches:
+                cache.set_enabled(True)
+            setattr(self._model, "_expand_kv_cache", self._patched_expand)
+        else:
+            self._restore_expand()
+            for cache in self._caches:
+                cache.set_enabled(False)
+        self._enabled = enabled
+
     @property
     def calls(self) -> int:
         return sum(cache.calls for cache in self._caches)
@@ -234,17 +275,11 @@ class PocketTTSRopeCache:
     def close(self) -> None:
         if self._closed:
             return
-        self._closed = True
-        if (
-            self._patched_expand is not None
-            and getattr(self._model, "_expand_kv_cache", None) is self._patched_expand
-        ):
-            if self._had_instance_expand:
-                setattr(self._model, "_expand_kv_cache", self._original_instance_expand)
-            else:
-                delattr(self._model, "_expand_kv_cache")
+        self._restore_expand()
         for cache in reversed(self._caches):
             cache.close()
+        self._enabled = False
+        self._closed = True
 
 
 def install_cuda_rope_cache(
