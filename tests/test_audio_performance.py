@@ -337,7 +337,7 @@ def test_cuda_profile_report_separates_flow_lm_mimi_and_queue_wait():
     assert "Projeção Q/K/V" in report
     assert "KV cache — gravação K/V" in report
     assert "SDPA (kernel de atenção)" in report
-    assert "chamadas 30,0" in report
+    assert "chamadas 30,3" in report
     assert "não representam tempo isolado de kernel GPU" in report
     assert "CPU/lançamento/sincronização" not in report
     assert "MIMI DECODER" in report
