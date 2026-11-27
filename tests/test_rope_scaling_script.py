@@ -16,7 +16,7 @@ def test_normalize_text_collapses_whitespace_without_losing_content():
 
 
 def test_reduce_text_to_duration_builds_progressive_sentence_safe_prefixes():
-    source = " ".join(f"Frase {index} termina." for index in range(1, 81))
+    source = " ".join(f"Frase{index} termina." for index in range(1, 81))
 
     short = reduce_text_to_duration(source, 30, 120)
     medium = reduce_text_to_duration(source, 60, 120)
