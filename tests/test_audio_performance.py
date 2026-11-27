@@ -166,3 +166,65 @@ def test_cuda_quantization_report_detects_four_times_slower_int8():
     assert "Aplicação da quantização:" in report
     assert "INT8 ficou 4,00× mais lenta" in report
     assert "CUDA sem quantização foi a opção mais rápida" in report
+
+
+def test_cuda_precision_report_compares_fp32_and_fp16_autocast():
+    from joe.audio_performance import (
+        TTSCudaPrecisionBenchmarkResult,
+        format_cuda_precision_benchmark_report,
+    )
+
+    report = format_cuda_precision_benchmark_report(
+        [
+            TTSCudaPrecisionBenchmarkResult(
+                precision="FP32",
+                generation_times=(2.0, 2.1, 1.9),
+                audio_durations_seconds=(4.0, 4.0, 4.0),
+                audio_peak_amplitudes=(0.5, 0.5, 0.5),
+                audio_rms_levels=(0.1, 0.1, 0.1),
+                warmup_runs=2,
+                model_load_seconds=3.0,
+                peak_vram_mb=1500,
+                peak_vram_reserved_mb=1700,
+            ),
+            TTSCudaPrecisionBenchmarkResult(
+                precision="FP16 autocast",
+                generation_times=(1.0, 1.1, 0.9),
+                audio_durations_seconds=(4.0, 4.0, 4.0),
+                audio_peak_amplitudes=(0.5, 0.5, 0.5),
+                audio_rms_levels=(0.1, 0.1, 0.1),
+                warmup_runs=2,
+                autocast_setup_seconds=0.01,
+                model_load_seconds=3.1,
+                peak_vram_mb=1450,
+                peak_vram_reserved_mb=1650,
+            ),
+        ]
+    )
+
+    assert "CUDA FP32 (referência)" in report
+    assert "CUDA FP16 autocast (pesos FP32)" in report
+    assert "Integridade numérica: amostras finitas" in report
+    assert "FP16 foi 2,00× mais rápido" in report
+    assert "não altera a precisão usada nas gerações normais" in report
+
+
+def test_cuda_precision_report_marks_incomplete_comparison():
+    from joe.audio_performance import (
+        TTSCudaPrecisionBenchmarkResult,
+        format_cuda_precision_benchmark_report,
+    )
+
+    report = format_cuda_precision_benchmark_report(
+        [
+            TTSCudaPrecisionBenchmarkResult(
+                precision="FP32",
+                error="simulated CUDA error",
+            ),
+            TTSCudaPrecisionBenchmarkResult(precision="FP16 autocast"),
+        ]
+    )
+
+    assert "simulated CUDA error" in report
+    assert "Comparação inconclusiva" in report
+
