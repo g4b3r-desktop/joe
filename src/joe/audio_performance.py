@@ -805,7 +805,7 @@ def format_cuda_rope_cache_benchmark_report(
             "O modo com cache reutiliza tabelas FP32 de seno/cosseno por posição; "
             "o aquecimento de cada modo é descartado."
         ),
-        "As mesmas sementes são usadas nos pares de gerações para comparar o áudio.",
+        "Cada par usa a mesma semente; a ordem alterna A/B e B/A para reduzir viés térmico, de clock e de execução.",
         "",
     ]
     if result.error:
