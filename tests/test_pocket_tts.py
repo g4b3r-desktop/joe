@@ -398,7 +398,6 @@ def test_generate_cuda_fails_clearly_when_torch_cuda_is_unavailable(monkeypatch,
 
 def test_benchmark_reports_cpu_and_cuda_availability(monkeypatch):
     import sys
-    from contextlib import nullcontext
     from types import SimpleNamespace
 
     from joe.services.pocket_tts import PocketTTSService
@@ -432,7 +431,7 @@ def test_benchmark_reports_cpu_and_cuda_availability(monkeypatch):
 
     fake_torch = SimpleNamespace(
         set_num_threads=lambda _value: None,
-        inference_mode=nullcontext,
+        inference_mode=lambda: pytest.fail("benchmark must not enable inference_mode"),
         cuda=SimpleNamespace(is_available=lambda: False),
     )
     monkeypatch.setitem(sys.modules, "torch", fake_torch)
@@ -622,7 +621,6 @@ def test_cuda_quantization_benchmark_excludes_warmups_and_measures_both_modes(
     monkeypatch,
 ):
     import sys
-    from contextlib import nullcontext
     from types import ModuleType, SimpleNamespace
 
     from joe.services.pocket_tts import PocketTTSService
@@ -681,7 +679,7 @@ def test_cuda_quantization_benchmark_excludes_warmups_and_measures_both_modes(
     fake_quantization.apply_dynamic_int8 = apply_dynamic_int8
     fake_torch = SimpleNamespace(
         set_num_threads=lambda _value: None,
-        inference_mode=nullcontext,
+        inference_mode=lambda: pytest.fail("benchmark must not enable inference_mode"),
         cuda=SimpleNamespace(
             is_available=lambda: True,
             empty_cache=lambda: None,
