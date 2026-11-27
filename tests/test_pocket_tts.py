@@ -714,3 +714,131 @@ def test_cuda_quantization_benchmark_excludes_warmups_and_measures_both_modes(
     assert all(kwargs["quantize"] is False for kwargs in loaded)
     assert len(quantized_modules) == 1
     assert len(prompts) == 2
+
+
+def test_cuda_fp16_benchmark_wraps_each_pocket_tts_worker_in_autocast(monkeypatch):
+    import sys
+    from contextlib import contextmanager
+    from types import ModuleType, SimpleNamespace
+
+    from joe.services.pocket_tts import PocketTTSService
+
+    autocast_depth = {"value": 0}
+    autocast_entries = []
+    model_instances = []
+
+    @contextmanager
+    def fake_autocast(*, device_type, dtype):
+        assert device_type == "cuda"
+        assert dtype == "float16"
+        autocast_depth["value"] += 1
+        autocast_entries.append((device_type, dtype))
+        try:
+            yield
+        finally:
+            autocast_depth["value"] -= 1
+
+    class FakeAudio:
+        def detach(self):
+            return self
+
+        def cpu(self):
+            return self
+
+        def numpy(self):
+            return np.full((1, 12_000), 0.2, dtype=np.float32)
+
+    class FakeModel:
+        sample_rate = 24_000
+
+        def __init__(self):
+            self.worker_contexts = []
+            model_instances.append(self)
+
+        def to(self, device):
+            assert device == "cuda"
+            return self
+
+        def get_state_for_audio_prompt(self, _voice):
+            return object()
+
+        def _generate(self):
+            self.worker_contexts.append(autocast_depth["value"] > 0)
+
+        def _autoregressive_generation(self):
+            self.worker_contexts.append(autocast_depth["value"] > 0)
+
+        def _decode_audio_worker(self):
+            self.worker_contexts.append(autocast_depth["value"] > 0)
+
+        def generate_audio(self, _state, _text, *, copy_state=True):
+            assert copy_state is True
+            self._generate()
+            self._autoregressive_generation()
+            self._decode_audio_worker()
+            return FakeAudio()
+
+    class FakeTTSModel:
+        @staticmethod
+        def load_model(**kwargs):
+            assert kwargs["quantize"] is False
+            return FakeModel()
+
+    fake_pocket_tts = ModuleType("pocket_tts")
+    fake_pocket_tts.TTSModel = FakeTTSModel
+    fake_torch = SimpleNamespace(
+        float16="float16",
+        autocast=fake_autocast,
+        set_num_threads=lambda _value: None,
+        cuda=SimpleNamespace(
+            is_available=lambda: True,
+            empty_cache=lambda: None,
+            reset_peak_memory_stats=lambda: None,
+            synchronize=lambda: None,
+            max_memory_allocated=lambda: 128 * 1024 * 1024,
+            max_memory_reserved=lambda: 192 * 1024 * 1024,
+        ),
+    )
+    monkeypatch.setitem(sys.modules, "torch", fake_torch)
+    monkeypatch.setitem(sys.modules, "pocket_tts", fake_pocket_tts)
+
+    results = PocketTTSService().benchmark_cuda_precision(
+        "Texto de teste para FP32 e FP16.",
+        "portuguese",
+        model_variant="portuguese",
+        warmup_runs=2,
+        measured_runs=3,
+    )
+
+    assert [result.precision for result in results] == ["FP32", "FP16 autocast"]
+    assert all(not result.error for result in results)
+    assert all(len(result.generation_times) == 3 for result in results)
+    assert all(result.audio_durations_seconds == (0.5, 0.5, 0.5) for result in results)
+    assert all(result.audio_peak_amplitudes == (0.2, 0.2, 0.2) for result in results)
+    assert all(result.audio_rms_levels == (0.2, 0.2, 0.2) for result in results)
+    assert len(model_instances) == 2
+    assert all(context is False for context in model_instances[0].worker_contexts)
+    assert all(context is True for context in model_instances[1].worker_contexts)
+    assert len(model_instances[0].worker_contexts) == 15
+    assert len(model_instances[1].worker_contexts) == 15
+    assert len(autocast_entries) == 15
+    assert autocast_depth["value"] == 0
+
+
+def test_cuda_fp16_autocast_refuses_unknown_pocket_tts_thread_layout():
+    from types import SimpleNamespace
+
+    from joe.services.pocket_tts import PocketTTSService
+
+    class UnsupportedModel:
+        def _generate(self):
+            pass
+
+    torch = SimpleNamespace(
+        float16="float16",
+        autocast=lambda **_kwargs: None,
+    )
+
+    with pytest.raises(RuntimeError, match="não expõe os pontos internos"):
+        PocketTTSService._apply_cuda_fp16_autocast(UnsupportedModel(), torch)
+
