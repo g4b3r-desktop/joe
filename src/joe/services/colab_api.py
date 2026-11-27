@@ -197,14 +197,16 @@ class ColabAPIClient:
         self,
         cpu_threads: int,
         sampler_decode_steps: int,
+        quantize_int8: bool = False,
     ) -> dict[str, Any]:
-        """Apply Pocket TTS CPU and quality settings in the active Colab runtime."""
+        """Apply Pocket TTS CPU, quality and INT8 quantization settings in Colab."""
         return self._request(
             "POST",
             "/v1/settings/tts",
             json={
                 "cpu_threads": int(cpu_threads),
                 "sampler_decode_steps": int(sampler_decode_steps),
+                "quantize_int8": bool(quantize_int8),
             },
         ).json()
 
