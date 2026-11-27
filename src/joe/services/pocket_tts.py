@@ -267,10 +267,14 @@ class PocketTTSService:
 
             model = None
             voice_state = None
+            cuda_device_name = ""
             try:
                 if device == "cuda":
                     torch.cuda.empty_cache()
                     torch.cuda.reset_peak_memory_stats()
+                    get_device_name = getattr(torch.cuda, "get_device_name", None)
+                    if callable(get_device_name):
+                        cuda_device_name = str(get_device_name(0))
                 model_started = time.perf_counter()
                 loading_options = model_loading_options(model_variant)
                 if sampler_decode_steps is not None:
@@ -320,8 +324,12 @@ class PocketTTSService:
                     del audio, samples
 
                 peak_vram_mb = 0.0
+                peak_vram_reserved_mb = 0.0
                 if device == "cuda":
                     peak_vram_mb = float(torch.cuda.max_memory_allocated()) / (1024**2)
+                    max_memory_reserved = getattr(torch.cuda, "max_memory_reserved", None)
+                    if callable(max_memory_reserved):
+                        peak_vram_reserved_mb = float(max_memory_reserved()) / (1024**2)
                 results.append(
                     TTSBenchmarkResult(
                         device=device,
@@ -335,6 +343,8 @@ class PocketTTSService:
                         audio_duration_seconds=audio_duration_seconds,
                         character_count=len(text.strip()),
                         peak_vram_mb=peak_vram_mb,
+                        peak_vram_reserved_mb=peak_vram_reserved_mb,
+                        cuda_device_name=cuda_device_name,
                         quantized=(device == "cpu" and bool(quantize)),
                         repeats=repeat_count,
                     )
