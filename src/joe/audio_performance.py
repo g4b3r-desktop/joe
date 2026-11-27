@@ -16,6 +16,22 @@ class AudioPerformance:
 
 
 @dataclass(frozen=True, slots=True)
+class TTSCudaQuantizationBenchmarkResult:
+    """Repeated measurements for one CUDA Pocket TTS quantization mode."""
+
+    quantized: bool
+    model_load_seconds: float = 0.0
+    quantization_seconds: float = 0.0
+    voice_prepare_seconds: float = 0.0
+    generation_times: tuple[float, ...] = ()
+    audio_durations_seconds: tuple[float, ...] = ()
+    warmup_runs: int = 0
+    peak_vram_mb: float = 0.0
+    peak_vram_reserved_mb: float = 0.0
+    error: str = ""
+
+
+@dataclass(frozen=True, slots=True)
 class TTSBenchmarkResult:
     """One isolated Pocket TTS benchmark run for a selected compute device."""
 
