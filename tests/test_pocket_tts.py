@@ -1145,6 +1145,7 @@ def test_flash_fp16_attention_patch_casts_only_sdpa_and_restores(monkeypatch):
     class FakeSDPBackend:
         FLASH_ATTENTION = backend_marker
         EFFICIENT_ATTENTION = object()
+        CUDNN_ATTENTION = object()
 
     fake_torch_attention.SDPBackend = FakeSDPBackend
     fake_torch_attention.sdpa_kernel = fake_sdpa_kernel
@@ -1208,6 +1209,136 @@ def test_flash_fp16_attention_patch_casts_only_sdpa_and_restores(monkeypatch):
     assert attention_module.F is original_functional
     assert model._generate() is not None
     assert len(entered_backends) == 1
+
+
+def test_cudnn_fp16_attention_patch_checks_eligibility_and_preserves_mask(monkeypatch):
+    import sys
+    from contextlib import contextmanager
+    from types import ModuleType, SimpleNamespace
+
+    from joe.services.pocket_tts import PocketTTSService
+
+    backend_marker = object()
+    entered_backends = []
+    eligibility_calls = []
+    sdpa_calls = []
+
+    @contextmanager
+    def fake_sdpa_kernel(backend):
+        entered_backends.append(backend)
+        yield
+
+    class FakeSDPBackend:
+        CUDNN_ATTENTION = backend_marker
+
+    class FakeParams:
+        def __init__(self, *args):
+            self.args = args
+
+    class FakeTensor:
+        def __init__(self, dtype):
+            self.dtype = dtype
+            self.device = SimpleNamespace(type="cuda")
+            self.shape = (1, 2, 3, 4)
+
+        def stride(self):
+            return (24, 12, 4, 1)
+
+        def to(self, *, dtype):
+            return FakeTensor(dtype)
+
+    class FakeMask:
+        shape = (1, 1, 3, 3)
+        dtype = "bool"
+
+        def stride(self):
+            return (9, 9, 3, 1)
+
+    mask = FakeMask()
+
+    def can_use_cudnn(params, debug=False):
+        eligibility_calls.append((params, debug))
+        return True
+
+    def original_sdpa(query, key, value, *args, **kwargs):
+        sdpa_calls.append((query, key, value, args, kwargs))
+        return FakeTensor(query.dtype)
+
+    original_functional = SimpleNamespace(
+        scaled_dot_product_attention=original_sdpa
+    )
+    attention_module = ModuleType("pocket_tts.modules.attention")
+    attention_module.F = original_functional
+
+    fake_torch = ModuleType("torch")
+    fake_torch.__path__ = []
+    fake_torch.float32 = "float32"
+    fake_torch.float16 = "float16"
+    fake_torch.__version__ = "2.15.0+cu132"
+    fake_torch.version = SimpleNamespace(cuda="13.2")
+    fake_torch.backends = SimpleNamespace(
+        cuda=SimpleNamespace(
+            SDPAParams=FakeParams,
+            can_use_cudnn_attention=can_use_cudnn,
+            cudnn_sdp_enabled=lambda: True,
+        ),
+        cudnn=SimpleNamespace(
+            is_available=lambda: True,
+            version=lambda: 91000,
+        ),
+    )
+    fake_torch.cuda = SimpleNamespace(
+        get_device_name=lambda _device: "NVIDIA GeForce RTX 3060",
+        get_device_capability=lambda _device: (8, 6),
+    )
+
+    fake_torch_nn = ModuleType("torch.nn")
+    fake_torch_nn.__path__ = []
+    fake_torch_attention = ModuleType("torch.nn.attention")
+    fake_torch_attention.SDPBackend = FakeSDPBackend
+    fake_torch_attention.sdpa_kernel = fake_sdpa_kernel
+
+    fake_pocket = ModuleType("pocket_tts")
+    fake_pocket.__path__ = []
+    fake_modules = ModuleType("pocket_tts.modules")
+    fake_modules.__path__ = []
+
+    monkeypatch.setitem(sys.modules, "torch", fake_torch)
+    monkeypatch.setitem(sys.modules, "torch.nn", fake_torch_nn)
+    monkeypatch.setitem(sys.modules, "torch.nn.attention", fake_torch_attention)
+    monkeypatch.setitem(sys.modules, "pocket_tts", fake_pocket)
+    monkeypatch.setitem(sys.modules, "pocket_tts.modules", fake_modules)
+    monkeypatch.setitem(
+        sys.modules, "pocket_tts.modules.attention", attention_module
+    )
+
+    class FakeModel:
+        def _generate(self):
+            return self._autoregressive_generation()
+
+        def _autoregressive_generation(self):
+            tensor = FakeTensor("float32")
+            return attention_module.F.scaled_dot_product_attention(
+                tensor, tensor, tensor, attn_mask=mask, dropout_p=0.0
+            )
+
+    model = FakeModel()
+    restore = PocketTTSService._apply_cuda_fp16_attention_backend(
+        model, fake_torch, "CUDNN_ATTENTION"
+    )
+    result = model._generate()
+
+    assert result.dtype == "float32"
+    assert entered_backends == [backend_marker]
+    assert len(eligibility_calls) == 1
+    params, debug = eligibility_calls[0]
+    assert debug is True
+    assert [tensor.dtype for tensor in params.args[:3]] == ["float16"] * 3
+    assert params.args[3] is mask
+    assert sdpa_calls[0][4]["attn_mask"] is mask
+
+    restore()
+    assert attention_module.F is original_functional
 
 
 def test_flash_fp16_attention_patch_refuses_missing_worker_methods(monkeypatch):
@@ -1280,6 +1411,7 @@ def test_cuda_attention_benchmark_runs_reference_and_flash_and_restores(monkeypa
     class FakeSDPBackend:
         FLASH_ATTENTION = backend_marker
         EFFICIENT_ATTENTION = object()
+        CUDNN_ATTENTION = object()
 
     class FakeTensor:
         def __init__(self, dtype):
@@ -1404,6 +1536,7 @@ def test_cuda_attention_benchmark_runs_reference_and_flash_and_restores(monkeypa
         "FP32 SDPA",
         "Flash FP16 SDPA",
         "Efficient FP16 SDPA",
+        "cuDNN FP16 SDPA",
     ]
     assert all(not result.error for result in results)
     assert all(len(result.generation_times) == 3 for result in results)
@@ -1412,13 +1545,13 @@ def test_cuda_attention_benchmark_runs_reference_and_flash_and_restores(monkeypa
     assert all(result.audio_rms_levels == (0.0, 0.0, 0.0) for result in results)
     assert all(result.peak_vram_mb == 256 for result in results)
     assert all(result.peak_vram_reserved_mb == 384 for result in results)
-    assert [model.generation_calls for model in models] == [5, 5, 5]
+    assert [model.generation_calls for model in models] == [5, 5, 5, 5]
     assert sdpa_dtypes[:5] == [("float32",) * 3] * 5
-    assert sdpa_dtypes[5:] == [("float16",) * 3] * 10
-    assert len(entered_backends) == 10
+    assert sdpa_dtypes[5:] == [("float16",) * 3] * 15
+    assert len(entered_backends) == 15
     assert seeds == [
         (device, 1729 + index)
-        for _mode in range(3)
+        for _mode in range(4)
         for index in range(5)
         for device in ("cpu", "cuda")
     ]
