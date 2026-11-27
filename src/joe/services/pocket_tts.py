@@ -139,8 +139,13 @@ class PocketTTSService:
         voice_source = str(voice_path) if voice_path else (
             default_voice_for_language(language) or DEFAULT_VOICE
         )
+        sampler_steps = int(sampler_decode_steps) if sampler_decode_steps is not None else None
         state_key = (
-            model_variant, device_preference, effective_quantize, voice_source
+            model_variant,
+            device_preference,
+            effective_quantize,
+            voice_source,
+            sampler_steps,
         )
         with _inference_context(torch):
             voice_state = self._voice_states.get(state_key)
@@ -194,7 +199,7 @@ class PocketTTSService:
 
         source_key = str(source.resolve())
         state_key = (
-            model_variant, device_preference, effective_quantize, source_key
+            model_variant, device_preference, effective_quantize, source_key, None
         )
         with _inference_context(torch):
             voice_state = self._voice_states.get(state_key)
