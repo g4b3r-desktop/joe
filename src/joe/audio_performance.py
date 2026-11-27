@@ -723,13 +723,14 @@ def format_cuda_tf32_benchmark_report(
 def format_cuda_attention_benchmark_report(
     results: list[TTSCudaAttentionBenchmarkResult],
 ) -> str:
-    """Report default FP32 SDPA against forced Flash and efficient FP16 SDPA backends."""
+    """Report FP32 SDPA against forced Flash, efficient and cuDNN FP16 backends."""
     lines = [
         "Comparação CUDA — Pocket TTS: SDPA FP32 × backends fused FP16",
         "O Pocket TTS já usa scaled_dot_product_attention; este teste compara backends internos do PyTorch.",
         "Nos modos fused, somente Q/K/V entram em FP16 dentro da atenção; a saída volta para FP32.",
         "Pesos, projeções, FlowNet, Mimi e gerações normais permanecem em FP32.",
-        "Flash e Memory-Efficient são testados separadamente, sem fallback silencioso para o kernel matemático.",
+        "Flash, Memory-Efficient e cuDNN são testados separadamente, sem fallback silencioso para o kernel matemático.",
+        "A máscara original da atenção é preservada e enviada sem alterações a cada backend.",
         "Mesmo modelo, voz e texto. Duas gerações de aquecimento são descartadas.",
         "O cronômetro inclui geração e transferência do áudio para a RAM.",
         "",
@@ -741,6 +742,7 @@ def format_cuda_attention_benchmark_report(
             "Efficient FP16 SDPA": (
                 "CUDA Memory-Efficient Attention — SDPA FP16 somente na atenção"
             ),
+            "cuDNN FP16 SDPA": "CUDA cuDNN Attention — SDPA FP16 somente na atenção",
             "FP32 SDPA": "CUDA FP32 — SDPA padrão (referência)",
         }.get(result.mode, f"CUDA — {result.mode}")
         lines.append(label)
@@ -797,6 +799,7 @@ def format_cuda_attention_benchmark_report(
     for fused_mode, label in (
         ("Flash FP16 SDPA", "Flash FP16"),
         ("Efficient FP16 SDPA", "Memory-Efficient FP16"),
+        ("cuDNN FP16 SDPA", "cuDNN FP16"),
     ):
         fused = successful.get(fused_mode)
         if not reference or not fused or reference[1] <= 0 or fused[1] <= 0:
