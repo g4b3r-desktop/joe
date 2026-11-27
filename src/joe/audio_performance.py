@@ -74,6 +74,7 @@ class TTSCudaRopeCacheBenchmarkResult:
     cache_calls: int = 0
     cache_fallbacks: int = 0
     cache_bytes: int = 0
+    text_characters: int = 0
     error: str = ""
 
 
@@ -800,7 +801,7 @@ def format_cuda_rope_cache_benchmark_report(
     """Report paired FP32 RoPE timings and numerical audio differences."""
     lines = [
         "Comparação CUDA — Pocket TTS: RoPE original × cache FP32",
-        "Mesmo modelo, voz e texto. Pesos, projeções, SDPA, FlowNet e Mimi permanecem FP32.",
+        "Mesmo modelo, voz e texto completo fornecido. Pesos, projeções, SDPA, FlowNet e Mimi permanecem FP32.",
         (
             "O modo com cache reutiliza tabelas FP32 de seno/cosseno por posição; "
             "o aquecimento de cada modo é descartado."
@@ -843,6 +844,9 @@ def format_cuda_rope_cache_benchmark_report(
 
     lines.append(
         f"Aquecimento descartado por modo: {result.warmup_runs} geração(ões)."
+    )
+    lines.append(
+        f"Texto completo avaliado: {result.text_characters:,} caracteres.".replace(",", ".")
     )
     lines.append(
         f"Carregamento + transferência do modelo: {format_duration(result.model_load_seconds)}"
