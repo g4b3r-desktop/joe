@@ -177,3 +177,50 @@ def test_queue_snapshots_tts_compute_device_and_cpu_threads():
     assert task.cpu_threads == 4
     assert task.tts_quantization is False
     assert task.tts_profile == "performance"
+
+
+
+def test_queue_snapshots_advanced_pocket_tts_generation_options():
+    queue = GenerationQueue()
+    task = queue.enqueue(
+        text="Olá",
+        speech_text="Olá",
+        language="portuguese",
+        output_path="/tmp/advanced.wav",
+        sampler_decode_steps=4,
+        temperature=0.85,
+        eos_threshold=-3.0,
+        frames_after_eos=2,
+        max_tokens=80,
+        teacher_force_previous_chunk=True,
+    )
+
+    assert task.sampler_decode_steps == 4
+    assert task.temperature == 0.85
+    assert task.eos_threshold == -3.0
+    assert task.frames_after_eos == 2
+    assert task.max_tokens == 80
+    assert task.teacher_force_previous_chunk is True
+
+
+@pytest.mark.parametrize(
+    ("option", "value"),
+    [
+        ("sampler_decode_steps", 0),
+        ("temperature", 0.0),
+        ("temperature", 2.1),
+        ("eos_threshold", 21.0),
+        ("frames_after_eos", 0),
+        ("frames_after_eos", 21),
+        ("max_tokens", 10_001),
+    ],
+)
+def test_queue_rejects_invalid_advanced_tts_options(option, value):
+    with pytest.raises(ValueError):
+        GenerationQueue().enqueue(
+            text="Olá",
+            speech_text="Olá",
+            language="portuguese",
+            output_path="/tmp/advanced.wav",
+            **{option: value},
+        )
