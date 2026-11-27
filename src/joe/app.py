@@ -4107,6 +4107,7 @@ class JoeWindow(QMainWindow):
         model_variant = str(self.tts_model_variant.currentData() or language)
         cpu_threads = int(self.tts_cpu_threads.value())
         quantize = bool(self.tts_quantization.isChecked())
+        sampler_decode_steps = int(self.tts_sampler_decode_steps.value())
         selected_voice = self.voice_path.text().strip() or None
         source_text = self.tts_text.toPlainText().strip()
         if source_text:
@@ -4136,6 +4137,7 @@ class JoeWindow(QMainWindow):
                 cpu_threads=cpu_threads,
                 repeats=2,
                 quantize=quantize,
+                sampler_decode_steps=sampler_decode_steps,
             )
             return format_tts_benchmark_report(results, cpu_threads=cpu_threads)
 
