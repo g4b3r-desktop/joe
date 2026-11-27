@@ -75,7 +75,7 @@ O endpoint `/health` informa versão do PyTorch, dispositivo selecionado e realm
 
 ### Parâmetros avançados por geração
 
-A aba de configurações do Joe permite definir parâmetros opcionais para cada geração, tanto local quanto pelo Colab. As opções desativadas são omitidas da chamada à biblioteca, preservando os padrões do Pocket TTS:
+A aba de configurações do Joe permite definir parâmetros opcionais para cada geração, tanto local quanto pelo Colab. As opções desativadas são omitidas da chamada, preservando os padrões vigentes do backend (incluindo os passos de qualidade configurados no runtime do Colab):
 
 - `sampler_decode_steps`: substitui o número de passos do sampler ao carregar o modelo.
 - `temperature` (argumento `temp` na biblioteca) e `eos_threshold`: também são opções de carregamento do modelo; mudanças provocam recarga do modelo em memória.
