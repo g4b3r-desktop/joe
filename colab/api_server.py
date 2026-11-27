@@ -112,6 +112,7 @@ app = FastAPI(
 _tts_lock = threading.Lock()
 _asr_lock = threading.Lock()
 _tts_models: dict[str, Any] = {}
+_tts_model_settings: dict[str, tuple[int, float | None, float | None]] = {}
 _tts_loaded_devices: dict[str, str] = {}
 _tts_device_fallback_reason: str | None = None
 _last_tts_metrics: dict[str, Any] | None = None
@@ -228,13 +229,38 @@ def _tts_model_diagnostics(model: Any) -> dict[str, Any]:
     }
 
 
-def _get_tts_model(language: str, model_variant: str) -> Any:
+def _get_tts_model(
+    language: str,
+    model_variant: str,
+    sampler_decode_steps: int | None = None,
+    temperature: float | None = None,
+    eos_threshold: float | None = None,
+) -> Any:
+    effective_steps = (
+        int(sampler_decode_steps)
+        if sampler_decode_steps is not None
+        else TTS_SAMPLER_DECODE_STEPS
+    )
+    settings_key = (effective_steps, temperature, eos_threshold)
     model = _tts_models.get(model_variant)
+    if model is not None and _tts_model_settings.get(model_variant) != settings_key:
+        _tts_voice_states.clear()
+        _tts_models.clear()
+        _tts_model_settings.clear()
+        _tts_loaded_devices.clear()
+        model = None
     if model is None:
         # The worker is sequential; retain only the selected variant in memory.
         _tts_voice_states.clear()
         _tts_models.clear()
         _tts_loaded_devices.clear()
+        _tts_model_settings.clear()
+
+        model_load_options: dict[str, Any] = {}
+        if temperature is not None:
+            model_load_options["temp"] = float(temperature)
+        if eos_threshold is not None:
+            model_load_options["eos_threshold"] = float(eos_threshold)
 
         if DIRECT_DRIVE_ASSETS:
             drive_config = DRIVE_ASSETS_ROOT / "models" / model_variant / "config.yaml"
@@ -246,7 +272,8 @@ def _get_tts_model(language: str, model_variant: str) -> Any:
             loader = lambda: TTSModel.load_model(
                 config=str(drive_config),
                 quantize=False,
-                sampler_decode_steps=TTS_SAMPLER_DECODE_STEPS,
+                sampler_decode_steps=effective_steps,
+                **model_load_options,
             )
         else:
             local_config = os.environ.get("JOE_TTS_CONFIG_PATH")
@@ -288,7 +315,9 @@ def _get_tts_model(language: str, model_variant: str) -> Any:
                     language,
                     model_variant,
                     quantize=False,
-                    sampler_decode_steps=TTS_SAMPLER_DECODE_STEPS,
+                    sampler_decode_steps=effective_steps,
+                    temp=temperature,
+                    eos_threshold=eos_threshold,
                 )
 
         model = _load_tts_model_for_inference(loader, model_variant)
@@ -302,6 +331,12 @@ def _generate_tts(
     voice_file: str | None,
     voice_name: str | None = None,
     voice_id: str | None = None,
+    sampler_decode_steps: int | None = None,
+    temperature: float | None = None,
+    eos_threshold: float | None = None,
+    frames_after_eos: int | None = None,
+    max_tokens: int | None = None,
+    teacher_force_previous_chunk: bool = False,
 ) -> bytes:
     if voice_id:
         if not DIRECT_DRIVE_ASSETS:
@@ -342,7 +377,23 @@ def _generate_tts(
     )
     with _tts_lock:
         try:
-            model = _get_tts_model(language, model_variant)
+            if sampler_decode_steps is not None and not 1 <= int(sampler_decode_steps) <= 16:
+                raise ValueError("sampler_decode_steps deve ficar entre 1 e 16.")
+            if temperature is not None and not 0.05 <= float(temperature) <= 2.0:
+                raise ValueError("temperature deve ficar entre 0,05 e 2,0.")
+            if eos_threshold is not None and not -20.0 <= float(eos_threshold) <= 20.0:
+                raise ValueError("eos_threshold deve ficar entre -20 e 20.")
+            if frames_after_eos is not None and not 1 <= int(frames_after_eos) <= 20:
+                raise ValueError("frames_after_eos deve ficar entre 1 e 20.")
+            if max_tokens is not None and not 1 <= int(max_tokens) <= 10_000:
+                raise ValueError("max_tokens deve ficar entre 1 e 10.000.")
+            model = _get_tts_model(
+                language,
+                model_variant,
+                sampler_decode_steps,
+                temperature,
+                eos_threshold,
+            )
         except Exception as exc:
             raise RuntimeError(
                 "Falha ao carregar o checkpoint/configuração do modelo Pocket TTS "
@@ -392,7 +443,14 @@ def _generate_tts(
         generation_started = time.perf_counter()
         try:
             # generate_audio() already uses torch.no_grad() in Pocket TTS.
-            audio = model.generate_audio(voice_state, text)
+            generation_options: dict[str, Any] = {}
+            if frames_after_eos is not None:
+                generation_options["frames_after_eos"] = int(frames_after_eos)
+            if max_tokens is not None:
+                generation_options["max_tokens"] = int(max_tokens)
+            if teacher_force_previous_chunk:
+                generation_options["teacher_force_previous_chunk"] = True
+            audio = model.generate_audio(voice_state, text, **generation_options)
             if effective_device == "cuda":
                 torch.cuda.synchronize()
         except Exception as exc:
@@ -419,6 +477,18 @@ def _generate_tts(
             "text_characters": len(text),
             "sample_rate": sample_rate,
             "torch_version": str(torch.__version__),
+            "generation_parameters": {
+                "sampler_decode_steps": (
+                    int(sampler_decode_steps)
+                    if sampler_decode_steps is not None
+                    else TTS_SAMPLER_DECODE_STEPS
+                ),
+                "temperature": temperature if temperature is not None else "model_default",
+                "eos_threshold": eos_threshold if eos_threshold is not None else "model_default",
+                "frames_after_eos": frames_after_eos if frames_after_eos is not None else "automatic",
+                "max_tokens": max_tokens if max_tokens is not None else "model_default",
+                "teacher_force_previous_chunk": bool(teacher_force_previous_chunk),
+            },
         }
         print(
             "[JOE_TTS] "
@@ -773,7 +843,8 @@ def commit_asset_upload(upload_id: str) -> dict[str, Any]:
             validation_model = TTSModel.load_model(
                 config=str(validation_config),
                 quantize=False,
-                sampler_decode_steps=TTS_SAMPLER_DECODE_STEPS,
+                sampler_decode_steps=effective_steps,
+                **model_load_options,
             )
             if not getattr(validation_model, "has_voice_cloning", True):
                 raise ValueError(
@@ -1074,6 +1145,7 @@ def update_tts_settings(payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
                 # These are process-memory caches only. Drive models and voice
                 # assets remain untouched and will be loaded on the next request.
                 _tts_models.clear()
+                _tts_model_settings.clear()
                 _tts_loaded_devices.clear()
                 _tts_voice_states.clear()
 
@@ -1178,6 +1250,12 @@ def _generate_tts_job(
     voice_suffix: str,
     voice_filename: str | None,
     voice_id: str | None,
+    sampler_decode_steps: int | None,
+    temperature: float | None,
+    eos_threshold: float | None,
+    frames_after_eos: int | None,
+    max_tokens: int | None,
+    teacher_force_previous_chunk: bool,
 ) -> bytes:
     with tempfile.TemporaryDirectory(prefix="joe-tts-job-") as temp_dir:
         voice_path = None
@@ -1191,6 +1269,12 @@ def _generate_tts_job(
             voice_path,
             voice_name=voice_filename,
             voice_id=voice_id,
+            sampler_decode_steps=sampler_decode_steps,
+            temperature=temperature,
+            eos_threshold=eos_threshold,
+            frames_after_eos=frames_after_eos,
+            max_tokens=max_tokens,
+            teacher_force_previous_chunk=teacher_force_previous_chunk,
         )
 
 
@@ -1208,6 +1292,12 @@ async def submit_tts_job(
     model_variant: str | None = Form(default=None),
     voice: UploadFile | None = File(default=None),
     voice_id: str | None = Form(default=None),
+    sampler_decode_steps: int | None = Form(default=None),
+    temperature: float | None = Form(default=None),
+    eos_threshold: float | None = Form(default=None),
+    frames_after_eos: int | None = Form(default=None),
+    max_tokens: int | None = Form(default=None),
+    teacher_force_previous_chunk: bool = Form(default=False),
 ) -> dict[str, str]:
     text = text.strip()
     if not text:
@@ -1222,6 +1312,16 @@ async def submit_tts_job(
             status_code=422,
             detail="A versão selecionada não está disponível para o idioma informado.",
         )
+    if sampler_decode_steps is not None and not 1 <= sampler_decode_steps <= 16:
+        raise HTTPException(status_code=422, detail="sampler_decode_steps deve ficar entre 1 e 16.")
+    if temperature is not None and not 0.05 <= temperature <= 2.0:
+        raise HTTPException(status_code=422, detail="temperature deve ficar entre 0,05 e 2,0.")
+    if eos_threshold is not None and not -20.0 <= eos_threshold <= 20.0:
+        raise HTTPException(status_code=422, detail="eos_threshold deve ficar entre -20 e 20.")
+    if frames_after_eos is not None and not 1 <= frames_after_eos <= 20:
+        raise HTTPException(status_code=422, detail="frames_after_eos deve ficar entre 1 e 20.")
+    if max_tokens is not None and not 1 <= max_tokens <= 10_000:
+        raise HTTPException(status_code=422, detail="max_tokens deve ficar entre 1 e 10.000.")
     if voice is not None and voice_id:
         raise HTTPException(status_code=422, detail="Envie o arquivo de voz ou voice_id, não ambos.")
     if DIRECT_DRIVE_ASSETS and voice is not None:
@@ -1246,6 +1346,12 @@ async def submit_tts_job(
         suffix,
         voice_filename,
         voice_id,
+        sampler_decode_steps,
+        temperature,
+        eos_threshold,
+        frames_after_eos,
+        max_tokens,
+        teacher_force_previous_chunk,
     )
     return {"job_id": job_id, "status": "queued"}
 
