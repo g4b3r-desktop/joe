@@ -2705,7 +2705,7 @@ class JoeWindow(QMainWindow):
         )
         self.tts_cuda_rope_cache_benchmark_button.setToolTip(
             "Compara o RoPE FP32 original com tabelas FP32 de seno/cosseno pré-computadas. "
-            "Usa as mesmas sementes, descarta aquecimentos e compara também as amostras de áudio. "
+            "Usa as mesmas sementes, intercala a ordem original/cache e cache/original, descarta aquecimentos e compara também as amostras de áudio. "
             "Não altera as gerações normais."
         )
         self.tts_cuda_rope_cache_benchmark_button.clicked.connect(
@@ -4790,7 +4790,7 @@ class JoeWindow(QMainWindow):
 
         self._run_task(
             "Comparando RoPE FP32 original com cache: "
-            f"2 aquecimentos + {measured_runs} gerações por modo…",
+            f"2 pares de aquecimento + {measured_runs} pares medidos, ordem A/B e B/A alternada…",
             benchmark,
             completed,
         )
