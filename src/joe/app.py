@@ -4755,7 +4755,7 @@ class JoeWindow(QMainWindow):
                 QMessageBox.warning(
                     self,
                     "Não foi possível preparar o texto",
-                    f"Revise as opções de pronúncia antes de comparar a atenção.\\n\\n{exc}",
+                    f"Revise as opções de pronúncia antes de comparar a atenção.\n\n{exc}",
                 )
                 return
             chunks = split_text_into_chunks(prepared_text, max_chars=280)

@@ -30,6 +30,7 @@ on:
   pull_request:
     branches:
       - main
+      - feature/pocket-tts-generation-controls
 
 jobs:
   tests:
