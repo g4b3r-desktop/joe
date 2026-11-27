@@ -541,7 +541,10 @@ class PocketTTSService:
                 self._voice_states.clear()
                 gc.collect()
                 if torch.cuda.is_available():
-                    torch.cuda.synchronize()
+                    try:
+                        torch.cuda.synchronize()
+                    except Exception:
+                        pass
                     torch.cuda.empty_cache()
 
             results.append(
