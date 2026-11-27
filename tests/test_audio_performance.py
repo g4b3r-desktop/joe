@@ -392,11 +392,17 @@ def test_cuda_attention_report_exposes_flash_backend_failures():
                 mode="Flash FP16 SDPA",
                 error="Flash kernel does not support this mask",
             ),
+            TTSCudaAttentionBenchmarkResult(
+                mode="cuDNN FP16 SDPA",
+                error="cuDNN rejected the boolean attention mask",
+            ),
         ]
     )
 
     assert "Flash kernel does not support this mask" in report
     assert "Comparação Flash FP16: inconclusiva" in report
+    assert "cuDNN rejected the boolean attention mask" in report
+    assert "Comparação cuDNN FP16: inconclusiva" in report
     assert "sem fallback silencioso" in report
 
 
@@ -424,6 +430,12 @@ def test_cuda_attention_report_includes_memory_efficient_backend():
                 audio_durations_seconds=(6.0, 6.0, 6.0),
                 warmup_runs=2,
             ),
+            TTSCudaAttentionBenchmarkResult(
+                mode="cuDNN FP16 SDPA",
+                generation_times=(3.0, 3.1, 2.9),
+                audio_durations_seconds=(6.0, 6.0, 6.0),
+                warmup_runs=2,
+            ),
         ]
     )
 
@@ -431,3 +443,6 @@ def test_cuda_attention_report_includes_memory_efficient_backend():
     assert "Memory-Efficient FP16" in report
     assert "Flash e Memory-Efficient são testados separadamente" in report
     assert "Memory-Efficient FP16 foi 1,25× mais rápido" in report
+    assert "cuDNN Attention — SDPA FP16 somente na atenção" in report
+    assert "cuDNN FP16 foi 1,67× mais rápido" in report
+    assert "A máscara original da atenção é preservada" in report
