@@ -635,12 +635,8 @@ def format_cuda_profile_benchmark_report(
                 if not calls or mean(calls) <= 0:
                     continue
                 wall = mean(result.flow_component_wall_seconds.get(key, ()))
-                gpu = mean(result.flow_component_gpu_seconds.get(key, ()))
-                host_gap = max(0.0, wall - gpu)
                 lines.append(
                     f"    {label}: CPU/wall {format_duration(wall)}; "
-                    f"GPU {format_duration(gpu)}; "
-                    f"CPU/lançamento/sincronização ≈ {format_duration(host_gap)}; "
                     f"chamadas {_format_number(mean(calls), 1)}"
                 )
             lines.append("")
@@ -662,12 +658,12 @@ def format_cuda_profile_benchmark_report(
             "As medições de componentes são aninhadas nos blocos maiores e não devem ser somadas."
         )
         lines.append(
-            "CPU/wall menos GPU é apenas uma estimativa de despacho Python, lançamentos e esperas/sincronizações; "
-            "não é uma medição isolada de sincronização CUDA."
+            "As operações individuais usam relógio de parede no host e incluem despacho Python/framework e eventuais esperas implícitas; "
+            "não representam tempo isolado de kernel GPU. CUDA Events são usados apenas nos blocos maiores."
         )
         lines.append(
-            "O diagnóstico usa instrumentação por chamadas e eventos CUDA; "
-            "há pequena sobrecarga de medição."
+            "O diagnóstico usa instrumentação por chamadas e eventos CUDA nos blocos maiores; "
+            "as operações individuais não criam eventos CUDA por chamada para limitar a sobrecarga."
         )
     else:
         lines.append("Diagnóstico inconclusivo: nenhuma geração foi concluída.")
