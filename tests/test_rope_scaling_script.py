@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
 from scripts.benchmark_cuda_rope_scaling import (
+    DEFAULT_MODEL_CACHE,
     measured_audio_duration,
     normalize_text,
     reduce_text_to_duration,
@@ -62,3 +64,10 @@ def test_measured_audio_duration_returns_zero_when_no_durations_exist():
         cached_audio_durations_seconds=(),
     )
     assert measured_audio_duration(result) == 0.0
+
+
+def test_default_model_cache_points_to_the_user_models_directory():
+    assert DEFAULT_MODEL_CACHE == Path(
+        "/mnt/46d6d246-1a5f-4388-b273-2ace8e54f409/"
+        ".llms/.AUDIO/joe/.models/huggingface"
+    )
