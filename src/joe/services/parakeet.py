@@ -52,23 +52,36 @@ class ParakeetReduxService:
     def backend_note(self) -> str:
         return self._backend_note
 
-    def _load_photon(self) -> bool:
-        if not photon_cpu_supported():
+    def _load_photon(self, device_preference: str = "cpu") -> bool:
+        """Load Photon on the requested device when its runtime supports it."""
+        if device_preference == "cpu" and not photon_cpu_supported():
             return False
         try:
             import moondream as md
 
-            device = (
-                "mps"
-                if sys.platform == "darwin" and platform.machine().lower() == "arm64"
-                else "cpu"
-            )
+            if device_preference == "cuda":
+                import torch
+
+                if not torch.cuda.is_available():
+                    self._backend_note = (
+                        "Photon CUDA não foi iniciado porque torch.cuda.is_available() é falso."
+                    )
+                    return False
+                device = "cuda"
+            else:
+                device = (
+                    "mps"
+                    if sys.platform == "darwin" and platform.machine().lower() == "arm64"
+                    else "cpu"
+                )
+
             context = md.photon(MODEL_ID, device=device)
             speech = context.__enter__()
             self._photon_context = context
             self._speech = speech
-            self._backend = "Photon"
-            self._backend_note = "Backend otimizado Photon"
+            self._device = device
+            self._backend = "Photon CUDA" if device == "cuda" else "Photon"
+            self._backend_note = f"Backend otimizado Photon ({device.upper()})"
             return True
         except Exception as exc:  # noqa: BLE001
             self._backend_note = f"Photon indisponível; usando Transformers ({exc})"
@@ -165,9 +178,9 @@ class ParakeetReduxService:
                 "Pacote Moondream ausente. Execute bash scripts/install-linux.sh."
             ) from exc
 
-        # CPU mode can use Photon on supported CPUs. CUDA mode uses the
-        # documented Transformers reference path on the NVIDIA GPU.
-        if device_preference == "cpu" and self._load_photon():
+        # Photon has a CUDA runtime in the Colab worker; try the same fast path
+        # locally before falling back to the Transformers reference backend.
+        if self._load_photon(device_preference):
             self._loaded_preference = device_preference
             return
         self._load_transformers(prefer_cuda=(device_preference == "cuda"))
@@ -206,7 +219,7 @@ class ParakeetReduxService:
 
         self._ensure_loaded(device_preference)
 
-        if self._backend == "Photon":
+        if self._backend and self._backend.startswith("Photon"):
             options: dict[str, Any] = {}
             if timestamps:
                 options["timestamps"] = "segment"
