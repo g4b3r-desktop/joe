@@ -154,9 +154,20 @@ class PocketTTSService:
                 voice_state = model.get_state_for_audio_prompt(voice_source)
                 self._voice_states[state_key] = voice_state
 
+            stream_generator = getattr(model, "generate_audio_stream", None)
+            destination = Path(output_path).expanduser()
+            if callable(stream_generator):
+                chunks = stream_generator(
+                    model_state=voice_state,
+                    text_to_generate=text.strip(),
+                )
+                return _write_wav_stream_atomically(
+                    sf, chunks, int(model.sample_rate), destination
+                )
+
+            # Compatibility with older Pocket TTS builds without the streaming API.
             audio = model.generate_audio(voice_state, text.strip())
         samples = audio.detach().cpu().numpy()
-        destination = Path(output_path).expanduser()
         return _write_wav_atomically(sf, samples, int(model.sample_rate), destination)
 
     def export_voice_state(
@@ -300,12 +311,23 @@ class PocketTTSService:
                 # Warm up kernels/caches once; do not include this first call in the average.
                 if device == "cuda":
                     torch.cuda.synchronize()
-                with _inference_context(torch):
-                    warmup_audio = model.generate_audio(voice_state, text.strip())
-                warmup_samples = warmup_audio.detach().cpu().numpy()
+                stream_generator = getattr(model, "generate_audio_stream", None)
+                if callable(stream_generator):
+                    with _inference_context(torch):
+                        for warmup_chunk in stream_generator(
+                            model_state=voice_state,
+                            text_to_generate=text.strip(),
+                        ):
+                            # Move each chunk off the accelerator without retaining the full WAV.
+                            warmup_chunk.detach().cpu()
+                    del warmup_chunk
+                else:
+                    with _inference_context(torch):
+                        warmup_audio = model.generate_audio(voice_state, text.strip())
+                    warmup_samples = warmup_audio.detach().cpu().numpy()
+                    del warmup_audio, warmup_samples
                 if device == "cuda":
                     torch.cuda.synchronize()
-                del warmup_audio, warmup_samples
 
                 generation_times: list[float] = []
                 audio_duration_seconds = 0.0
@@ -313,15 +335,28 @@ class PocketTTSService:
                     if device == "cuda":
                         torch.cuda.synchronize()
                     generation_started = time.perf_counter()
-                    with _inference_context(torch):
-                        audio = model.generate_audio(voice_state, text.strip())
-                    samples = audio.detach().cpu().numpy()
+                    if callable(stream_generator):
+                        sample_count = 0
+                        with _inference_context(torch):
+                            for audio_chunk in stream_generator(
+                                model_state=voice_state,
+                                text_to_generate=text.strip(),
+                            ):
+                                sample_count += int(audio_chunk.shape[-1])
+                                audio_chunk.detach().cpu()
+                        del audio_chunk
+                    else:
+                        with _inference_context(torch):
+                            audio = model.generate_audio(voice_state, text.strip())
+                        samples = audio.detach().cpu().numpy()
+                        sample_count = (
+                            int(samples.shape[-1]) if samples.ndim else int(samples.size)
+                        )
+                        del audio, samples
                     if device == "cuda":
                         torch.cuda.synchronize()
                     generation_times.append(time.perf_counter() - generation_started)
-                    sample_count = int(samples.shape[-1]) if samples.ndim else int(samples.size)
                     audio_duration_seconds = sample_count / max(1, int(model.sample_rate))
-                    del audio, samples
 
                 peak_vram_mb = 0.0
                 peak_vram_reserved_mb = 0.0
@@ -400,6 +435,52 @@ def _write_wav_atomically(soundfile_module, samples, sample_rate: int, destinati
         info = soundfile_module.info(temporary_path)
         if info.frames <= 0 or info.samplerate <= 0:
             raise RuntimeError("O Pocket TTS produziu um WAV vazio ou inválido.")
+        temporary_path.replace(destination)
+    except BaseException:
+        temporary_path.unlink(missing_ok=True)
+        raise
+    return destination
+
+
+def _write_wav_stream_atomically(
+    soundfile_module,
+    chunks,
+    sample_rate: int,
+    destination: Path,
+) -> Path:
+    """Write streamed mono chunks incrementally and replace the destination only on success."""
+    destination = Path(destination).expanduser()
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    temporary_file = tempfile.NamedTemporaryFile(
+        prefix=f".{destination.stem}.",
+        suffix=".wav",
+        dir=destination.parent,
+        delete=False,
+    )
+    temporary_path = Path(temporary_file.name)
+    temporary_file.close()
+    frames_written = 0
+    try:
+        with soundfile_module.SoundFile(
+            temporary_path,
+            mode="w",
+            samplerate=int(sample_rate),
+            channels=1,
+            format="WAV",
+            subtype="PCM_16",
+        ) as writer:
+            for chunk in chunks:
+                samples = chunk.detach().cpu().numpy()
+                if getattr(samples, "ndim", 1) != 1:
+                    samples = samples.reshape(-1)
+                if samples.size:
+                    writer.write(samples)
+                    frames_written += int(samples.size)
+        if frames_written <= 0:
+            raise RuntimeError("O Pocket TTS não produziu nenhum bloco de áudio.")
+        info = soundfile_module.info(temporary_path)
+        if info.frames != frames_written or info.samplerate != int(sample_rate):
+            raise RuntimeError("O Pocket TTS produziu um WAV incompleto ou inválido.")
         temporary_path.replace(destination)
     except BaseException:
         temporary_path.unlink(missing_ok=True)
