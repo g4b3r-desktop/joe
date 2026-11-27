@@ -42,6 +42,9 @@ class PocketTTSService:
         model_variant: str,
         device: str,
         quantize: bool,
+        sampler_decode_steps: int | None = None,
+        temperature: float | None = None,
+        eos_threshold: float | None = None,
     ):
         if device not in {"cpu", "cuda"}:
             raise ValueError("Dispositivo TTS inválido. Escolha CPU ou NVIDIA GPU (CUDA).")
@@ -54,7 +57,14 @@ class PocketTTSService:
 
         # Pocket TTS dynamic INT8 quantization is supported on CPU only.
         effective_quantize = bool(quantize) and device == "cpu"
-        cache_key = (model_variant, device, effective_quantize)
+        cache_key = (
+            model_variant,
+            device,
+            effective_quantize,
+            sampler_decode_steps,
+            temperature,
+            eos_threshold,
+        )
         model = self._models.get(cache_key)
         if model is not None:
             return model
@@ -62,9 +72,17 @@ class PocketTTSService:
         # Keep a single model/device active to avoid retaining duplicate weights in RAM/VRAM.
         self._voice_states.clear()
         self._models.clear()
+        model_load_options = {}
+        if sampler_decode_steps is not None:
+            model_load_options["sampler_decode_steps"] = int(sampler_decode_steps)
+        if temperature is not None:
+            model_load_options["temp"] = float(temperature)
+        if eos_threshold is not None:
+            model_load_options["eos_threshold"] = float(eos_threshold)
         model = tts_model_class.load_model(
             **model_loading_options(model_variant),
             quantize=effective_quantize,
+            **model_load_options,
         )
         if device == "cuda":
             try:
@@ -90,6 +108,12 @@ class PocketTTSService:
         device_preference: str = "cpu",
         cpu_threads: int = 2,
         quantize: bool = True,
+        sampler_decode_steps: int | None = None,
+        temperature: float | None = None,
+        eos_threshold: float | None = None,
+        frames_after_eos: int | None = None,
+        max_tokens: int | None = None,
+        teacher_force_previous_chunk: bool = False,
     ) -> Path:
         if not text.strip():
             raise ValueError("Digite algum texto antes de gerar o áudio.")
@@ -112,8 +136,25 @@ class PocketTTSService:
 
         self._configure_torch(torch, cpu_threads)
         effective_quantize = bool(quantize) and device_preference == "cpu"
+        if sampler_decode_steps is not None and not 1 <= int(sampler_decode_steps) <= 16:
+            raise ValueError("sampler_decode_steps deve ficar entre 1 e 16.")
+        if temperature is not None and not 0.05 <= float(temperature) <= 2.0:
+            raise ValueError("temperature deve ficar entre 0,05 e 2,0.")
+        if eos_threshold is not None and not -20.0 <= float(eos_threshold) <= 20.0:
+            raise ValueError("eos_threshold deve ficar entre -20 e 20.")
+        if frames_after_eos is not None and not 1 <= int(frames_after_eos) <= 20:
+            raise ValueError("frames_after_eos deve ficar entre 1 e 20; use None para automático.")
+        if max_tokens is not None and not 1 <= int(max_tokens) <= 10_000:
+            raise ValueError("max_tokens deve ficar entre 1 e 10.000.")
         model = self._get_model(
-            torch, TTSModel, model_variant, device_preference, effective_quantize
+            torch,
+            TTSModel,
+            model_variant,
+            device_preference,
+            effective_quantize,
+            sampler_decode_steps,
+            temperature,
+            eos_threshold,
         )
 
         voice_source = str(voice_path) if voice_path else (
@@ -127,7 +168,14 @@ class PocketTTSService:
             voice_state = model.get_state_for_audio_prompt(voice_source)
             self._voice_states[state_key] = voice_state
 
-        audio = model.generate_audio(voice_state, text.strip())
+        generation_options = {}
+        if frames_after_eos is not None:
+            generation_options["frames_after_eos"] = int(frames_after_eos)
+        if max_tokens is not None:
+            generation_options["max_tokens"] = int(max_tokens)
+        if teacher_force_previous_chunk:
+            generation_options["teacher_force_previous_chunk"] = True
+        audio = model.generate_audio(voice_state, text.strip(), **generation_options)
         samples = audio.detach().cpu().numpy()
         destination = Path(output_path).expanduser()
         return _write_wav_atomically(sf, samples, int(model.sample_rate), destination)
