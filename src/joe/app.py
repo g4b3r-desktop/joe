@@ -4771,7 +4771,8 @@ class JoeWindow(QMainWindow):
 
         self._run_task(
             f"Diagnosticando CUDA FP32: 2 aquecimentos + "
-            f"{measured_runs} gerações medidas…",
+            f"{measured_runs} gerações medidas; microperfil de projeções, atenção, cache KV, "
+            "FFN, FlowNet e controle Python…",
             benchmark,
             completed,
         )
