@@ -814,8 +814,8 @@ def test_cuda_fp16_benchmark_wraps_each_pocket_tts_worker_in_autocast(monkeypatc
     assert all(not result.error for result in results)
     assert all(len(result.generation_times) == 3 for result in results)
     assert all(result.audio_durations_seconds == (0.5, 0.5, 0.5) for result in results)
-    assert all(result.audio_peak_amplitudes == (0.2, 0.2, 0.2) for result in results)
-    assert all(result.audio_rms_levels == (0.2, 0.2, 0.2) for result in results)
+    assert all(result.audio_peak_amplitudes == pytest.approx((0.2, 0.2, 0.2)) for result in results)
+    assert all(result.audio_rms_levels == pytest.approx((0.2, 0.2, 0.2)) for result in results)
     assert len(model_instances) == 2
     assert all(context is False for context in model_instances[0].worker_contexts)
     assert all(context is True for context in model_instances[1].worker_contexts)
