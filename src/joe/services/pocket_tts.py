@@ -1247,13 +1247,22 @@ class PocketTTSService:
                         )
                 return wrapped
 
+            patched_module_ids: set[int] = set()
+
             def patch_module_forward(module, key: str) -> None:
+                # Pocket TTS shares one RotaryEmbedding instance across all
+                # Transformer layers. Do not wrap the same object once per layer:
+                # nested wrappers multiply both call counts and reported time.
+                module_id = id(module)
+                if module_id in patched_module_ids:
+                    return
                 original = getattr(module, "forward", None)
                 if not callable(original):
                     raise RuntimeError(
                         f"Componente {key} não expõe forward() para microprofiling."
                     )
                 patch_attribute(module, "forward", timed_component(original, key))
+                patched_module_ids.add(module_id)
 
             try:
                 # Split the attention block into its actual operations. Timings are
