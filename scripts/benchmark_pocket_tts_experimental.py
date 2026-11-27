@@ -308,7 +308,7 @@ def main() -> int:
     torch.set_num_threads(args.threads)
     configure_model_cache()
     options = model_loading_options(args.variant)
-    voice_source = args.voice or default_voice_for_language(args.language)
+    voice_source = args.voice or default_voice_for_language(args.language) or "hf://kyutai/tts-voices/alba-mackenna/casual.wav"
     if not voice_source:
         raise SystemExit("Nenhuma voz padrão disponível; informe --voice.")
 
