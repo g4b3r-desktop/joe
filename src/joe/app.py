@@ -35,6 +35,7 @@ from PySide6.QtWidgets import (
     QDialog,
     QDialogButtonBox,
     QFileDialog,
+    QDoubleSpinBox,
     QHeaderView,
     QInputDialog,
     QFormLayout,
@@ -351,6 +352,14 @@ class TTSGenerationWorker(QRunnable):
                                     cancel_event=self.cancel_event,
                                     model_variant=self.task.model_variant,
                                     voice_id=remote_voice_id,
+                                    sampler_decode_steps=self.task.sampler_decode_steps,
+                                    temperature=self.task.temperature,
+                                    eos_threshold=self.task.eos_threshold,
+                                    frames_after_eos=self.task.frames_after_eos,
+                                    max_tokens=self.task.max_tokens,
+                                    teacher_force_previous_chunk=(
+                                        self.task.teacher_force_previous_chunk
+                                    ),
                                 )
                                 if self.cancel_event.is_set():
                                     self.signals.cancelled.emit(self.task.task_id)
@@ -366,6 +375,14 @@ class TTSGenerationWorker(QRunnable):
                                     device_preference=self.task.tts_device,
                                     cpu_threads=self.task.cpu_threads,
                                     quantize=self.task.tts_quantization,
+                                    sampler_decode_steps=self.task.sampler_decode_steps,
+                                    temperature=self.task.temperature,
+                                    eos_threshold=self.task.eos_threshold,
+                                    frames_after_eos=self.task.frames_after_eos,
+                                    max_tokens=self.task.max_tokens,
+                                    teacher_force_previous_chunk=(
+                                        self.task.teacher_force_previous_chunk
+                                    ),
                                 )
                             if not chunk_path.is_file() or chunk_path.stat().st_size == 0:
                                 raise RuntimeError("O serviço TTS não produziu um WAV válido.")
@@ -2585,6 +2602,125 @@ class JoeWindow(QMainWindow):
         settings_layout.addWidget(hardware_group)
         self._refresh_tts_hardware_info()
 
+        # Advanced generation controls are opt-in: disabled overrides preserve
+        # Pocket TTS defaults, including automatic EOS handling and token limits.
+        generation_group = QGroupBox("Parâmetros avançados do Pocket TTS")
+        generation_form = QFormLayout(generation_group)
+
+        self.tts_sampler_override = QCheckBox("Sobrescrever padrão do modelo")
+        self.tts_sampler_override.setChecked(
+            self.app_settings.value("tts_sampler_override", False, type=bool)
+        )
+        self.tts_sampler_value = QSpinBox()
+        self.tts_sampler_value.setRange(1, 16)
+        self.tts_sampler_value.setValue(
+            self.app_settings.value("tts_sampler_value", 5, type=int)
+        )
+        self.tts_sampler_value.setEnabled(self.tts_sampler_override.isChecked())
+        self.tts_sampler_value.setToolTip(
+            "Mais passos podem melhorar a qualidade, mas também aumentam o tempo de síntese."
+        )
+        sampler_row = QWidget()
+        sampler_layout = QHBoxLayout(sampler_row)
+        sampler_layout.setContentsMargins(0, 0, 0, 0)
+        sampler_layout.addWidget(self.tts_sampler_override)
+        sampler_layout.addWidget(self.tts_sampler_value)
+        sampler_layout.addStretch(1)
+        generation_form.addRow("sampler_decode_steps", sampler_row)
+
+        self.tts_temperature_override = QCheckBox("Sobrescrever padrão do modelo")
+        self.tts_temperature_override.setChecked(
+            self.app_settings.value("tts_temperature_override", False, type=bool)
+        )
+        self.tts_temperature_value = QDoubleSpinBox()
+        self.tts_temperature_value.setRange(0.05, 2.0)
+        self.tts_temperature_value.setDecimals(2)
+        self.tts_temperature_value.setSingleStep(0.05)
+        self.tts_temperature_value.setValue(
+            self.app_settings.value("tts_temperature_value", 0.7, type=float)
+        )
+        self.tts_temperature_value.setEnabled(self.tts_temperature_override.isChecked())
+        self.tts_temperature_value.setToolTip(
+            "Temperatura altera a amostragem; não é um controle direto de velocidade."
+        )
+        temperature_row = QWidget()
+        temperature_layout = QHBoxLayout(temperature_row)
+        temperature_layout.setContentsMargins(0, 0, 0, 0)
+        temperature_layout.addWidget(self.tts_temperature_override)
+        temperature_layout.addWidget(self.tts_temperature_value)
+        temperature_layout.addStretch(1)
+        generation_form.addRow("temperature (temp)", temperature_row)
+
+        self.tts_eos_threshold_override = QCheckBox("Sobrescrever padrão do modelo")
+        self.tts_eos_threshold_override.setChecked(
+            self.app_settings.value("tts_eos_threshold_override", False, type=bool)
+        )
+        self.tts_eos_threshold_value = QDoubleSpinBox()
+        self.tts_eos_threshold_value.setRange(-20.0, 20.0)
+        self.tts_eos_threshold_value.setDecimals(2)
+        self.tts_eos_threshold_value.setSingleStep(0.1)
+        self.tts_eos_threshold_value.setValue(
+            self.app_settings.value("tts_eos_threshold_value", -4.0, type=float)
+        )
+        self.tts_eos_threshold_value.setEnabled(
+            self.tts_eos_threshold_override.isChecked()
+        )
+        self.tts_eos_threshold_value.setToolTip(
+            "Altera o limiar de fim de fala. Valores inadequados podem cortar palavras."
+        )
+        eos_row = QWidget()
+        eos_layout = QHBoxLayout(eos_row)
+        eos_layout.setContentsMargins(0, 0, 0, 0)
+        eos_layout.addWidget(self.tts_eos_threshold_override)
+        eos_layout.addWidget(self.tts_eos_threshold_value)
+        eos_layout.addStretch(1)
+        generation_form.addRow("eos_threshold", eos_row)
+
+        self.tts_frames_after_eos = QSpinBox()
+        self.tts_frames_after_eos.setRange(0, 20)
+        self.tts_frames_after_eos.setValue(
+            self.app_settings.value("tts_frames_after_eos", 0, type=int)
+        )
+        self.tts_frames_after_eos.setToolTip(
+            "0 mantém a escolha automática do Pocket TTS. Valores menores que o padrão "
+            "podem cortar o final da fala."
+        )
+        generation_form.addRow("frames_after_eos (0 = automático)", self.tts_frames_after_eos)
+
+        self.tts_max_tokens = QSpinBox()
+        self.tts_max_tokens.setRange(0, 10_000)
+        self.tts_max_tokens.setValue(
+            self.app_settings.value("tts_max_tokens", 0, type=int)
+        )
+        self.tts_max_tokens.setToolTip(
+            "0 mantém o limite padrão do modelo; valores baixos podem truncar a geração."
+        )
+        generation_form.addRow("max_tokens (0 = padrão)", self.tts_max_tokens)
+
+        self.tts_teacher_force_previous_chunk = QCheckBox(
+            "Usar teacher forcing do bloco anterior"
+        )
+        self.tts_teacher_force_previous_chunk.setChecked(
+            self.app_settings.value(
+                "tts_teacher_force_previous_chunk", False, type=bool
+            )
+        )
+        self.tts_teacher_force_previous_chunk.setToolTip(
+            "Melhora a continuidade entre blocos em alguns cenários, mas adiciona prefill "
+            "e pode deixar a geração mais lenta. Desligado por padrão."
+        )
+        generation_form.addRow("", self.tts_teacher_force_previous_chunk)
+
+        generation_note = QLabel(
+            "As opções desativadas mantêm os padrões originais do modelo. "
+            "0 em frames_after_eos e max_tokens significa automático/padrão. "
+            "Teacher forcing fica desligado para priorizar velocidade."
+        )
+        generation_note.setObjectName("muted")
+        generation_note.setWordWrap(True)
+        generation_form.addRow("", generation_note)
+        settings_layout.addWidget(generation_group)
+
         monitor_group = QGroupBox("Monitoramento em tempo real")
         monitor_form = QFormLayout(monitor_group)
         self.tts_monitor_cpu_ram = QLabel("Coletando métricas…")
@@ -3074,13 +3210,21 @@ class JoeWindow(QMainWindow):
             model_variant=task.model_variant,
             backend="Google Colab" if task.remote else "Local",
             original_text=task.text,
-            generation_settings=build_generation_settings(
-                device=task.tts_device,
-                cpu_threads=task.cpu_threads,
-                quantization=task.tts_quantization,
-                profile=task.tts_profile,
-                remote=task.remote,
-            ),
+            generation_settings={
+                **build_generation_settings(
+                    device=task.tts_device,
+                    cpu_threads=task.cpu_threads,
+                    quantization=task.tts_quantization,
+                    profile=task.tts_profile,
+                    remote=task.remote,
+                ),
+                "sampler_decode_steps": task.sampler_decode_steps,
+                "temperature": task.temperature,
+                "eos_threshold": task.eos_threshold,
+                "frames_after_eos": task.frames_after_eos,
+                "max_tokens": task.max_tokens,
+                "teacher_force_previous_chunk": task.teacher_force_previous_chunk,
+            },
         )
 
     def _record_clipboard_history(
@@ -3969,6 +4113,67 @@ class JoeWindow(QMainWindow):
         )
         self._refresh_tts_hardware_info()
 
+    def _tts_generation_parameters(self) -> dict[str, object]:
+        """Return optional overrides; None preserves the Pocket TTS model defaults."""
+        return {
+            "sampler_decode_steps": (
+                int(self.tts_sampler_value.value())
+                if self.tts_sampler_override.isChecked()
+                else None
+            ),
+            "temperature": (
+                float(self.tts_temperature_value.value())
+                if self.tts_temperature_override.isChecked()
+                else None
+            ),
+            "eos_threshold": (
+                float(self.tts_eos_threshold_value.value())
+                if self.tts_eos_threshold_override.isChecked()
+                else None
+            ),
+            "frames_after_eos": (
+                int(self.tts_frames_after_eos.value())
+                if self.tts_frames_after_eos.value() > 0
+                else None
+            ),
+            "max_tokens": (
+                int(self.tts_max_tokens.value())
+                if self.tts_max_tokens.value() > 0
+                else None
+            ),
+            "teacher_force_previous_chunk": bool(
+                self.tts_teacher_force_previous_chunk.isChecked()
+            ),
+        }
+
+    def _save_tts_generation_parameters(self, *_args) -> None:
+        if not hasattr(self, "tts_sampler_override"):
+            return
+        self.app_settings.setValue(
+            "tts_sampler_override", self.tts_sampler_override.isChecked()
+        )
+        self.app_settings.setValue("tts_sampler_value", self.tts_sampler_value.value())
+        self.app_settings.setValue(
+            "tts_temperature_override", self.tts_temperature_override.isChecked()
+        )
+        self.app_settings.setValue(
+            "tts_temperature_value", self.tts_temperature_value.value()
+        )
+        self.app_settings.setValue(
+            "tts_eos_threshold_override", self.tts_eos_threshold_override.isChecked()
+        )
+        self.app_settings.setValue(
+            "tts_eos_threshold_value", self.tts_eos_threshold_value.value()
+        )
+        self.app_settings.setValue(
+            "tts_frames_after_eos", self.tts_frames_after_eos.value()
+        )
+        self.app_settings.setValue("tts_max_tokens", self.tts_max_tokens.value())
+        self.app_settings.setValue(
+            "tts_teacher_force_previous_chunk",
+            self.tts_teacher_force_previous_chunk.isChecked(),
+        )
+
     def _refresh_tts_hardware_info(self) -> None:
         if not hasattr(self, "tts_hardware_info"):
             return
@@ -4661,6 +4866,7 @@ class JoeWindow(QMainWindow):
         tts_device = str(self.tts_device.currentData() or "cpu")
         cpu_threads = int(self.tts_cpu_threads.value())
         tts_quantization = bool(self.tts_quantization.isChecked())
+        tts_generation_parameters = self._tts_generation_parameters()
         generation_settings = build_generation_settings(
             device=tts_device,
             cpu_threads=cpu_threads,
@@ -4668,6 +4874,7 @@ class JoeWindow(QMainWindow):
             profile=str(self.tts_performance_profile.currentData() or "custom"),
             remote=remote is not None,
         )
+        generation_settings.update(tts_generation_parameters)
 
         remote_voice_session = (
             ColabVoiceSession(
@@ -4687,7 +4894,9 @@ class JoeWindow(QMainWindow):
 
         if remote_voice_session is not None:
             def generate_clipboard_chunk(chunk_text: str, output_path: Path) -> Path:
-                audio_data = remote_voice_session.generate_audio(chunk_text)
+                audio_data = remote_voice_session.generate_audio(
+                    chunk_text, **tts_generation_parameters
+                )
                 write_bytes_atomically(output_path, audio_data)
                 return output_path
         else:
@@ -4701,6 +4910,7 @@ class JoeWindow(QMainWindow):
                     device_preference=tts_device,
                     cpu_threads=cpu_threads,
                     quantize=tts_quantization,
+                    **tts_generation_parameters,
                 )
 
         if shortcut_action == "replace":
@@ -4942,6 +5152,7 @@ class JoeWindow(QMainWindow):
                 remote=remote,
                 remote_url=remote_url,
                 remote_token=remote_token,
+                **self._tts_generation_parameters(),
             )
         except ValueError as exc:
             QMessageBox.information(self, "Tarefa inválida", str(exc))
@@ -5435,6 +5646,15 @@ class JoeWindow(QMainWindow):
             self.tts_cpu_threads,
             self.tts_performance_profile,
             self.tts_quantization,
+            self.tts_sampler_override,
+            self.tts_sampler_value,
+            self.tts_temperature_override,
+            self.tts_temperature_value,
+            self.tts_eos_threshold_override,
+            self.tts_eos_threshold_value,
+            self.tts_frames_after_eos,
+            self.tts_max_tokens,
+            self.tts_teacher_force_previous_chunk,
             self.tts_benchmark_button,
             self.tts_language,
             self.tts_model_variant,
