@@ -214,6 +214,7 @@ def test_cuda_rope_cache_benchmark_runs_paired_fp32_modes(monkeypatch):
 
         def close(self):
             self.closed = True
+            self.allocated_bytes = 0
 
     def install_cache(model, torch, *, initial_positions):
         assert initial_positions == 8192
