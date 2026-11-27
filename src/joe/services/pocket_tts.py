@@ -980,6 +980,7 @@ class PocketTTSService:
         cpu_threads: int = 2,
         warmup_runs: int = 2,
         measured_runs: int = 7,
+        model_cache_dir: str | Path | None = None,
     ) -> TTSCudaRopeCacheBenchmarkResult:
         """Compare FP32 RoPE modes with paired, alternating execution order."""
         import numpy as np
@@ -990,7 +991,7 @@ class PocketTTSService:
             )
         warmup_count = max(1, int(warmup_runs))
         measured_count = max(3, int(measured_runs))
-        configure_model_cache()
+        configure_model_cache(cache_directory=model_cache_dir) if model_cache_dir else configure_model_cache()
         try:
             import torch
             from pocket_tts import TTSModel
