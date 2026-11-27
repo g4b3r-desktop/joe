@@ -1222,11 +1222,17 @@ def test_cudnn_fp16_attention_patch_checks_eligibility_and_preserves_mask(monkey
     entered_backends = []
     eligibility_calls = []
     sdpa_calls = []
+    backend_enabled = {"value": False}
 
     @contextmanager
     def fake_sdpa_kernel(backend):
         entered_backends.append(backend)
-        yield
+        previous = backend_enabled["value"]
+        backend_enabled["value"] = True
+        try:
+            yield
+        finally:
+            backend_enabled["value"] = previous
 
     class FakeSDPBackend:
         CUDNN_ATTENTION = backend_marker
@@ -1257,8 +1263,8 @@ def test_cudnn_fp16_attention_patch_checks_eligibility_and_preserves_mask(monkey
     mask = FakeMask()
 
     def can_use_cudnn(params, debug=False):
-        eligibility_calls.append((params, debug))
-        return True
+        eligibility_calls.append((params, debug, backend_enabled["value"]))
+        return backend_enabled["value"]
 
     def original_sdpa(query, key, value, *args, **kwargs):
         sdpa_calls.append((query, key, value, args, kwargs))
@@ -1280,7 +1286,7 @@ def test_cudnn_fp16_attention_patch_checks_eligibility_and_preserves_mask(monkey
         cuda=SimpleNamespace(
             SDPAParams=FakeParams,
             can_use_cudnn_attention=can_use_cudnn,
-            cudnn_sdp_enabled=lambda: True,
+            cudnn_sdp_enabled=lambda: backend_enabled["value"],
         ),
         cudnn=SimpleNamespace(
             is_available=lambda: True,
@@ -1331,8 +1337,10 @@ def test_cudnn_fp16_attention_patch_checks_eligibility_and_preserves_mask(monkey
     assert result.dtype == "float32"
     assert entered_backends == [backend_marker]
     assert len(eligibility_calls) == 1
-    params, debug = eligibility_calls[0]
+    params, debug, enabled_during_check = eligibility_calls[0]
     assert debug is True
+    assert enabled_during_check is True
+    assert backend_enabled["value"] is False
     assert [tensor.dtype for tensor in params.args[:3]] == ["float16"] * 3
     assert params.args[3] is mask
     assert sdpa_calls[0][4]["attn_mask"] is mask
