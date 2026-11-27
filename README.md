@@ -22,7 +22,7 @@ No modo Local, o processamento ocorre no próprio computador. No modo Colab, tex
 
 O Joe pode usar uma sessão do Google Colab como servidor de inferência, sem instalar os pesos dos modelos no computador desktop.
 
-1. Abra a aba **Google Colab / API** no Joe e clique em **Abrir notebook no Google Colab** (ou abra [o notebook diretamente](https://colab.research.google.com/github/g4b3r-desktop/joe/blob/feature/clipboard-dialog-appearance-settings/colab/Joe_Colab_API.ipynb)).
+1. Abra a aba **Google Colab / API** no Joe e clique em **Abrir notebook no Google Colab** (ou abra [o notebook diretamente](https://colab.research.google.com/github/g4b3r-desktop/joe/blob/feature/pocket-tts-generation-controls/colab/Joe_Colab_API.ipynb)).
 2. No Colab, selecione um runtime com GPU quando disponível e execute as células em sequência.
 3. A última célula inicia a API FastAPI e um Cloudflare Quick Tunnel temporário. Ela mostra uma URL HTTPS `trycloudflare.com` e um token Bearer aleatório.
 4. Cole a URL e o token na aba **Google Colab / API**, teste a conexão e selecione **Google Colab (API remota)** em Modo de execução.
