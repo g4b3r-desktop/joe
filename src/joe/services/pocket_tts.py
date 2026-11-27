@@ -320,7 +320,6 @@ class PocketTTSService:
                         ):
                             # Move each chunk off the accelerator without retaining the full WAV.
                             warmup_chunk.detach().cpu()
-                    del warmup_chunk
                 else:
                     with _inference_context(torch):
                         warmup_audio = model.generate_audio(voice_state, text.strip())
@@ -344,7 +343,6 @@ class PocketTTSService:
                             ):
                                 sample_count += int(audio_chunk.shape[-1])
                                 audio_chunk.detach().cpu()
-                        del audio_chunk
                     else:
                         with _inference_context(torch):
                             audio = model.generate_audio(voice_state, text.strip())
