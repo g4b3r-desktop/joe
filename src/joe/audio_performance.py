@@ -30,6 +30,8 @@ class TTSBenchmarkResult:
     audio_duration_seconds: float = 0.0
     character_count: int = 0
     peak_vram_mb: float = 0.0
+    peak_vram_reserved_mb: float = 0.0
+    cuda_device_name: str = ""
     quantized: bool = False
     repeats: int = 0
     error: str = ""
@@ -134,7 +136,8 @@ def format_tts_benchmark_report(
             quantization_label = "INT8" if result.quantized else "sem quantização"
             label = f"CPU — {cpu_threads} thread(s), {quantization_label}"
         elif result.device == "cuda":
-            label = "NVIDIA CUDA — sem quantização INT8"
+            gpu_label = f" ({result.cuda_device_name})" if result.cuda_device_name else ""
+            label = f"NVIDIA CUDA{gpu_label} — sem quantização INT8"
         else:
             label = result.device.upper()
         lines.append(label)
@@ -159,7 +162,8 @@ def format_tts_benchmark_report(
                 f"  Mediana por execução: {format_duration(result.generation_median_seconds or result.generation_seconds)}",
                 f"  Áudio produzido: {format_duration(result.audio_duration_seconds)}",
                 f"  Velocidade: {_format_number(speed, 2)}× tempo real",
-                f"  Memória de VRAM de pico: {_format_number(result.peak_vram_mb, 0)} MB",
+                f"  VRAM alocada de pico: {_format_number(result.peak_vram_mb, 0)} MB",
+                f"  VRAM reservada de pico: {_format_number(result.peak_vram_reserved_mb, 0)} MB",
             ]
         )
         successful.append(result)
