@@ -2548,8 +2548,8 @@ class JoeWindow(QMainWindow):
         saved_device_index = self.tts_device.findData(saved_tts_device)
         self.tts_device.setCurrentIndex(max(0, saved_device_index))
         self.tts_device.setToolTip(
-            "Na CPU, você pode ativar ou desativar a quantização INT8 abaixo. "
-            "Na CUDA, o Pocket TTS usa pesos sem quantização INT8."
+            "CPU e CUDA têm controles INT8 separados. A quantização da GPU começa "
+            "desativada e só é usada quando você a habilita explicitamente."
         )
 
         self.tts_cpu_threads = QSpinBox()
@@ -2569,8 +2569,20 @@ class JoeWindow(QMainWindow):
         )
         self.tts_quantization.setChecked(saved_quantization)
         self.tts_quantization.setToolTip(
-            "Reduz o uso de memória do modelo na CPU. O Pocket TTS não oferece "
-            "quantização dinâmica INT8 no caminho CUDA."
+            "Usa o caminho INT8 dinâmico padrão do Pocket TTS na CPU. "
+            "Esta preferência não ativa a quantização na GPU."
+        )
+
+        self.tts_cuda_quantization = QCheckBox(
+            "Usar quantização INT8 na NVIDIA GPU (TorchAO)"
+        )
+        saved_cuda_quantization = self.app_settings.value(
+            "tts_cuda_quantization", False, type=bool
+        )
+        self.tts_cuda_quantization.setChecked(saved_cuda_quantization)
+        self.tts_cuda_quantization.setToolTip(
+            "Ativa INT8 com TorchAO nas camadas de atenção e FFN do Pocket TTS na CUDA. "
+            "Desmarcada por padrão: a inferência GPU continua exatamente sem quantização."
         )
 
         self.tts_hardware_info = QLabel()
@@ -2579,6 +2591,7 @@ class JoeWindow(QMainWindow):
         self.tts_device.currentIndexChanged.connect(self._save_tts_hardware_settings)
         self.tts_cpu_threads.valueChanged.connect(self._save_tts_hardware_settings)
         self.tts_quantization.toggled.connect(self._save_tts_hardware_settings)
+        self.tts_cuda_quantization.toggled.connect(self._save_tts_hardware_settings)
         self.tts_performance_profile.currentIndexChanged.connect(
             self._apply_tts_performance_profile
         )
@@ -2596,7 +2609,8 @@ class JoeWindow(QMainWindow):
         hardware_form.addRow("Perfil de desempenho", self.tts_performance_profile)
         hardware_form.addRow("Dispositivo para geração local", self.tts_device)
         hardware_form.addRow("Threads da CPU", self.tts_cpu_threads)
-        hardware_form.addRow("Quantização do modelo", self.tts_quantization)
+        hardware_form.addRow("Quantização na CPU", self.tts_quantization)
+        hardware_form.addRow("Quantização na GPU", self.tts_cuda_quantization)
         hardware_form.addRow("Estado do hardware", self.tts_hardware_info)
         hardware_form.addRow("", hardware_actions)
         settings_layout.addWidget(hardware_group)
@@ -4103,6 +4117,9 @@ class JoeWindow(QMainWindow):
         self.app_settings.setValue(
             "tts_quantization", bool(self.tts_quantization.isChecked())
         )
+        self.app_settings.setValue(
+            "tts_cuda_quantization", bool(self.tts_cuda_quantization.isChecked())
+        )
         self.app_settings.setValue("tts_performance_profile", profile)
         self._refresh_tts_hardware_info()
         self.statusBar().showMessage(
@@ -4112,7 +4129,12 @@ class JoeWindow(QMainWindow):
     def _save_tts_hardware_settings(self, *_args) -> None:
         if not all(
             hasattr(self, name)
-            for name in ("tts_device", "tts_cpu_threads", "tts_quantization")
+            for name in (
+                "tts_device",
+                "tts_cpu_threads",
+                "tts_quantization",
+                "tts_cuda_quantization",
+            )
         ):
             return
         if not self._applying_tts_profile and hasattr(self, "tts_performance_profile"):
@@ -4127,7 +4149,17 @@ class JoeWindow(QMainWindow):
         self.app_settings.setValue(
             "tts_quantization", bool(self.tts_quantization.isChecked())
         )
+        self.app_settings.setValue(
+            "tts_cuda_quantization", bool(self.tts_cuda_quantization.isChecked())
+        )
         self._refresh_tts_hardware_info()
+
+    def _tts_quantization_enabled_for_device(self, device: str | None = None) -> bool:
+        """Select the explicit INT8 preference for the chosen local device."""
+        selected = device or str(self.tts_device.currentData() or "cpu")
+        if selected == "cuda":
+            return bool(self.tts_cuda_quantization.isChecked())
+        return bool(self.tts_quantization.isChecked())
 
     def _tts_generation_parameters(self) -> dict[str, object]:
         """Return optional overrides; None preserves the Pocket TTS model defaults."""
@@ -4194,7 +4226,8 @@ class JoeWindow(QMainWindow):
         if not hasattr(self, "tts_hardware_info"):
             return
         logical_cpus = os.cpu_count() or 1
-        if torch.cuda.is_available():
+        cuda_available = bool(torch.cuda.is_available())
+        if cuda_available:
             try:
                 gpu_name = torch.cuda.get_device_name(0)
                 vram_gb = torch.cuda.get_device_properties(0).total_memory / (1024 ** 3)
@@ -4208,23 +4241,32 @@ class JoeWindow(QMainWindow):
             )
         use_cpu = str(self.tts_device.currentData() or "cpu") == "cpu"
         self.tts_quantization.setEnabled(use_cpu)
+        self.tts_cuda_quantization.setEnabled(not use_cpu and cuda_available)
         if use_cpu:
-            self.tts_quantization.setToolTip(
-                "Ativa quantização dinâmica INT8 para reduzir a memória do modelo na CPU. "
-                "Desative para carregar pesos sem quantização."
-            )
             quantization_status = (
-                "INT8 habilitada na CPU."
+                "CPU: INT8 ativada."
                 if self.tts_quantization.isChecked()
-                else "INT8 desabilitada na CPU."
+                else "CPU: inferência sem quantização."
+            )
+            self.tts_cuda_quantization.setToolTip(
+                "Preferência salva para a próxima seleção de CUDA; desmarcada por padrão."
+            )
+        elif cuda_available:
+            quantization_status = (
+                "CUDA: INT8 TorchAO solicitada."
+                if self.tts_cuda_quantization.isChecked()
+                else "CUDA: inferência sem quantização (caminho atual preservado)."
+            )
+            self.tts_cuda_quantization.setToolTip(
+                "Ativa INT8 via TorchAO nas camadas de atenção e FFN. "
+                "Desmarcada, o modelo carrega e gera exatamente como antes, sem quantização."
             )
         else:
-            self.tts_quantization.setToolTip(
-                "A quantização dinâmica INT8 do Pocket TTS só funciona na CPU. "
-                "A preferência fica salva para quando você voltar à CPU."
-            )
             quantization_status = (
-                "CUDA selecionada: quantização INT8 não é suportada e fica desativada."
+                "CUDA selecionada, mas indisponível: quantização na GPU não será usada."
+            )
+            self.tts_cuda_quantization.setToolTip(
+                "Ative uma build CUDA do PyTorch para habilitar INT8 na GPU."
             )
         self.tts_hardware_info.setText(
             f"CPU: {logical_cpus} processador(es) lógico(s). {cuda_status} "
@@ -4305,7 +4347,8 @@ class JoeWindow(QMainWindow):
         language = str(self.tts_language.currentData() or "portuguese")
         model_variant = str(self.tts_model_variant.currentData() or language)
         cpu_threads = int(self.tts_cpu_threads.value())
-        quantize = bool(self.tts_quantization.isChecked())
+        quantize_cpu = bool(self.tts_quantization.isChecked())
+        quantize_cuda = bool(self.tts_cuda_quantization.isChecked())
         selected_voice = self.voice_path.text().strip() or None
         source_text = self.tts_text.toPlainText().strip()
         if source_text:
@@ -4334,7 +4377,8 @@ class JoeWindow(QMainWindow):
                 model_variant,
                 cpu_threads=cpu_threads,
                 repeats=2,
-                quantize=quantize,
+                quantize=quantize_cpu,
+                quantize_cuda=quantize_cuda,
             )
             return format_tts_benchmark_report(results, cpu_threads=cpu_threads)
 
@@ -4468,7 +4512,7 @@ class JoeWindow(QMainWindow):
                 model_variant,
                 device_preference=str(self.tts_device.currentData() or "cpu"),
                 cpu_threads=int(self.tts_cpu_threads.value()),
-                quantize=bool(self.tts_quantization.isChecked()),
+                quantize=self._tts_quantization_enabled_for_device(),
             )
 
         def completed(result: object) -> None:
@@ -4881,7 +4925,11 @@ class JoeWindow(QMainWindow):
 
         tts_device = str(self.tts_device.currentData() or "cpu")
         cpu_threads = int(self.tts_cpu_threads.value())
-        tts_quantization = bool(self.tts_quantization.isChecked())
+        tts_quantization = (
+            bool(self.colab_tts_quantize_int8.isChecked())
+            if remote is not None
+            else self._tts_quantization_enabled_for_device(tts_device)
+        )
         tts_generation_parameters = self._tts_generation_parameters()
         generation_settings = build_generation_settings(
             device=tts_device,
@@ -4925,7 +4973,7 @@ class JoeWindow(QMainWindow):
                     model_variant,
                     device_preference=tts_device,
                     cpu_threads=cpu_threads,
-                    quantize=tts_quantization,
+                    quantize=self._tts_quantization_enabled_for_device(tts_device),
                     **tts_generation_parameters,
                 )
 
@@ -5161,7 +5209,13 @@ class JoeWindow(QMainWindow):
                 model_variant=model_variant,
                 tts_device=str(self.tts_device.currentData() or "cpu"),
                 cpu_threads=int(self.tts_cpu_threads.value()),
-                tts_quantization=bool(self.tts_quantization.isChecked()),
+                tts_quantization=(
+                    bool(self.colab_tts_quantize_int8.isChecked())
+                    if remote
+                    else self._tts_quantization_enabled_for_device(
+                        str(self.tts_device.currentData() or "cpu")
+                    )
+                ),
                 tts_profile=str(self.tts_performance_profile.currentData() or "custom"),
                 voice_path=selected_voice,
                 voice_alias=selected_voice_alias,
@@ -5662,6 +5716,7 @@ class JoeWindow(QMainWindow):
             self.tts_cpu_threads,
             self.tts_performance_profile,
             self.tts_quantization,
+            self.tts_cuda_quantization,
             self.tts_sampler_override,
             self.tts_sampler_value,
             self.tts_temperature_override,
