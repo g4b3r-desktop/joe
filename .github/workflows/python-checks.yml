@@ -17,7 +17,6 @@ on:
       - feature/clipboard-dialog-appearance-settings
       - feature/pocket-tts-generation-controls
       - feature/pocket-tts-autoregressive-profiler
-      - feature/pocket-tts-autoregressive-profiler
       - feature/pocket-tts-rope-cache
       - fix/colab-safetensors-voice-state
       - feat/colab-drive-model-autosync
@@ -33,6 +32,7 @@ on:
     branches:
       - main
       - feature/pocket-tts-generation-controls
+      - feature/pocket-tts-autoregressive-profiler
 
 jobs:
   tests:
