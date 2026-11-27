@@ -763,6 +763,210 @@ class PocketTTSService:
             )
         return results
 
+
+    def benchmark_cuda_tf32(
+        self,
+        text: str,
+        language: str,
+        voice_path: str | Path | None = None,
+        model_variant: str | None = None,
+        *,
+        cpu_threads: int = 2,
+        warmup_runs: int = 2,
+        measured_runs: int = 7,
+    ) -> list[TTSCudaPrecisionBenchmarkResult]:
+        """Compare IEEE FP32 and TF32 matmul on CUDA without changing generation defaults."""
+        if not text.strip():
+            raise ValueError("Informe um texto para comparar FP32 IEEE e TF32 na CUDA.")
+        warmup_count = max(1, int(warmup_runs))
+        measured_count = max(3, int(measured_runs))
+
+        configure_model_cache()
+        try:
+            import numpy as np
+            import torch
+            from pocket_tts import TTSModel
+        except ImportError as exc:
+            raise RuntimeError(
+                "Dependências do Pocket TTS ausentes. Execute ./scripts/install-linux.sh."
+            ) from exc
+
+        model_variant = model_variant or default_model_variant(language)
+        if not is_model_variant_for_language(language, model_variant):
+            raise ValueError(
+                f"A versão {model_variant!r} não está disponível para o idioma {language!r}."
+            )
+        if not torch.cuda.is_available():
+            error = "CUDA não está disponível na instalação atual do PyTorch."
+            return [
+                TTSCudaPrecisionBenchmarkResult(precision="FP32 IEEE", error=error),
+                TTSCudaPrecisionBenchmarkResult(precision="FP32 TF32", error=error),
+            ]
+
+        capability = torch.cuda.get_device_capability()
+        if int(capability[0]) < 8:
+            error = (
+                "TF32 requer GPU NVIDIA Ampere (compute capability 8.0) ou superior; "
+                f"a GPU atual informa {capability[0]}.{capability[1]}."
+            )
+            return [
+                TTSCudaPrecisionBenchmarkResult(precision="FP32 IEEE", error=error),
+                TTSCudaPrecisionBenchmarkResult(precision="FP32 TF32", error=error),
+            ]
+
+        matmul_backend = getattr(
+            getattr(getattr(torch, "backends", None), "cuda", None),
+            "matmul",
+            None,
+        )
+        if matmul_backend is None:
+            error = "Esta versão do PyTorch não expõe o controle de precisão CUDA matmul."
+            return [
+                TTSCudaPrecisionBenchmarkResult(precision="FP32 IEEE", error=error),
+                TTSCudaPrecisionBenchmarkResult(precision="FP32 TF32", error=error),
+            ]
+
+        # PyTorch 2.9+ prefers fp32_precision; older releases expose allow_tf32.
+        precision_attribute = (
+            "fp32_precision"
+            if hasattr(matmul_backend, "fp32_precision")
+            else "allow_tf32"
+            if hasattr(matmul_backend, "allow_tf32")
+            else ""
+        )
+        if not precision_attribute:
+            error = "PyTorch não oferece controle IEEE/TF32 para CUDA matmul."
+            return [
+                TTSCudaPrecisionBenchmarkResult(precision="FP32 IEEE", error=error),
+                TTSCudaPrecisionBenchmarkResult(precision="FP32 TF32", error=error),
+            ]
+        original_precision = getattr(matmul_backend, precision_attribute)
+
+        def set_tf32(enabled: bool) -> None:
+            value = (
+                ("tf32" if enabled else "ieee")
+                if precision_attribute == "fp32_precision"
+                else bool(enabled)
+            )
+            setattr(matmul_backend, precision_attribute, value)
+
+        self._configure_torch(torch, cpu_threads)
+        self.close()
+        voice_source = str(voice_path) if voice_path else (
+            default_voice_for_language(language) or DEFAULT_VOICE
+        )
+        results: list[TTSCudaPrecisionBenchmarkResult] = []
+
+        try:
+            for use_tf32 in (False, True):
+                model = None
+                voice_state = None
+                model_load_seconds = 0.0
+                voice_prepare_seconds = 0.0
+                generation_times: list[float] = []
+                audio_durations: list[float] = []
+                audio_peaks: list[float] = []
+                audio_rms_levels: list[float] = []
+                peak_vram_mb = 0.0
+                peak_vram_reserved_mb = 0.0
+                error = ""
+                precision = "FP32 TF32" if use_tf32 else "FP32 IEEE"
+                try:
+                    # Process-wide policy also applies to Pocket TTS worker threads.
+                    set_tf32(use_tf32)
+                    torch.cuda.empty_cache()
+                    torch.cuda.reset_peak_memory_stats()
+
+                    model_started = time.perf_counter()
+                    model = TTSModel.load_model(
+                        **model_loading_options(model_variant),
+                        quantize=False,
+                    )
+                    model.to("cuda")
+                    torch.cuda.synchronize()
+                    model_load_seconds = time.perf_counter() - model_started
+
+                    voice_started = time.perf_counter()
+                    voice_state = model.get_state_for_audio_prompt(voice_source)
+                    torch.cuda.synchronize()
+                    voice_prepare_seconds = time.perf_counter() - voice_started
+
+                    def generate_once() -> float:
+                        started = time.perf_counter()
+                        audio = model.generate_audio(
+                            voice_state,
+                            text.strip(),
+                            copy_state=True,
+                        )
+                        samples = audio.detach().cpu().numpy()
+                        torch.cuda.synchronize()
+                        elapsed = time.perf_counter() - started
+                        if samples.size == 0 or not np.isfinite(samples).all():
+                            raise RuntimeError(
+                                f"{precision} produziu áudio vazio ou com valores NaN/Inf."
+                            )
+                        samples64 = np.asarray(samples, dtype=np.float64)
+                        sample_count = (
+                            int(samples.shape[-1]) if samples.ndim else int(samples.size)
+                        )
+                        audio_durations.append(
+                            sample_count / max(1, int(model.sample_rate))
+                        )
+                        audio_peaks.append(float(np.max(np.abs(samples64))))
+                        audio_rms_levels.append(
+                            float(np.sqrt(np.mean(np.square(samples64))))
+                        )
+                        del audio, samples, samples64
+                        return elapsed
+
+                    for _ in range(warmup_count):
+                        generate_once()
+                    audio_durations.clear()
+                    audio_peaks.clear()
+                    audio_rms_levels.clear()
+
+                    for _ in range(measured_count):
+                        generation_times.append(generate_once())
+
+                    peak_vram_mb = float(torch.cuda.max_memory_allocated()) / (1024**2)
+                    peak_vram_reserved_mb = (
+                        float(torch.cuda.max_memory_reserved()) / (1024**2)
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    error = f"{type(exc).__name__}: {exc}"
+                finally:
+                    voice_state = None
+                    model = None
+                    self._models.clear()
+                    self._voice_states.clear()
+                    gc.collect()
+                    if torch.cuda.is_available():
+                        try:
+                            torch.cuda.synchronize()
+                        except Exception:
+                            pass
+                        torch.cuda.empty_cache()
+
+                results.append(
+                    TTSCudaPrecisionBenchmarkResult(
+                        precision=precision,
+                        model_load_seconds=model_load_seconds,
+                        voice_prepare_seconds=voice_prepare_seconds,
+                        generation_times=tuple(generation_times),
+                        audio_durations_seconds=tuple(audio_durations),
+                        audio_peak_amplitudes=tuple(audio_peaks),
+                        audio_rms_levels=tuple(audio_rms_levels),
+                        warmup_runs=warmup_count,
+                        peak_vram_mb=peak_vram_mb,
+                        peak_vram_reserved_mb=peak_vram_reserved_mb,
+                        error=error,
+                    )
+                )
+        finally:
+            # Never leak this experimental setting into ordinary generation.
+            setattr(matmul_backend, precision_attribute, original_precision)
+        return results
+
     def benchmark_cuda_profile(
         self,
         text: str,

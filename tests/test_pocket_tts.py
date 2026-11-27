@@ -825,6 +825,83 @@ def test_cuda_fp16_benchmark_wraps_each_pocket_tts_worker_in_autocast(monkeypatc
     assert autocast_depth["value"] == 0
 
 
+
+def test_cuda_tf32_benchmark_switches_matmul_precision_and_restores_original(
+    monkeypatch,
+):
+    import sys
+    from types import ModuleType, SimpleNamespace
+
+    from joe.services.pocket_tts import PocketTTSService
+
+    observed = []
+
+    class FakeAudio:
+        def detach(self):
+            return self
+
+        def cpu(self):
+            return self
+
+        def numpy(self):
+            return np.full((1, 12_000), 0.2, dtype=np.float32)
+
+    matmul = SimpleNamespace(fp32_precision="ieee")
+
+    class FakeModel:
+        sample_rate = 24_000
+
+        def to(self, device):
+            assert device == "cuda"
+            return self
+
+        def get_state_for_audio_prompt(self, _voice):
+            return object()
+
+        def generate_audio(self, _state, _text, *, copy_state=True):
+            assert copy_state is True
+            observed.append(matmul.fp32_precision)
+            return FakeAudio()
+
+    class FakeTTSModel:
+        @staticmethod
+        def load_model(**kwargs):
+            assert kwargs["quantize"] is False
+            return FakeModel()
+
+    fake_pocket_tts = ModuleType("pocket_tts")
+    fake_pocket_tts.TTSModel = FakeTTSModel
+    fake_torch = SimpleNamespace(
+        set_num_threads=lambda _value: None,
+        backends=SimpleNamespace(cuda=SimpleNamespace(matmul=matmul)),
+        cuda=SimpleNamespace(
+            is_available=lambda: True,
+            get_device_capability=lambda: (8, 6),
+            empty_cache=lambda: None,
+            reset_peak_memory_stats=lambda: None,
+            synchronize=lambda: None,
+            max_memory_allocated=lambda: 256 * 1024 * 1024,
+            max_memory_reserved=lambda: 384 * 1024 * 1024,
+        ),
+    )
+    monkeypatch.setitem(sys.modules, "torch", fake_torch)
+    monkeypatch.setitem(sys.modules, "pocket_tts", fake_pocket_tts)
+
+    results = PocketTTSService().benchmark_cuda_tf32(
+        "Texto idêntico para testar IEEE FP32 e TF32.",
+        "portuguese",
+        model_variant="portuguese",
+        warmup_runs=2,
+        measured_runs=3,
+    )
+
+    assert [result.precision for result in results] == ["FP32 IEEE", "FP32 TF32"]
+    assert all(not result.error for result in results)
+    assert all(len(result.generation_times) == 3 for result in results)
+    assert all(result.audio_durations_seconds == (0.5, 0.5, 0.5) for result in results)
+    assert observed == ["ieee"] * 5 + ["tf32"] * 5
+    assert matmul.fp32_precision == "ieee"
+
 def test_cuda_fp16_autocast_refuses_unknown_pocket_tts_thread_layout():
     from types import SimpleNamespace
 

@@ -564,3 +564,98 @@ def format_cuda_profile_benchmark_report(
         lines.append("Diagnóstico inconclusivo: nenhuma geração foi concluída.")
     return "\n".join(lines)
 
+
+
+def format_cuda_tf32_benchmark_report(
+    results: list[TTSCudaPrecisionBenchmarkResult],
+) -> str:
+    """Report IEEE FP32 against TF32 matmul without changing normal generation settings."""
+    lines = [
+        "Comparação CUDA — Pocket TTS: FP32 IEEE × TF32",
+        "Os pesos, entradas e saídas permanecem FP32; TF32 altera apenas a precisão interna das multiplicações CUDA.",
+        "Mesmo modelo, voz e texto. Duas gerações de aquecimento são descartadas.",
+        "O cronômetro inclui geração e transferência do áudio para a RAM.",
+        "",
+    ]
+    successful: dict[str, tuple[TTSCudaPrecisionBenchmarkResult, float]] = {}
+    for result in results:
+        label = (
+            "CUDA FP32 com TF32 (Tensor Cores)"
+            if result.precision.upper() == "FP32 TF32"
+            else "CUDA FP32 IEEE (referência)"
+        )
+        lines.append(label)
+        if result.error:
+            lines.extend([f"  Não foi possível medir: {result.error}", ""])
+            continue
+        timings = tuple(max(0.0, float(value)) for value in result.generation_times)
+        if not timings:
+            lines.extend(["  Nenhuma geração medida.", ""])
+            continue
+        average = statistics.mean(timings)
+        median = statistics.median(timings)
+        deviation = statistics.stdev(timings) if len(timings) > 1 else 0.0
+        durations = tuple(
+            max(0.0, float(value)) for value in result.audio_durations_seconds
+        )
+        peaks = tuple(max(0.0, float(value)) for value in result.audio_peak_amplitudes)
+        rms_values = tuple(max(0.0, float(value)) for value in result.audio_rms_levels)
+        average_audio = statistics.mean(durations) if durations else 0.0
+        realtime_factor = average_audio / average if average > 0 else 0.0
+        lines.extend(
+            [
+                f"  Aquecimento descartado: {result.warmup_runs} geração(ões)",
+                f"  Gerações medidas: {len(timings)}",
+                f"  Tempos individuais: {', '.join(format_duration(value) for value in timings)}",
+                f"  Média: {format_duration(average)}",
+                f"  Mediana: {format_duration(median)}",
+                f"  Desvio padrão: {format_duration(deviation)}",
+                (
+                    f"  Mínimo / máximo: {format_duration(min(timings))} / "
+                    f"{format_duration(max(timings))}"
+                ),
+                f"  Áudio médio produzido: {format_duration(average_audio)}",
+                f"  Velocidade média: {_format_number(realtime_factor, 2)}× tempo real",
+                f"  Carregamento + transferência para CUDA: {format_duration(result.model_load_seconds)}",
+                f"  Preparação da voz: {format_duration(result.voice_prepare_seconds)}",
+                (
+                    "  Integridade numérica: amostras finitas (sem NaN/Inf); "
+                    f"pico médio {_format_number(statistics.mean(peaks), 4) if peaks else 'n/d'}; "
+                    f"RMS médio {_format_number(statistics.mean(rms_values), 4) if rms_values else 'n/d'}"
+                ),
+                f"  Pico VRAM alocada: {_format_number(result.peak_vram_mb, 0)} MB",
+                f"  Pico VRAM reservada: {_format_number(result.peak_vram_reserved_mb, 0)} MB",
+                "",
+            ]
+        )
+        successful[result.precision.upper()] = (result, average)
+
+    ieee = successful.get("FP32 IEEE")
+    tf32 = successful.get("FP32 TF32")
+    if ieee and tf32 and ieee[1] > 0 and tf32[1] > 0:
+        ratio = tf32[1] / ieee[1]
+        if ratio > 1.02:
+            lines.append(
+                f"Resultado: TF32 ficou {_format_number(ratio, 2)}× mais lento "
+                f"({_format_number((ratio - 1) * 100, 1)}% mais tempo por geração)."
+            )
+            lines.append("CUDA FP32 IEEE foi a opção mais rápida nesta medição.")
+        elif ratio < 0.98:
+            lines.append(
+                f"Resultado: TF32 foi {_format_number(1 / ratio, 2)}× mais rápido "
+                f"({_format_number((1 - ratio) * 100, 1)}% menos tempo por geração)."
+            )
+        else:
+            lines.append("IEEE FP32 e TF32 tiveram desempenho semelhante nesta medição.")
+    else:
+        lines.append(
+            "Comparação inconclusiva: IEEE FP32 e TF32 precisam concluir as medições."
+        )
+    lines.extend(
+        [
+            "TF32 é experimental e não altera a precisão usada nas gerações normais.",
+            "Pico/RMS verificam valores numéricos, mas não substituem a avaliação auditiva da voz.",
+            "A configuração original de precisão CUDA matmul é restaurada ao final do teste.",
+        ]
+    )
+    return "\n".join(lines)

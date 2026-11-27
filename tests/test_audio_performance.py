@@ -229,6 +229,44 @@ def test_cuda_precision_report_marks_incomplete_comparison():
     assert "Comparação inconclusiva" in report
 
 
+
+def test_cuda_tf32_report_compares_ieee_and_tf32_without_changing_default():
+    from joe.audio_performance import (
+        TTSCudaPrecisionBenchmarkResult,
+        format_cuda_tf32_benchmark_report,
+    )
+
+    report = format_cuda_tf32_benchmark_report(
+        [
+            TTSCudaPrecisionBenchmarkResult(
+                precision="FP32 IEEE",
+                generation_times=(4.0, 4.1, 3.9),
+                audio_durations_seconds=(6.0, 6.0, 6.0),
+                audio_peak_amplitudes=(0.5, 0.5, 0.5),
+                audio_rms_levels=(0.1, 0.1, 0.1),
+                warmup_runs=2,
+                peak_vram_mb=1500,
+                peak_vram_reserved_mb=1650,
+            ),
+            TTSCudaPrecisionBenchmarkResult(
+                precision="FP32 TF32",
+                generation_times=(3.0, 3.1, 2.9),
+                audio_durations_seconds=(6.0, 6.0, 6.0),
+                audio_peak_amplitudes=(0.49, 0.49, 0.49),
+                audio_rms_levels=(0.099, 0.099, 0.099),
+                warmup_runs=2,
+                peak_vram_mb=1500,
+                peak_vram_reserved_mb=1650,
+            ),
+        ]
+    )
+
+    assert "CUDA FP32 IEEE (referência)" in report
+    assert "CUDA FP32 com TF32" in report
+    assert "TF32 foi 1,33× mais rápido" in report
+    assert "pesos, entradas e saídas permanecem FP32" in report
+    assert "configuração original de precisão CUDA matmul é restaurada" in report
+
 def test_cuda_profile_report_separates_flow_lm_mimi_and_queue_wait():
     from joe.audio_performance import (
         TTSCudaProfileBenchmarkResult,

@@ -86,6 +86,7 @@ from joe.audio_performance import (
     format_tts_benchmark_report,
     format_cuda_quantization_benchmark_report,
     format_cuda_precision_benchmark_report,
+    format_cuda_tf32_benchmark_report,
     format_cuda_profile_benchmark_report,
     wav_duration_seconds,
 )
@@ -2676,6 +2677,16 @@ class JoeWindow(QMainWindow):
         self.tts_cuda_fp16_benchmark_button.clicked.connect(
             self._benchmark_tts_cuda_precision
         )
+        self.tts_cuda_tf32_benchmark_button = QPushButton(
+            "Medir CUDA: FP32 IEEE × TF32"
+        )
+        self.tts_cuda_tf32_benchmark_button.setToolTip(
+            "Compara FP32 IEEE com TF32 em multiplicações CUDA na GPU Ampere+. "
+            "Pesos e saídas permanecem FP32; a configuração original é restaurada no final."
+        )
+        self.tts_cuda_tf32_benchmark_button.clicked.connect(
+            self._benchmark_tts_cuda_tf32
+        )
         self.tts_cuda_profile_button = QPushButton(
             "Diagnosticar CUDA: Flow LM × Mimi"
         )
@@ -2693,6 +2704,7 @@ class JoeWindow(QMainWindow):
         hardware_actions.addWidget(self.tts_cuda_quant_benchmark_runs)
         hardware_actions.addWidget(self.tts_cuda_quant_benchmark_button)
         hardware_actions.addWidget(self.tts_cuda_fp16_benchmark_button)
+        hardware_actions.addWidget(self.tts_cuda_tf32_benchmark_button)
         hardware_actions.addStretch(1)
         profile_actions = QHBoxLayout()
         profile_actions.addWidget(self.tts_cuda_profile_button)
@@ -4623,6 +4635,77 @@ class JoeWindow(QMainWindow):
             completed,
         )
 
+
+    def _benchmark_tts_cuda_tf32(self) -> None:
+        if (
+            self.active_worker is not None
+            or self.active_generation_worker is not None
+            or self.clipboard_generation_worker is not None
+        ):
+            QMessageBox.information(
+                self,
+                "Joe ocupado",
+                "Aguarde a tarefa atual terminar antes de comparar FP32 IEEE e TF32 na CUDA.",
+            )
+            return
+        if not torch.cuda.is_available():
+            QMessageBox.information(
+                self,
+                "CUDA indisponível",
+                "Ative a GPU NVIDIA e confirme que o PyTorch reconhece CUDA antes de medir.",
+            )
+            return
+
+        language = str(self.tts_language.currentData() or "portuguese")
+        model_variant = str(self.tts_model_variant.currentData() or language)
+        cpu_threads = int(self.tts_cpu_threads.value())
+        measured_runs = int(self.tts_cuda_quant_benchmark_runs.value())
+        selected_voice = self.voice_path.text().strip() or None
+        source_text = self.tts_text.toPlainText().strip()
+        if source_text:
+            try:
+                prepared_text = self._prepared_speech_text(source_text, language)
+            except Exception as exc:  # noqa: BLE001
+                QMessageBox.warning(
+                    self,
+                    "Não foi possível preparar o texto",
+                    f"Revise as opções de pronúncia antes de comparar o desempenho.\\n\\n{exc}",
+                )
+                return
+            chunks = split_text_into_chunks(prepared_text, max_chars=280)
+            sample_text = chunks[0] if chunks else ""
+        else:
+            sample_text = (
+                "Este é um teste repetido do Pocket TTS para comparar "
+                "FP32 IEEE com multiplicações TF32 na GPU NVIDIA."
+            )
+
+        def benchmark() -> str:
+            results = self.tts.benchmark_cuda_tf32(
+                sample_text,
+                language,
+                selected_voice,
+                model_variant,
+                cpu_threads=cpu_threads,
+                warmup_runs=2,
+                measured_runs=measured_runs,
+            )
+            return format_cuda_tf32_benchmark_report(results)
+
+        def completed(report: object) -> None:
+            QMessageBox.information(
+                self,
+                "Medições CUDA — FP32 IEEE × TF32",
+                str(report),
+            )
+
+        self._run_task(
+            f"Medindo CUDA FP32 IEEE e TF32: 2 aquecimentos + "
+            f"{measured_runs} gerações por modo…",
+            benchmark,
+            completed,
+        )
+
     def _benchmark_tts_cuda_profile(self) -> None:
         if (
             self.active_worker is not None
@@ -6032,6 +6115,7 @@ class JoeWindow(QMainWindow):
             self.tts_cuda_quant_benchmark_runs,
             self.tts_cuda_quant_benchmark_button,
             self.tts_cuda_fp16_benchmark_button,
+            self.tts_cuda_tf32_benchmark_button,
             self.tts_cuda_profile_button,
             self.tts_language,
             self.tts_model_variant,
