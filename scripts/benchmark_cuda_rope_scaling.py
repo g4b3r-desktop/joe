@@ -17,6 +17,10 @@ from pathlib import Path
 from statistics import fmean
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
+DEFAULT_MODEL_CACHE = Path(
+    "/mnt/46d6d246-1a5f-4388-b273-2ace8e54f409/"
+    ".llms/.AUDIO/joe/.models/huggingface"
+)
 SOURCE_ROOT = REPOSITORY_ROOT / "src"
 if str(SOURCE_ROOT) not in sys.path:
     sys.path.insert(0, str(SOURCE_ROOT))
@@ -135,6 +139,16 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--cpu-threads", type=int, default=2)
     parser.add_argument(
+        "--model-cache",
+        type=Path,
+        default=DEFAULT_MODEL_CACHE,
+        help=(
+            "Pasta HF_HOME dos modelos. Padrão: "
+            "/mnt/46d6d246-1a5f-4388-b273-2ace8e54f409/"
+            ".llms/.AUDIO/joe/.models/huggingface"
+        ),
+    )
+    parser.add_argument(
         "--runs", type=int, default=3,
         help="Gerações medidas por modo (3 para triagem; 7 para confirmação).",
     )
@@ -165,6 +179,7 @@ def _write_outputs(
         "language": language,
         "model_variant": model_variant,
         "voice": args.voice,
+        "model_cache_directory": str(args.model_cache.expanduser().resolve()),
         "runs_per_mode": args.runs,
         "warmups_per_mode": args.warmups,
         "reference_full_text_audio_seconds": reference_audio_seconds,
@@ -180,6 +195,7 @@ def _write_outputs(
         "",
         f"- Texto de origem: {source_label}",
         f"- Idioma/modelo: {language} / {model_variant}",
+        f"- Cache de modelos: {args.model_cache.expanduser().resolve()}",
         f"- Gerações medidas por modo: {args.runs}",
         f"- Aquecimentos descartados por modo: {args.warmups}",
         f"- Duração média medida do texto completo: {reference_audio_seconds:.2f} s",
@@ -288,6 +304,7 @@ def main(argv: list[str] | None = None) -> int:
                 cpu_threads=args.cpu_threads,
                 warmup_runs=args.warmups,
                 measured_runs=args.runs,
+                model_cache_dir=args.model_cache,
             )
             report = format_cuda_rope_cache_benchmark_report(result)
             actual_duration = measured_audio_duration(result)
