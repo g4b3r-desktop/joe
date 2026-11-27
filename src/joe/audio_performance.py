@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+import statistics
 import wave
 
 
@@ -207,3 +208,96 @@ def format_tts_benchmark_report(
         "A medição não altera a configuração escolhida para as próximas gerações."
     )
     return "\n".join(lines)
+
+
+def format_cuda_quantization_benchmark_report(
+    results: list[TTSCudaQuantizationBenchmarkResult],
+) -> str:
+    """Report repeated, warmed CUDA inference timings with INT8 on and off."""
+    lines = [
+        "Comparação CUDA — Pocket TTS",
+        "Mesmo modelo, voz e texto. Medições feitas após aquecimento, com sincronização CUDA.",
+        "O cronômetro inclui geração e transferência do áudio para a RAM, como no uso real.",
+        "",
+    ]
+    successful: dict[bool, tuple[TTSCudaQuantizationBenchmarkResult, float, float]] = {}
+    for result in results:
+        label = "CUDA com INT8 (TorchAO)" if result.quantized else "CUDA sem INT8"
+        lines.append(label)
+        if result.error:
+            lines.append(f"  Não foi possível medir: {result.error}")
+            lines.append("")
+            continue
+        timings = tuple(max(0.0, float(value)) for value in result.generation_times)
+        if not timings:
+            lines.append("  Nenhuma geração medida.")
+            lines.append("")
+            continue
+        average = statistics.mean(timings)
+        median = statistics.median(timings)
+        deviation = statistics.stdev(timings) if len(timings) > 1 else 0.0
+        audio_durations = tuple(
+            max(0.0, float(value)) for value in result.audio_durations_seconds
+        )
+        average_audio = (
+            statistics.mean(audio_durations) if audio_durations else 0.0
+        )
+        realtime_factor = average_audio / average if average > 0 else 0.0
+        lines.extend(
+            [
+                f"  Aquecimento descartado: {result.warmup_runs} geração(ões)",
+                f"  Gerações medidas: {len(timings)}",
+                f"  Tempos individuais: {', '.join(format_duration(value) for value in timings)}",
+                f"  Média: {format_duration(average)}",
+                f"  Mediana: {format_duration(median)}",
+                f"  Desvio padrão: {format_duration(deviation)}",
+                (
+                    f"  Mínimo / máximo: {format_duration(min(timings))} / "
+                    f"{format_duration(max(timings))}"
+                ),
+                f"  Áudio médio produzido: {format_duration(average_audio)}",
+                f"  Velocidade média: {_format_number(realtime_factor, 2)}× tempo real",
+                f"  Carregamento + transferência para CUDA: {format_duration(result.model_load_seconds)}",
+                f"  Aplicação da quantização: {format_duration(result.quantization_seconds)}",
+                f"  Preparação da voz: {format_duration(result.voice_prepare_seconds)}",
+                f"  Pico VRAM alocada: {_format_number(result.peak_vram_mb, 0)} MB",
+                f"  Pico VRAM reservada: {_format_number(result.peak_vram_reserved_mb, 0)} MB",
+                "",
+            ]
+        )
+        successful[result.quantized] = (result, average, median)
+
+    plain = successful.get(False)
+    quantized = successful.get(True)
+    if plain and quantized:
+        plain_average = plain[1]
+        int8_average = quantized[1]
+        if plain_average > 0 and int8_average > 0:
+            ratio = int8_average / plain_average
+            delta_percent = (ratio - 1.0) * 100.0
+            if ratio > 1.02:
+                lines.append(
+                    f"Resultado: INT8 ficou {_format_number(ratio, 2)}× mais lenta "
+                    f"({_format_number(delta_percent, 1)}% mais tempo por geração)."
+                )
+                lines.append(
+                    "CUDA sem quantização foi a opção mais rápida nesta medição."
+                )
+            elif ratio < 0.98:
+                lines.append(
+                    f"Resultado: INT8 foi {_format_number(1.0 / ratio, 2)}× mais rápida "
+                    f"({_format_number(-delta_percent, 1)}% menos tempo por geração)."
+                )
+            else:
+                lines.append(
+                    "Resultado: os dois modos tiveram desempenho semelhante nesta medição."
+                )
+    else:
+        lines.append(
+            "Comparação inconclusiva: os dois modos precisam concluir as medições."
+        )
+    lines.append(
+        "A comparação não altera a preferência de quantização nem o modelo escolhido "
+        "para as próximas gerações."
+    )
+    return "\\n".join(lines)
