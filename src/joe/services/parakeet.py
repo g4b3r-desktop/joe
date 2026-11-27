@@ -219,7 +219,10 @@ class ParakeetReduxService:
             }
 
         waveform = self._read_audio_16khz(source)
-        result = self._model.transcribe(waveform, self._processor)
+        import torch
+
+        with torch.inference_mode():
+            result = self._model.transcribe(waveform, self._processor)
         if isinstance(result, (list, tuple)):
             result = result[0] if result else ""
         if isinstance(result, dict):
