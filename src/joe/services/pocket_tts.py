@@ -5,7 +5,10 @@ import tempfile
 import time
 from pathlib import Path
 
-from joe.audio_performance import TTSBenchmarkResult
+from joe.audio_performance import (
+    TTSBenchmarkResult,
+    TTSCudaQuantizationBenchmarkResult,
+)
 from joe.model_cache import configure_model_cache
 from joe.pocket_tts_models import (
     default_model_variant,
@@ -406,6 +409,155 @@ class PocketTTSService:
                 gc.collect()
                 if device == "cuda" and torch.cuda.is_available():
                     torch.cuda.empty_cache()
+        return results
+
+    def benchmark_cuda_quantization(
+        self,
+        text: str,
+        language: str,
+        voice_path: str | Path | None = None,
+        model_variant: str | None = None,
+        *,
+        cpu_threads: int = 2,
+        warmup_runs: int = 2,
+        measured_runs: int = 7,
+    ) -> list[TTSCudaQuantizationBenchmarkResult]:
+        """Compare CUDA inference with and without INT8 after separate warmups."""
+        if not text.strip():
+            raise ValueError("Informe um texto para comparar a quantização CUDA.")
+        warmup_count = max(1, int(warmup_runs))
+        measured_count = max(3, int(measured_runs))
+
+        configure_model_cache()
+        try:
+            import torch
+            from pocket_tts import TTSModel
+        except ImportError as exc:
+            raise RuntimeError(
+                "Dependências do Pocket TTS ausentes. Execute ./scripts/install-linux.sh."
+            ) from exc
+
+        model_variant = model_variant or default_model_variant(language)
+        if not is_model_variant_for_language(language, model_variant):
+            raise ValueError(
+                f"A versão {model_variant!r} não está disponível para o idioma {language!r}."
+            )
+        if not torch.cuda.is_available():
+            error = "CUDA não está disponível na instalação atual do PyTorch."
+            return [
+                TTSCudaQuantizationBenchmarkResult(quantized=False, error=error),
+                TTSCudaQuantizationBenchmarkResult(quantized=True, error=error),
+            ]
+
+        self._configure_torch(torch, cpu_threads)
+        # Do not benchmark on top of a model already held by normal generation.
+        # The chosen device/INT8 preferences in the UI are not changed.
+        self.close()
+
+        voice_source = str(voice_path) if voice_path else (
+            default_voice_for_language(language) or DEFAULT_VOICE
+        )
+        results: list[TTSCudaQuantizationBenchmarkResult] = []
+
+        for quantized in (False, True):
+            model = None
+            voice_state = None
+            model_load_seconds = 0.0
+            quantization_seconds = 0.0
+            voice_prepare_seconds = 0.0
+            generation_times: list[float] = []
+            audio_durations: list[float] = []
+            peak_vram_mb = 0.0
+            peak_vram_reserved_mb = 0.0
+            error = ""
+            try:
+                torch.cuda.empty_cache()
+                torch.cuda.reset_peak_memory_stats()
+
+                model_started = time.perf_counter()
+                model = TTSModel.load_model(
+                    **model_loading_options(model_variant),
+                    quantize=False,
+                )
+                model.to("cuda")
+                torch.cuda.synchronize()
+                model_load_seconds = time.perf_counter() - model_started
+
+                if quantized:
+                    quantization_started = time.perf_counter()
+                    self._apply_cuda_int8_quantization(model)
+                    torch.cuda.synchronize()
+                    quantization_seconds = time.perf_counter() - quantization_started
+
+                voice_started = time.perf_counter()
+                voice_state = model.get_state_for_audio_prompt(voice_source)
+                torch.cuda.synchronize()
+                voice_prepare_seconds = time.perf_counter() - voice_started
+
+                def generate_once() -> float:
+                    started = time.perf_counter()
+                    with torch.inference_mode():
+                        audio = model.generate_audio(
+                            voice_state,
+                            text.strip(),
+                            copy_state=True,
+                        )
+                    samples = audio.detach().cpu().numpy()
+                    torch.cuda.synchronize()
+                    elapsed = time.perf_counter() - started
+                    sample_count = (
+                        int(samples.shape[-1])
+                        if getattr(samples, "ndim", 0)
+                        else int(samples.size)
+                    )
+                    audio_durations.append(
+                        sample_count / max(1, int(model.sample_rate))
+                    )
+                    del audio, samples
+                    return elapsed
+
+                # Discard lazy kernel setup/compilation and GPU clock ramp-up.
+                for _ in range(warmup_count):
+                    generate_once()
+                audio_durations.clear()
+
+                # The measured sample contains only completed generations, not
+                # model loading, voice preparation, or the warm-up runs.
+                for _ in range(measured_count):
+                    generation_times.append(generate_once())
+
+                peak_vram_mb = (
+                    float(torch.cuda.max_memory_allocated()) / (1024**2)
+                )
+                peak_vram_reserved_mb = (
+                    float(torch.cuda.max_memory_reserved()) / (1024**2)
+                )
+            except Exception as exc:  # noqa: BLE001
+                error = f"{type(exc).__name__}: {exc}"
+            finally:
+                voice_state = None
+                model = None
+                self._models.clear()
+                self._voice_states.clear()
+                gc.collect()
+                if torch.cuda.is_available():
+                    torch.cuda.synchronize()
+                    torch.cuda.empty_cache()
+
+            results.append(
+                TTSCudaQuantizationBenchmarkResult(
+                    quantized=quantized,
+                    model_load_seconds=model_load_seconds,
+                    quantization_seconds=quantization_seconds,
+                    voice_prepare_seconds=voice_prepare_seconds,
+                    generation_times=tuple(generation_times),
+                    audio_durations_seconds=tuple(audio_durations),
+                    warmup_runs=warmup_count,
+                    peak_vram_mb=peak_vram_mb,
+                    peak_vram_reserved_mb=peak_vram_reserved_mb,
+                    error=error,
+                )
+            )
         return results
 
     def close(self) -> None:
