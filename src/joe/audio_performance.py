@@ -562,5 +562,5 @@ def format_cuda_profile_benchmark_report(
         )
     else:
         lines.append("Diagnóstico inconclusivo: nenhuma geração foi concluída.")
-    return "\\n".join(lines)
+    return "\n".join(lines)
 
