@@ -1,3 +1,4 @@
+from contextlib import contextmanager
 from types import ModuleType, SimpleNamespace
 from unittest.mock import Mock
 
