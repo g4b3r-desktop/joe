@@ -32,6 +32,7 @@ def load_tts_model(
     quantize: bool,
     sampler_decode_steps: int | None = None,
     temp: float | None = None,
+    eos_threshold: float | None = None,
 ) -> Any:
     """Load a built-in Pocket TTS variant or the Japanese community YAML model."""
     generation_options: dict[str, Any] = {}
@@ -39,6 +40,8 @@ def load_tts_model(
         generation_options["sampler_decode_steps"] = sampler_decode_steps
     if temp is not None:
         generation_options["temp"] = temp
+    if eos_threshold is not None:
+        generation_options["eos_threshold"] = eos_threshold
 
     if language == "japanese" and model_variant == "japanese":
         return model_class.load_model(
