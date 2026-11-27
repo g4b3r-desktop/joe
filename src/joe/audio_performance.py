@@ -24,6 +24,9 @@ class TTSBenchmarkResult:
     model_load_seconds: float = 0.0
     voice_prepare_seconds: float = 0.0
     generation_seconds: float = 0.0
+    generation_min_seconds: float = 0.0
+    generation_median_seconds: float = 0.0
+    generation_max_seconds: float = 0.0
     audio_duration_seconds: float = 0.0
     character_count: int = 0
     peak_vram_mb: float = 0.0
@@ -152,6 +155,8 @@ def format_tts_benchmark_report(
                     f"  Geração média ({result.repeats} execução(ões)): "
                     f"{format_duration(result.generation_seconds)}"
                 ),
+                f"  Faixa por execução: {format_duration(result.generation_min_seconds)} – {format_duration(result.generation_max_seconds)}",
+                f"  Mediana por execução: {format_duration(result.generation_median_seconds or result.generation_seconds)}",
                 f"  Áudio produzido: {format_duration(result.audio_duration_seconds)}",
                 f"  Velocidade: {_format_number(speed, 2)}× tempo real",
                 f"  Memória de VRAM de pico: {_format_number(result.peak_vram_mb, 0)} MB",
