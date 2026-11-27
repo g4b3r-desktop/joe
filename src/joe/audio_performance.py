@@ -51,6 +51,32 @@ class TTSCudaPrecisionBenchmarkResult:
 
 
 @dataclass(frozen=True, slots=True)
+class TTSCudaProfileBenchmarkResult:
+    """Per-generation CUDA phase timings collected from Pocket TTS worker threads."""
+
+    model_load_seconds: float = 0.0
+    voice_prepare_seconds: float = 0.0
+    generation_times: tuple[float, ...] = ()
+    audio_durations_seconds: tuple[float, ...] = ()
+    audio_transfer_seconds: tuple[float, ...] = ()
+    flow_prefill_wall_seconds: tuple[float, ...] = ()
+    flow_prefill_gpu_seconds: tuple[float, ...] = ()
+    flow_autoregressive_wall_seconds: tuple[float, ...] = ()
+    flow_autoregressive_gpu_seconds: tuple[float, ...] = ()
+    flow_step_counts: tuple[int, ...] = ()
+    mimi_decode_wall_seconds: tuple[float, ...] = ()
+    mimi_decode_gpu_seconds: tuple[float, ...] = ()
+    mimi_decode_calls: tuple[int, ...] = ()
+    mimi_worker_wall_seconds: tuple[float, ...] = ()
+    latent_queue_wait_seconds: tuple[float, ...] = ()
+    latent_queue_get_calls: tuple[int, ...] = ()
+    warmup_runs: int = 0
+    peak_vram_mb: float = 0.0
+    peak_vram_reserved_mb: float = 0.0
+    error: str = ""
+
+
+@dataclass(frozen=True, slots=True)
 class TTSBenchmarkResult:
     """One isolated Pocket TTS benchmark run for a selected compute device."""
 
@@ -421,4 +447,120 @@ def format_cuda_precision_benchmark_report(
         ]
     )
     return "\n".join(lines)
+
+def format_cuda_profile_benchmark_report(
+    results: list[TTSCudaProfileBenchmarkResult],
+) -> str:
+    """Summarize Flow LM, Mimi decoder, queue waits and output transfer timings."""
+    lines = [
+        "Diagnóstico CUDA — Pocket TTS (FP32)",
+        "Mesmo modelo, voz e texto. Duas gerações de aquecimento são descartadas.",
+        "Tempos CPU usam relógio de parede; tempos GPU usam CUDA Events, sem sincronizar a cada etapa.",
+        "",
+    ]
+    successful: list[tuple[TTSCudaProfileBenchmarkResult, float]] = []
+    for result in results:
+        lines.append("CUDA FP32 — diagnóstico por fase")
+        if result.error:
+            lines.extend([f"  Não foi possível diagnosticar: {result.error}", ""])
+            continue
+        totals = tuple(max(0.0, float(value)) for value in result.generation_times)
+        if not totals:
+            lines.extend(["  Nenhuma geração medida.", ""])
+            continue
+
+        def mean(values: tuple[float, ...] | tuple[int, ...]) -> float:
+            return statistics.mean(values) if values else 0.0
+
+        average_total = mean(totals)
+        average_audio = mean(result.audio_durations_seconds)
+        lines.extend(
+            [
+                f"  Gerações medidas: {len(totals)}",
+                f"  Tempo total médio: {format_duration(average_total)}",
+                f"  Duração média do áudio: {format_duration(average_audio)}",
+                (
+                    f"  Velocidade: {_format_number(average_audio / average_total, 2) if average_total else '0,00'}× "
+                    "tempo real"
+                ),
+                "",
+                "  FLOW LM",
+                (
+                    f"    Prefill do texto — CPU: "
+                    f"{format_duration(mean(result.flow_prefill_wall_seconds))}"
+                ),
+                (
+                    f"    Prefill do texto — GPU: "
+                    f"{format_duration(mean(result.flow_prefill_gpu_seconds))}"
+                ),
+                (
+                    f"    Geração autoregressiva — CPU: "
+                    f"{format_duration(mean(result.flow_autoregressive_wall_seconds))}"
+                ),
+                (
+                    f"    Geração autoregressiva — GPU: "
+                    f"{format_duration(mean(result.flow_autoregressive_gpu_seconds))}"
+                ),
+                (
+                    f"    Passos autoregressivos por áudio: "
+                    f"{_format_number(mean(result.flow_step_counts), 1)}"
+                ),
+                "",
+                "  MIMI DECODER",
+                (
+                    f"    decode_from_latent — CPU: "
+                    f"{format_duration(mean(result.mimi_decode_wall_seconds))}"
+                ),
+                (
+                    f"    decode_from_latent — GPU: "
+                    f"{format_duration(mean(result.mimi_decode_gpu_seconds))}"
+                ),
+                (
+                    f"    Chamadas ao decoder por áudio: "
+                    f"{_format_number(mean(result.mimi_decode_calls), 1)}"
+                ),
+                (
+                    f"    Worker Mimi total (inclui espera): "
+                    f"{format_duration(mean(result.mimi_worker_wall_seconds))}"
+                ),
+                (
+                    f"    Espera acumulada na fila de latentes: "
+                    f"{format_duration(mean(result.latent_queue_wait_seconds))}"
+                ),
+                (
+                    f"    Chamadas à fila: "
+                    f"{_format_number(mean(result.latent_queue_get_calls), 1)}"
+                ),
+                "",
+                "  SAÍDA E MEMÓRIA",
+                (
+                    f"    Transferência áudio GPU → RAM + sincronização final: "
+                    f"{format_duration(mean(result.audio_transfer_seconds))}"
+                ),
+                f"    Carregamento + transferência do modelo para CUDA: {format_duration(result.model_load_seconds)}",
+                f"    Preparação da voz: {format_duration(result.voice_prepare_seconds)}",
+                f"    Pico VRAM alocada: {_format_number(result.peak_vram_mb, 0)} MB",
+                f"    Pico VRAM reservada: {_format_number(result.peak_vram_reserved_mb, 0)} MB",
+                "",
+            ]
+        )
+        successful.append((result, average_total))
+
+    if successful:
+        lines.append(
+            "Interpretação: CUDA Events medem o tempo de GPU por fase. "
+            "Como Flow LM e Mimi trabalham em threads paralelas, esses tempos podem se sobrepor "
+            "e não devem ser somados para reconstruir o tempo total."
+        )
+        lines.append(
+            "A espera na fila mede o bloqueio do worker ao aguardar latentes; "
+            "não representa tempo de computação da GPU."
+        )
+        lines.append(
+            "O diagnóstico usa instrumentação por chamadas e eventos CUDA; "
+            "há pequena sobrecarga de medição."
+        )
+    else:
+        lines.append("Diagnóstico inconclusivo: nenhuma geração foi concluída.")
+    return "\\n".join(lines)
 
