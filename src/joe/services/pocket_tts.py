@@ -1025,7 +1025,9 @@ class PocketTTSService:
             )
 
         def phase_count(key: str, index: int) -> int:
-            return len(trace_runs[index][key])
+            if key == "queue_get_calls":
+                return len(trace_runs[index][key])
+            return len(trace_runs[index][f"{key}_wall"])
 
         return [
             TTSCudaProfileBenchmarkResult(
