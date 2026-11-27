@@ -283,19 +283,23 @@ class PocketTTSService:
                     mask = args[0]
                 dropout_p = kwargs.get("dropout_p", args[1] if len(args) > 1 else 0.0)
                 is_causal = kwargs.get("is_causal", args[2] if len(args) > 2 else False)
-                details = inspect_eligibility(
-                    query_half, key_half, value_half, mask, dropout_p, is_causal
-                )
-                if "elegível=False" in details:
-                    raise RuntimeError(
-                        f"{backend_label} não é elegível para esta chamada SDPA. {details}"
-                    )
+                details = "diagnóstico de elegibilidade indisponível"
                 try:
+                    # Check eligibility only after enabling the requested backend.
                     with sdpa_kernel(backend):
+                        details = inspect_eligibility(
+                            query_half, key_half, value_half, mask, dropout_p, is_causal
+                        )
+                        if "elegível=False" in details:
+                            raise RuntimeError(
+                                f"{backend_label} não é elegível para esta chamada SDPA. {details}"
+                            )
                         output = original_sdpa(
                             query_half, key_half, value_half, *args, **kwargs
                         )
                 except RuntimeError as exc:
+                    if "não é elegível para esta chamada SDPA" in str(exc):
+                        raise
                     raise RuntimeError(
                         f"{backend_label} falhou na chamada SDPA. {details}. "
                         f"Erro original: {type(exc).__name__}: {exc}"
