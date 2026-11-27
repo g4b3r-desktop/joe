@@ -278,3 +278,43 @@ def test_colab_client_omits_unset_pocket_tts_generation_parameters(monkeypatch):
         "max_tokens",
         "teacher_force_previous_chunk",
     }.intersection(submitted)
+
+
+def test_colab_client_sends_explicit_int8_setting(monkeypatch):
+    client = ColabAPIClient("https://example.trycloudflare.com", "x" * 40)
+    submitted = {}
+
+    def request(method, endpoint, **kwargs):
+        submitted.update({
+            "method": method,
+            "endpoint": endpoint,
+            **kwargs["json"],
+        })
+        return __import__("httpx").Response(200, json={"ok": True})
+
+    monkeypatch.setattr(client, "_request", request)
+
+    client.update_tts_settings(2, 4, quantize_int8=True)
+
+    assert submitted == {
+        "method": "POST",
+        "endpoint": "/v1/settings/tts",
+        "cpu_threads": 2,
+        "sampler_decode_steps": 4,
+        "quantize_int8": True,
+    }
+
+
+def test_colab_client_keeps_int8_disabled_by_default(monkeypatch):
+    client = ColabAPIClient("https://example.trycloudflare.com", "x" * 40)
+    submitted = {}
+
+    def request(_method, _endpoint, **kwargs):
+        submitted.update(kwargs["json"])
+        return __import__("httpx").Response(200, json={"ok": True})
+
+    monkeypatch.setattr(client, "_request", request)
+
+    client.update_tts_settings(2, 4)
+
+    assert submitted["quantize_int8"] is False
