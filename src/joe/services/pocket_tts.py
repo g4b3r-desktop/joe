@@ -365,8 +365,10 @@ class PocketTTSService:
                     if device == "cuda":
                         torch.cuda.synchronize()
                     generation_started = time.perf_counter()
-                    with torch.inference_mode():
-                        audio = model.generate_audio(voice_state, text.strip())
+                    # Pocket TTS owns its no-grad context. Do not use inference_mode:
+                    # its streaming decoder can use worker threads, while inference_mode
+                    # is thread-local and can make tensors unsafe to update in those threads.
+                    audio = model.generate_audio(voice_state, text.strip())
                     samples = audio.detach().cpu().numpy()
                     if device == "cuda":
                         torch.cuda.synchronize()
@@ -496,12 +498,14 @@ class PocketTTSService:
 
                 def generate_once() -> float:
                     started = time.perf_counter()
-                    with torch.inference_mode():
-                        audio = model.generate_audio(
-                            voice_state,
-                            text.strip(),
-                            copy_state=True,
-                        )
+                    # Keep the same execution context as normal Joe generation.
+                    # Pocket TTS decorates its generation API with torch.no_grad();
+                    # inference_mode is thread-local and is unsafe with its worker threads.
+                    audio = model.generate_audio(
+                        voice_state,
+                        text.strip(),
+                        copy_state=True,
+                    )
                     samples = audio.detach().cpu().numpy()
                     torch.cuda.synchronize()
                     elapsed = time.perf_counter() - started
