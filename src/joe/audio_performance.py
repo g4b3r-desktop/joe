@@ -659,7 +659,7 @@ def format_cuda_profile_benchmark_report(
         )
         lines.append(
             "O detalhamento interno mede atenção, FFN e FlowNet com CUDA Events. "
-            "Os tempos são somas por áudio e não equivalem a tempos de parede exclusivos."
+            "As medições de componentes são aninhadas nos blocos maiores e não devem ser somadas."
         )
         lines.append(
             "CPU/wall menos GPU é apenas uma estimativa de despacho Python, lançamentos e esperas/sincronizações; "
