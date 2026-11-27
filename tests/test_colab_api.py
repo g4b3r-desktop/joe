@@ -208,3 +208,113 @@ def test_colab_client_sends_selected_pocket_tts_model_variant(monkeypatch):
 
     assert submitted["language"] == "portuguese"
     assert submitted["model_variant"] == "portuguese_24l"
+
+
+
+def test_colab_client_sends_optional_pocket_tts_generation_parameters(monkeypatch):
+    import httpx
+
+    client = ColabAPIClient("https://example.trycloudflare.com", "x" * 40)
+    submitted = {}
+
+    def request(_method, _endpoint, **kwargs):
+        submitted.update(kwargs["data"])
+        return httpx.Response(202, json={"job_id": "job-advanced-tts"})
+
+    monkeypatch.setattr(client, "_request", request)
+    monkeypatch.setattr(
+        client,
+        "_wait_for_result",
+        lambda *_args, **_kwargs: httpx.Response(
+            200, content=b"RIFF" + b"\x00" * 4 + b"WAVE"
+        ),
+    )
+
+    client.generate_audio(
+        "Olá",
+        "portuguese",
+        sampler_decode_steps=4,
+        temperature=0.85,
+        eos_threshold=-3.0,
+        frames_after_eos=2,
+        max_tokens=80,
+        teacher_force_previous_chunk=True,
+    )
+
+    assert submitted["sampler_decode_steps"] == 4
+    assert submitted["temperature"] == 0.85
+    assert submitted["eos_threshold"] == -3.0
+    assert submitted["frames_after_eos"] == 2
+    assert submitted["max_tokens"] == 80
+    assert submitted["teacher_force_previous_chunk"] is True
+
+
+def test_colab_client_omits_unset_pocket_tts_generation_parameters(monkeypatch):
+    import httpx
+
+    client = ColabAPIClient("https://example.trycloudflare.com", "x" * 40)
+    submitted = {}
+
+    def request(_method, _endpoint, **kwargs):
+        submitted.update(kwargs["data"])
+        return httpx.Response(202, json={"job_id": "job-default-tts"})
+
+    monkeypatch.setattr(client, "_request", request)
+    monkeypatch.setattr(
+        client,
+        "_wait_for_result",
+        lambda *_args, **_kwargs: httpx.Response(
+            200, content=b"RIFF" + b"\x00" * 4 + b"WAVE"
+        ),
+    )
+
+    client.generate_audio("Olá", "portuguese")
+
+    assert not {
+        "sampler_decode_steps",
+        "temperature",
+        "eos_threshold",
+        "frames_after_eos",
+        "max_tokens",
+        "teacher_force_previous_chunk",
+    }.intersection(submitted)
+
+
+def test_colab_client_sends_explicit_int8_setting(monkeypatch):
+    client = ColabAPIClient("https://example.trycloudflare.com", "x" * 40)
+    submitted = {}
+
+    def request(method, endpoint, **kwargs):
+        submitted.update({
+            "method": method,
+            "endpoint": endpoint,
+            **kwargs["json"],
+        })
+        return __import__("httpx").Response(200, json={"ok": True})
+
+    monkeypatch.setattr(client, "_request", request)
+
+    client.update_tts_settings(2, 4, quantize_int8=True)
+
+    assert submitted == {
+        "method": "POST",
+        "endpoint": "/v1/settings/tts",
+        "cpu_threads": 2,
+        "sampler_decode_steps": 4,
+        "quantize_int8": True,
+    }
+
+
+def test_colab_client_keeps_int8_disabled_by_default(monkeypatch):
+    client = ColabAPIClient("https://example.trycloudflare.com", "x" * 40)
+    submitted = {}
+
+    def request(_method, _endpoint, **kwargs):
+        submitted.update(kwargs["json"])
+        return __import__("httpx").Response(200, json={"ok": True})
+
+    monkeypatch.setattr(client, "_request", request)
+
+    client.update_tts_settings(2, 4)
+
+    assert submitted["quantize_int8"] is False

@@ -35,6 +35,7 @@ from PySide6.QtWidgets import (
     QDialog,
     QDialogButtonBox,
     QFileDialog,
+    QDoubleSpinBox,
     QHeaderView,
     QInputDialog,
     QFormLayout,
@@ -83,6 +84,10 @@ from joe.audio_performance import (
     format_elapsed_status,
     format_performance_report,
     format_tts_benchmark_report,
+    format_cuda_quantization_benchmark_report,
+    format_cuda_precision_benchmark_report,
+    format_cuda_tf32_benchmark_report,
+    format_cuda_profile_benchmark_report,
     wav_duration_seconds,
 )
 from joe.local_ipc import LocalCommandServer, send_local_command
@@ -351,6 +356,14 @@ class TTSGenerationWorker(QRunnable):
                                     cancel_event=self.cancel_event,
                                     model_variant=self.task.model_variant,
                                     voice_id=remote_voice_id,
+                                    sampler_decode_steps=self.task.sampler_decode_steps,
+                                    temperature=self.task.temperature,
+                                    eos_threshold=self.task.eos_threshold,
+                                    frames_after_eos=self.task.frames_after_eos,
+                                    max_tokens=self.task.max_tokens,
+                                    teacher_force_previous_chunk=(
+                                        self.task.teacher_force_previous_chunk
+                                    ),
                                 )
                                 if self.cancel_event.is_set():
                                     self.signals.cancelled.emit(self.task.task_id)
@@ -366,6 +379,14 @@ class TTSGenerationWorker(QRunnable):
                                     device_preference=self.task.tts_device,
                                     cpu_threads=self.task.cpu_threads,
                                     quantize=self.task.tts_quantization,
+                                    sampler_decode_steps=self.task.sampler_decode_steps,
+                                    temperature=self.task.temperature,
+                                    eos_threshold=self.task.eos_threshold,
+                                    frames_after_eos=self.task.frames_after_eos,
+                                    max_tokens=self.task.max_tokens,
+                                    teacher_force_previous_chunk=(
+                                        self.task.teacher_force_previous_chunk
+                                    ),
                                 )
                             if not chunk_path.is_file() or chunk_path.stat().st_size == 0:
                                 raise RuntimeError("O serviço TTS não produziu um WAV válido.")
@@ -1783,6 +1804,18 @@ class JoeWindow(QMainWindow):
         self.colab_tts_cpu_threads.valueChanged.connect(self._save_colab_tts_settings)
         self.colab_tts_sampler_steps.valueChanged.connect(self._save_colab_tts_settings)
 
+        self.colab_tts_quantize_int8 = QCheckBox(
+            "Ativar quantização INT8 no Pocket TTS do Colab"
+        )
+        self.colab_tts_quantize_int8.setChecked(
+            self.app_settings.value("colab_tts_quantize_int8", False, type=bool)
+        )
+        self.colab_tts_quantize_int8.setToolTip(
+            "Desmarcada por padrão. Quando marcada, ativa INT8 nas camadas de atenção e FFN. "
+            "Na GPU exige TorchAO; desmarcada, a inferência atual sem quantização é preservada."
+        )
+        self.colab_tts_quantize_int8.toggled.connect(self._save_colab_tts_settings)
+
         colab_tts_form = QFormLayout()
         colab_tts_form.setFieldGrowthPolicy(
             QFormLayout.FieldGrowthPolicy.FieldsStayAtSizeHint
@@ -1794,8 +1827,10 @@ class JoeWindow(QMainWindow):
         colab_tts_form.setVerticalSpacing(10)
         colab_tts_form.addRow("Threads CPU:", self.colab_tts_cpu_threads)
         colab_tts_form.addRow("Qualidade (passos):", self.colab_tts_sampler_steps)
+        colab_tts_form.addRow("Quantização INT8:", self.colab_tts_quantize_int8)
         self.colab_tts_settings_status = QLabel(
-            "Padrão: 2 threads CPU e qualidade 4. Ajuste aqui e aplique no runtime conectado."
+            "Padrão: 2 threads CPU, qualidade 4 e quantização desativada. "
+            "Aplique no runtime conectado para ativar."
         )
         self.colab_tts_settings_status.setObjectName("muted")
         self.colab_tts_settings_status.setWordWrap(True)
@@ -1812,9 +1847,9 @@ class JoeWindow(QMainWindow):
         colab_tts_layout.addLayout(colab_tts_form)
         colab_tts_note = QLabel(
             "Threads CPU é limitado automaticamente à quantidade disponível no Colab. "
-            "Ao alterar a qualidade, o modelo é removido apenas do cache em memória e "
-            "recarregado na próxima síntese; os modelos e as vozes salvos no Google Drive "
-            "não são modificados."
+            "Mudanças de qualidade ou INT8 removem apenas o modelo do cache em memória "
+            "e recarregam na próxima síntese; os modelos e as vozes no Google Drive não "
+            "são modificados. Com INT8 desmarcada, o modelo segue sem quantização."
         )
         colab_tts_note.setObjectName("muted")
         colab_tts_note.setWordWrap(True)
@@ -2044,6 +2079,10 @@ class JoeWindow(QMainWindow):
             self.app_settings.setValue(
                 "colab_tts_sampler_steps", int(self.colab_tts_sampler_steps.value())
             )
+        if hasattr(self, "colab_tts_quantize_int8"):
+            self.app_settings.setValue(
+                "colab_tts_quantize_int8", bool(self.colab_tts_quantize_int8.isChecked())
+            )
         if hasattr(self, "colab_tts_settings_status"):
             self.colab_tts_settings_status.setText(
                 "Configurações salvas localmente. Clique em 'Aplicar configurações no Colab' "
@@ -2064,13 +2103,16 @@ class JoeWindow(QMainWindow):
 
         cpu_threads = int(self.colab_tts_cpu_threads.value())
         sampler_steps = int(self.colab_tts_sampler_steps.value())
+        quantize_int8 = bool(self.colab_tts_quantize_int8.isChecked())
         self._save_colab_tts_settings()
         self.colab_tts_apply_button.setEnabled(False)
         self.colab_tts_settings_status.setText(
             "Enviando as configurações para o Google Colab…"
         )
         worker = FunctionWorker(
-            lambda: client.update_tts_settings(cpu_threads, sampler_steps)
+            lambda: client.update_tts_settings(
+                cpu_threads, sampler_steps, quantize_int8=quantize_int8
+            )
         )
         self.colab_tts_settings_worker = worker
         worker.signals.finished.connect(self._colab_tts_settings_applied)
@@ -2087,9 +2129,14 @@ class JoeWindow(QMainWindow):
         sampler_steps = data.get(
             "tts_sampler_decode_steps", self.colab_tts_sampler_steps.value()
         )
+        quantization_label = (
+            "INT8 solicitada" if data.get("tts_quantize_int8_requested")
+            else "sem quantização"
+        )
         message = (
             f"Aplicado no Colab: {applied_threads} thread(s) CPU "
-            f"(de {available_threads} disponível(is)) e qualidade {sampler_steps}."
+            f"(de {available_threads} disponível(is)), qualidade {sampler_steps} "
+            f"e {quantization_label}."
         )
         if requested_threads != applied_threads:
             message += (
@@ -2188,6 +2235,14 @@ class JoeWindow(QMainWindow):
         tts_threads = data.get("tts_cpu_threads", "—")
         tts_available_threads = data.get("tts_available_cpu_threads", "—")
         tts_steps = data.get("tts_sampler_decode_steps", "—")
+        tts_quant_requested = bool(data.get("tts_quantize_int8_requested", False))
+        tts_quant_active = bool(data.get("tts_quantize_int8_active", False))
+        tts_quant_devices = data.get("tts_quantization_status") or {}
+        tts_quant_summary = ", ".join(
+            f"{variant}: {details.get('backend', '—')} em {details.get('device', '—')}"
+            for variant, details in tts_quant_devices.items()
+            if isinstance(details, dict) and details.get("active")
+        )
         last_tts = data.get("last_tts_generation") or {}
         last_tts_status = (
             f"Última síntese: {last_tts.get('device')} | "
@@ -2223,6 +2278,8 @@ class JoeWindow(QMainWindow):
             f"GPU disponível: {gpu}\n"
             f"Pocket TTS: versão {pocket_tts_version} | {tts_device} (modo {tts_mode}) | "
             f"threads CPU: {tts_threads}/{tts_available_threads} | qualidade configurada: {tts_steps}\n"
+            f"Quantização INT8: {'solicitada' if tts_quant_requested else 'desativada'} "
+            f"({'ativa: ' + tts_quant_summary if tts_quant_active else 'ainda não aplicada nesta sessão'})\n"
             f"Modelos carregados: {loaded_model_summary}\n"
             f"{last_tts_status}\n"
             f"Parakeet carregado: {'sim' if data.get('asr_loaded') else 'ainda não'}\n"
@@ -2254,7 +2311,7 @@ class JoeWindow(QMainWindow):
     def _open_colab_notebook(self) -> None:
         url = (
             "https://colab.research.google.com/github/g4b3r-desktop/joe/"
-            "blob/feature/clipboard-dialog-appearance-settings/colab/Joe_Colab_API.ipynb"
+            "blob/feature/pocket-tts-generation-controls/colab/Joe_Colab_API.ipynb"
         )
         QDesktopServices.openUrl(QUrl(url))
 
@@ -2531,8 +2588,8 @@ class JoeWindow(QMainWindow):
         saved_device_index = self.tts_device.findData(saved_tts_device)
         self.tts_device.setCurrentIndex(max(0, saved_device_index))
         self.tts_device.setToolTip(
-            "Na CPU, você pode ativar ou desativar a quantização INT8 abaixo. "
-            "Na CUDA, o Pocket TTS usa pesos sem quantização INT8."
+            "CPU e CUDA têm controles INT8 separados. A quantização da GPU começa "
+            "desativada e só é usada quando você a habilita explicitamente."
         )
 
         self.tts_cpu_threads = QSpinBox()
@@ -2552,8 +2609,20 @@ class JoeWindow(QMainWindow):
         )
         self.tts_quantization.setChecked(saved_quantization)
         self.tts_quantization.setToolTip(
-            "Reduz o uso de memória do modelo na CPU. O Pocket TTS não oferece "
-            "quantização dinâmica INT8 no caminho CUDA."
+            "Usa o caminho INT8 dinâmico padrão do Pocket TTS na CPU. "
+            "Esta preferência não ativa a quantização na GPU."
+        )
+
+        self.tts_cuda_quantization = QCheckBox(
+            "Usar quantização INT8 na NVIDIA GPU (TorchAO)"
+        )
+        saved_cuda_quantization = self.app_settings.value(
+            "tts_cuda_quantization", False, type=bool
+        )
+        self.tts_cuda_quantization.setChecked(saved_cuda_quantization)
+        self.tts_cuda_quantization.setToolTip(
+            "Ativa INT8 com TorchAO nas camadas de atenção e FFN do Pocket TTS na CUDA. "
+            "Desmarcada por padrão: a inferência GPU continua exatamente sem quantização."
         )
 
         self.tts_hardware_info = QLabel()
@@ -2562,6 +2631,7 @@ class JoeWindow(QMainWindow):
         self.tts_device.currentIndexChanged.connect(self._save_tts_hardware_settings)
         self.tts_cpu_threads.valueChanged.connect(self._save_tts_hardware_settings)
         self.tts_quantization.toggled.connect(self._save_tts_hardware_settings)
+        self.tts_cuda_quantization.toggled.connect(self._save_tts_hardware_settings)
         self.tts_performance_profile.currentIndexChanged.connect(
             self._apply_tts_performance_profile
         )
@@ -2573,17 +2643,217 @@ class JoeWindow(QMainWindow):
         )
         self.tts_benchmark_button.clicked.connect(self._benchmark_tts_performance)
 
+        self.tts_cuda_quant_benchmark_runs = QSpinBox()
+        self.tts_cuda_quant_benchmark_runs.setRange(3, 15)
+        self.tts_cuda_quant_benchmark_runs.setValue(
+            self.app_settings.value("tts_cuda_quant_benchmark_runs", 7, type=int)
+        )
+        self.tts_cuda_quant_benchmark_runs.setFixedWidth(72)
+        self.tts_cuda_quant_benchmark_runs.setToolTip(
+            "Quantidade de gerações medidas por modo, depois de duas gerações de aquecimento."
+        )
+        self.tts_cuda_quant_benchmark_runs.valueChanged.connect(
+            lambda value: self.app_settings.setValue(
+                "tts_cuda_quant_benchmark_runs", int(value)
+            )
+        )
+        self.tts_cuda_quant_benchmark_button = QPushButton(
+            "Medir CUDA: INT8 × sem INT8"
+        )
+        self.tts_cuda_quant_benchmark_button.setToolTip(
+            "Aquece cada modo, descarta as primeiras duas gerações e mede várias sínteses. "
+            "Mostra tempos individuais, média, mediana, desvio padrão e VRAM."
+        )
+        self.tts_cuda_quant_benchmark_button.clicked.connect(
+            self._benchmark_tts_cuda_quantization
+        )
+        self.tts_cuda_fp16_benchmark_button = QPushButton(
+            "Medir CUDA: FP32 × FP16"
+        )
+        self.tts_cuda_fp16_benchmark_button.setToolTip(
+            "Compara CUDA FP32 com FP16 autocast experimental nos três pontos internos "
+            "do Pocket TTS. Mantém os pesos FP32 e não altera as próximas gerações."
+        )
+        self.tts_cuda_fp16_benchmark_button.clicked.connect(
+            self._benchmark_tts_cuda_precision
+        )
+        self.tts_cuda_tf32_benchmark_button = QPushButton(
+            "Medir CUDA: FP32 IEEE × TF32"
+        )
+        self.tts_cuda_tf32_benchmark_button.setToolTip(
+            "Compara FP32 IEEE com TF32 em multiplicações CUDA na GPU Ampere+. "
+            "Pesos e saídas permanecem FP32; a configuração original é restaurada no final."
+        )
+        self.tts_cuda_tf32_benchmark_button.clicked.connect(
+            self._benchmark_tts_cuda_tf32
+        )
+        self.tts_cuda_profile_button = QPushButton(
+            "Diagnosticar CUDA: Flow LM × Mimi"
+        )
+        self.tts_cuda_profile_button.setToolTip(
+            "Mede separadamente Flow LM, decoder Mimi, espera na fila de latentes "
+            "e transferência do áudio para a RAM. Usa CUDA FP32 sem mudar as gerações normais."
+        )
+        self.tts_cuda_profile_button.clicked.connect(
+            self._benchmark_tts_cuda_profile
+        )
+
         hardware_actions = QHBoxLayout()
         hardware_actions.addWidget(self.tts_benchmark_button)
+        hardware_actions.addWidget(QLabel("Gerações medidas por modo:"))
+        hardware_actions.addWidget(self.tts_cuda_quant_benchmark_runs)
+        hardware_actions.addWidget(self.tts_cuda_quant_benchmark_button)
+        hardware_actions.addWidget(self.tts_cuda_fp16_benchmark_button)
+        hardware_actions.addWidget(self.tts_cuda_tf32_benchmark_button)
         hardware_actions.addStretch(1)
+        profile_actions = QHBoxLayout()
+        profile_actions.addWidget(self.tts_cuda_profile_button)
+        profile_actions.addStretch(1)
+        hardware_form.addRow("Diagnóstico de gargalos", profile_actions)
         hardware_form.addRow("Perfil de desempenho", self.tts_performance_profile)
         hardware_form.addRow("Dispositivo para geração local", self.tts_device)
         hardware_form.addRow("Threads da CPU", self.tts_cpu_threads)
-        hardware_form.addRow("Quantização do modelo", self.tts_quantization)
+        hardware_form.addRow("Quantização na CPU", self.tts_quantization)
+        hardware_form.addRow("Quantização na GPU", self.tts_cuda_quantization)
         hardware_form.addRow("Estado do hardware", self.tts_hardware_info)
         hardware_form.addRow("", hardware_actions)
         settings_layout.addWidget(hardware_group)
         self._refresh_tts_hardware_info()
+
+        # Advanced generation controls are opt-in: disabled overrides preserve
+        # Pocket TTS defaults, including automatic EOS handling and token limits.
+        generation_group = QGroupBox("Parâmetros avançados do Pocket TTS")
+        generation_form = QFormLayout(generation_group)
+
+        self.tts_sampler_override = QCheckBox("Sobrescrever padrão do modelo")
+        self.tts_sampler_override.setChecked(
+            self.app_settings.value("tts_sampler_override", False, type=bool)
+        )
+        self.tts_sampler_value = QSpinBox()
+        self.tts_sampler_value.setRange(1, 16)
+        self.tts_sampler_value.setValue(
+            self.app_settings.value("tts_sampler_value", 5, type=int)
+        )
+        self.tts_sampler_value.setEnabled(self.tts_sampler_override.isChecked())
+        self.tts_sampler_value.setToolTip(
+            "Mais passos podem melhorar a qualidade, mas também aumentam o tempo de síntese."
+        )
+        sampler_row = QWidget()
+        sampler_layout = QHBoxLayout(sampler_row)
+        sampler_layout.setContentsMargins(0, 0, 0, 0)
+        sampler_layout.addWidget(self.tts_sampler_override)
+        sampler_layout.addWidget(self.tts_sampler_value)
+        sampler_layout.addStretch(1)
+        generation_form.addRow("sampler_decode_steps", sampler_row)
+
+        self.tts_temperature_override = QCheckBox("Sobrescrever padrão do modelo")
+        self.tts_temperature_override.setChecked(
+            self.app_settings.value("tts_temperature_override", False, type=bool)
+        )
+        self.tts_temperature_value = QDoubleSpinBox()
+        self.tts_temperature_value.setRange(0.05, 2.0)
+        self.tts_temperature_value.setDecimals(2)
+        self.tts_temperature_value.setSingleStep(0.05)
+        self.tts_temperature_value.setValue(
+            self.app_settings.value("tts_temperature_value", 0.7, type=float)
+        )
+        self.tts_temperature_value.setEnabled(self.tts_temperature_override.isChecked())
+        self.tts_temperature_value.setToolTip(
+            "Temperatura altera a amostragem; não é um controle direto de velocidade."
+        )
+        temperature_row = QWidget()
+        temperature_layout = QHBoxLayout(temperature_row)
+        temperature_layout.setContentsMargins(0, 0, 0, 0)
+        temperature_layout.addWidget(self.tts_temperature_override)
+        temperature_layout.addWidget(self.tts_temperature_value)
+        temperature_layout.addStretch(1)
+        generation_form.addRow("temperature (temp)", temperature_row)
+
+        self.tts_eos_threshold_override = QCheckBox("Sobrescrever padrão do modelo")
+        self.tts_eos_threshold_override.setChecked(
+            self.app_settings.value("tts_eos_threshold_override", False, type=bool)
+        )
+        self.tts_eos_threshold_value = QDoubleSpinBox()
+        self.tts_eos_threshold_value.setRange(-20.0, 20.0)
+        self.tts_eos_threshold_value.setDecimals(2)
+        self.tts_eos_threshold_value.setSingleStep(0.1)
+        self.tts_eos_threshold_value.setValue(
+            self.app_settings.value("tts_eos_threshold_value", -4.0, type=float)
+        )
+        self.tts_eos_threshold_value.setEnabled(
+            self.tts_eos_threshold_override.isChecked()
+        )
+        self.tts_eos_threshold_value.setToolTip(
+            "Altera o limiar de fim de fala. Valores inadequados podem cortar palavras."
+        )
+        eos_row = QWidget()
+        eos_layout = QHBoxLayout(eos_row)
+        eos_layout.setContentsMargins(0, 0, 0, 0)
+        eos_layout.addWidget(self.tts_eos_threshold_override)
+        eos_layout.addWidget(self.tts_eos_threshold_value)
+        eos_layout.addStretch(1)
+        generation_form.addRow("eos_threshold", eos_row)
+
+        self.tts_frames_after_eos = QSpinBox()
+        self.tts_frames_after_eos.setRange(0, 20)
+        self.tts_frames_after_eos.setValue(
+            self.app_settings.value("tts_frames_after_eos", 0, type=int)
+        )
+        self.tts_frames_after_eos.setToolTip(
+            "0 mantém a escolha automática do Pocket TTS. Valores menores que o padrão "
+            "podem cortar o final da fala."
+        )
+        generation_form.addRow("frames_after_eos (0 = automático)", self.tts_frames_after_eos)
+
+        self.tts_max_tokens = QSpinBox()
+        self.tts_max_tokens.setRange(0, 10_000)
+        self.tts_max_tokens.setValue(
+            self.app_settings.value("tts_max_tokens", 0, type=int)
+        )
+        self.tts_max_tokens.setToolTip(
+            "0 mantém o limite padrão do modelo; valores baixos podem truncar a geração."
+        )
+        generation_form.addRow("max_tokens (0 = padrão)", self.tts_max_tokens)
+
+        self.tts_teacher_force_previous_chunk = QCheckBox(
+            "Usar teacher forcing do bloco anterior"
+        )
+        self.tts_teacher_force_previous_chunk.setChecked(
+            self.app_settings.value(
+                "tts_teacher_force_previous_chunk", False, type=bool
+            )
+        )
+        self.tts_teacher_force_previous_chunk.setToolTip(
+            "Melhora a continuidade entre blocos em alguns cenários, mas adiciona prefill "
+            "e pode deixar a geração mais lenta. Desligado por padrão."
+        )
+        generation_form.addRow("", self.tts_teacher_force_previous_chunk)
+
+        for checkbox, spinbox in (
+            (self.tts_sampler_override, self.tts_sampler_value),
+            (self.tts_temperature_override, self.tts_temperature_value),
+            (self.tts_eos_threshold_override, self.tts_eos_threshold_value),
+        ):
+            checkbox.toggled.connect(spinbox.setEnabled)
+            checkbox.toggled.connect(self._save_tts_generation_parameters)
+            spinbox.valueChanged.connect(self._save_tts_generation_parameters)
+        self.tts_frames_after_eos.valueChanged.connect(
+            self._save_tts_generation_parameters
+        )
+        self.tts_max_tokens.valueChanged.connect(self._save_tts_generation_parameters)
+        self.tts_teacher_force_previous_chunk.toggled.connect(
+            self._save_tts_generation_parameters
+        )
+
+        generation_note = QLabel(
+            "As opções desativadas preservam os padrões vigentes de cada backend. "
+            "0 em frames_after_eos e max_tokens significa automático/padrão. "
+            "Teacher forcing fica desligado para priorizar velocidade."
+        )
+        generation_note.setObjectName("muted")
+        generation_note.setWordWrap(True)
+        generation_form.addRow("", generation_note)
+        settings_layout.addWidget(generation_group)
 
         monitor_group = QGroupBox("Monitoramento em tempo real")
         monitor_form = QFormLayout(monitor_group)
@@ -3074,13 +3344,21 @@ class JoeWindow(QMainWindow):
             model_variant=task.model_variant,
             backend="Google Colab" if task.remote else "Local",
             original_text=task.text,
-            generation_settings=build_generation_settings(
-                device=task.tts_device,
-                cpu_threads=task.cpu_threads,
-                quantization=task.tts_quantization,
-                profile=task.tts_profile,
-                remote=task.remote,
-            ),
+            generation_settings={
+                **build_generation_settings(
+                    device=task.tts_device,
+                    cpu_threads=task.cpu_threads,
+                    quantization=task.tts_quantization,
+                    profile=task.tts_profile,
+                    remote=task.remote,
+                ),
+                "sampler_decode_steps": task.sampler_decode_steps,
+                "temperature": task.temperature,
+                "eos_threshold": task.eos_threshold,
+                "frames_after_eos": task.frames_after_eos,
+                "max_tokens": task.max_tokens,
+                "teacher_force_previous_chunk": task.teacher_force_previous_chunk,
+            },
         )
 
     def _record_clipboard_history(
@@ -3943,6 +4221,9 @@ class JoeWindow(QMainWindow):
         self.app_settings.setValue(
             "tts_quantization", bool(self.tts_quantization.isChecked())
         )
+        self.app_settings.setValue(
+            "tts_cuda_quantization", bool(self.tts_cuda_quantization.isChecked())
+        )
         self.app_settings.setValue("tts_performance_profile", profile)
         self._refresh_tts_hardware_info()
         self.statusBar().showMessage(
@@ -3952,7 +4233,12 @@ class JoeWindow(QMainWindow):
     def _save_tts_hardware_settings(self, *_args) -> None:
         if not all(
             hasattr(self, name)
-            for name in ("tts_device", "tts_cpu_threads", "tts_quantization")
+            for name in (
+                "tts_device",
+                "tts_cpu_threads",
+                "tts_quantization",
+                "tts_cuda_quantization",
+            )
         ):
             return
         if not self._applying_tts_profile and hasattr(self, "tts_performance_profile"):
@@ -3967,13 +4253,85 @@ class JoeWindow(QMainWindow):
         self.app_settings.setValue(
             "tts_quantization", bool(self.tts_quantization.isChecked())
         )
+        self.app_settings.setValue(
+            "tts_cuda_quantization", bool(self.tts_cuda_quantization.isChecked())
+        )
         self._refresh_tts_hardware_info()
+
+    def _tts_quantization_enabled_for_device(self, device: str | None = None) -> bool:
+        """Select the explicit INT8 preference for the chosen local device."""
+        selected = device or str(self.tts_device.currentData() or "cpu")
+        if selected == "cuda":
+            return bool(self.tts_cuda_quantization.isChecked())
+        return bool(self.tts_quantization.isChecked())
+
+    def _tts_generation_parameters(self) -> dict[str, object]:
+        """Return optional overrides; None preserves the Pocket TTS model defaults."""
+        return {
+            "sampler_decode_steps": (
+                int(self.tts_sampler_value.value())
+                if self.tts_sampler_override.isChecked()
+                else None
+            ),
+            "temperature": (
+                float(self.tts_temperature_value.value())
+                if self.tts_temperature_override.isChecked()
+                else None
+            ),
+            "eos_threshold": (
+                float(self.tts_eos_threshold_value.value())
+                if self.tts_eos_threshold_override.isChecked()
+                else None
+            ),
+            "frames_after_eos": (
+                int(self.tts_frames_after_eos.value())
+                if self.tts_frames_after_eos.value() > 0
+                else None
+            ),
+            "max_tokens": (
+                int(self.tts_max_tokens.value())
+                if self.tts_max_tokens.value() > 0
+                else None
+            ),
+            "teacher_force_previous_chunk": bool(
+                self.tts_teacher_force_previous_chunk.isChecked()
+            ),
+        }
+
+    def _save_tts_generation_parameters(self, *_args) -> None:
+        if not hasattr(self, "tts_sampler_override"):
+            return
+        self.app_settings.setValue(
+            "tts_sampler_override", self.tts_sampler_override.isChecked()
+        )
+        self.app_settings.setValue("tts_sampler_value", self.tts_sampler_value.value())
+        self.app_settings.setValue(
+            "tts_temperature_override", self.tts_temperature_override.isChecked()
+        )
+        self.app_settings.setValue(
+            "tts_temperature_value", self.tts_temperature_value.value()
+        )
+        self.app_settings.setValue(
+            "tts_eos_threshold_override", self.tts_eos_threshold_override.isChecked()
+        )
+        self.app_settings.setValue(
+            "tts_eos_threshold_value", self.tts_eos_threshold_value.value()
+        )
+        self.app_settings.setValue(
+            "tts_frames_after_eos", self.tts_frames_after_eos.value()
+        )
+        self.app_settings.setValue("tts_max_tokens", self.tts_max_tokens.value())
+        self.app_settings.setValue(
+            "tts_teacher_force_previous_chunk",
+            self.tts_teacher_force_previous_chunk.isChecked(),
+        )
 
     def _refresh_tts_hardware_info(self) -> None:
         if not hasattr(self, "tts_hardware_info"):
             return
         logical_cpus = os.cpu_count() or 1
-        if torch.cuda.is_available():
+        cuda_available = bool(torch.cuda.is_available())
+        if cuda_available:
             try:
                 gpu_name = torch.cuda.get_device_name(0)
                 vram_gb = torch.cuda.get_device_properties(0).total_memory / (1024 ** 3)
@@ -3987,23 +4345,32 @@ class JoeWindow(QMainWindow):
             )
         use_cpu = str(self.tts_device.currentData() or "cpu") == "cpu"
         self.tts_quantization.setEnabled(use_cpu)
+        self.tts_cuda_quantization.setEnabled(not use_cpu and cuda_available)
         if use_cpu:
-            self.tts_quantization.setToolTip(
-                "Ativa quantização dinâmica INT8 para reduzir a memória do modelo na CPU. "
-                "Desative para carregar pesos sem quantização."
-            )
             quantization_status = (
-                "INT8 habilitada na CPU."
+                "CPU: INT8 ativada."
                 if self.tts_quantization.isChecked()
-                else "INT8 desabilitada na CPU."
+                else "CPU: inferência sem quantização."
+            )
+            self.tts_cuda_quantization.setToolTip(
+                "Preferência salva para a próxima seleção de CUDA; desmarcada por padrão."
+            )
+        elif cuda_available:
+            quantization_status = (
+                "CUDA: INT8 TorchAO solicitada."
+                if self.tts_cuda_quantization.isChecked()
+                else "CUDA: inferência sem quantização (caminho atual preservado)."
+            )
+            self.tts_cuda_quantization.setToolTip(
+                "Ativa INT8 via TorchAO nas camadas de atenção e FFN. "
+                "Desmarcada, o modelo carrega e gera exatamente como antes, sem quantização."
             )
         else:
-            self.tts_quantization.setToolTip(
-                "A quantização dinâmica INT8 do Pocket TTS só funciona na CPU. "
-                "A preferência fica salva para quando você voltar à CPU."
-            )
             quantization_status = (
-                "CUDA selecionada: quantização INT8 não é suportada e fica desativada."
+                "CUDA selecionada, mas indisponível: quantização na GPU não será usada."
+            )
+            self.tts_cuda_quantization.setToolTip(
+                "Ative uma build CUDA do PyTorch para habilitar INT8 na GPU."
             )
         self.tts_hardware_info.setText(
             f"CPU: {logical_cpus} processador(es) lógico(s). {cuda_status} "
@@ -4084,7 +4451,8 @@ class JoeWindow(QMainWindow):
         language = str(self.tts_language.currentData() or "portuguese")
         model_variant = str(self.tts_model_variant.currentData() or language)
         cpu_threads = int(self.tts_cpu_threads.value())
-        quantize = bool(self.tts_quantization.isChecked())
+        quantize_cpu = bool(self.tts_quantization.isChecked())
+        quantize_cuda = bool(self.tts_cuda_quantization.isChecked())
         selected_voice = self.voice_path.text().strip() or None
         source_text = self.tts_text.toPlainText().strip()
         if source_text:
@@ -4113,7 +4481,8 @@ class JoeWindow(QMainWindow):
                 model_variant,
                 cpu_threads=cpu_threads,
                 repeats=2,
-                quantize=quantize,
+                quantize=quantize_cpu,
+                quantize_cuda=quantize_cuda,
             )
             return format_tts_benchmark_report(results, cpu_threads=cpu_threads)
 
@@ -4125,6 +4494,287 @@ class JoeWindow(QMainWindow):
             )
 
         self._run_task("Comparando o Pocket TTS em CPU e CUDA…", benchmark, completed)
+
+    def _benchmark_tts_cuda_quantization(self) -> None:
+        if (
+            self.active_worker is not None
+            or self.active_generation_worker is not None
+            or self.clipboard_generation_worker is not None
+        ):
+            QMessageBox.information(
+                self,
+                "Joe ocupado",
+                "Aguarde a tarefa atual terminar antes de comparar a quantização CUDA.",
+            )
+            return
+        if not torch.cuda.is_available():
+            QMessageBox.information(
+                self,
+                "CUDA indisponível",
+                "Ative a GPU NVIDIA e confirme que o PyTorch reconhece CUDA antes de medir.",
+            )
+            return
+
+        language = str(self.tts_language.currentData() or "portuguese")
+        model_variant = str(self.tts_model_variant.currentData() or language)
+        cpu_threads = int(self.tts_cpu_threads.value())
+        measured_runs = int(self.tts_cuda_quant_benchmark_runs.value())
+        selected_voice = self.voice_path.text().strip() or None
+        source_text = self.tts_text.toPlainText().strip()
+        if source_text:
+            try:
+                prepared_text = self._prepared_speech_text(source_text, language)
+            except Exception as exc:  # noqa: BLE001
+                QMessageBox.warning(
+                    self,
+                    "Não foi possível preparar o texto",
+                    f"Revise as opções de pronúncia antes de comparar o desempenho.\n\n{exc}",
+                )
+                return
+            chunks = split_text_into_chunks(prepared_text, max_chars=280)
+            sample_text = chunks[0] if chunks else ""
+        else:
+            sample_text = (
+                "Este é um teste repetido do Pocket TTS para medir a velocidade "
+                "da GPU com quantização INT8 e sem quantização."
+            )
+
+        def benchmark() -> str:
+            results = self.tts.benchmark_cuda_quantization(
+                sample_text,
+                language,
+                selected_voice,
+                model_variant,
+                cpu_threads=cpu_threads,
+                warmup_runs=2,
+                measured_runs=measured_runs,
+            )
+            return format_cuda_quantization_benchmark_report(results)
+
+        def completed(report: object) -> None:
+            QMessageBox.information(
+                self,
+                "Medições CUDA — INT8 × sem INT8",
+                str(report),
+            )
+
+        self._run_task(
+            f"Medindo CUDA sem INT8 e com INT8: 2 aquecimentos + "
+            f"{measured_runs} gerações por modo…",
+            benchmark,
+            completed,
+        )
+
+    def _benchmark_tts_cuda_precision(self) -> None:
+        if (
+            self.active_worker is not None
+            or self.active_generation_worker is not None
+            or self.clipboard_generation_worker is not None
+        ):
+            QMessageBox.information(
+                self,
+                "Joe ocupado",
+                "Aguarde a tarefa atual terminar antes de comparar FP32 e FP16 na CUDA.",
+            )
+            return
+        if not torch.cuda.is_available():
+            QMessageBox.information(
+                self,
+                "CUDA indisponível",
+                "Ative a GPU NVIDIA e confirme que o PyTorch reconhece CUDA antes de medir.",
+            )
+            return
+
+        language = str(self.tts_language.currentData() or "portuguese")
+        model_variant = str(self.tts_model_variant.currentData() or language)
+        cpu_threads = int(self.tts_cpu_threads.value())
+        measured_runs = int(self.tts_cuda_quant_benchmark_runs.value())
+        selected_voice = self.voice_path.text().strip() or None
+        source_text = self.tts_text.toPlainText().strip()
+        if source_text:
+            try:
+                prepared_text = self._prepared_speech_text(source_text, language)
+            except Exception as exc:  # noqa: BLE001
+                QMessageBox.warning(
+                    self,
+                    "Não foi possível preparar o texto",
+                    f"Revise as opções de pronúncia antes de comparar o desempenho.\n\n{exc}",
+                )
+                return
+            chunks = split_text_into_chunks(prepared_text, max_chars=280)
+            sample_text = chunks[0] if chunks else ""
+        else:
+            sample_text = (
+                "Este é um teste repetido do Pocket TTS para comparar a precisão "
+                "FP32 com a precisão mista FP16 na GPU NVIDIA."
+            )
+
+        def benchmark() -> str:
+            results = self.tts.benchmark_cuda_precision(
+                sample_text,
+                language,
+                selected_voice,
+                model_variant,
+                cpu_threads=cpu_threads,
+                warmup_runs=2,
+                measured_runs=measured_runs,
+            )
+            return format_cuda_precision_benchmark_report(results)
+
+        def completed(report: object) -> None:
+            QMessageBox.information(
+                self,
+                "Medições CUDA — FP32 × FP16",
+                str(report),
+            )
+
+        self._run_task(
+            f"Medindo CUDA FP32 e FP16 autocast: 2 aquecimentos + "
+            f"{measured_runs} gerações por modo…",
+            benchmark,
+            completed,
+        )
+
+
+    def _benchmark_tts_cuda_tf32(self) -> None:
+        if (
+            self.active_worker is not None
+            or self.active_generation_worker is not None
+            or self.clipboard_generation_worker is not None
+        ):
+            QMessageBox.information(
+                self,
+                "Joe ocupado",
+                "Aguarde a tarefa atual terminar antes de comparar FP32 IEEE e TF32 na CUDA.",
+            )
+            return
+        if not torch.cuda.is_available():
+            QMessageBox.information(
+                self,
+                "CUDA indisponível",
+                "Ative a GPU NVIDIA e confirme que o PyTorch reconhece CUDA antes de medir.",
+            )
+            return
+
+        language = str(self.tts_language.currentData() or "portuguese")
+        model_variant = str(self.tts_model_variant.currentData() or language)
+        cpu_threads = int(self.tts_cpu_threads.value())
+        measured_runs = int(self.tts_cuda_quant_benchmark_runs.value())
+        selected_voice = self.voice_path.text().strip() or None
+        source_text = self.tts_text.toPlainText().strip()
+        if source_text:
+            try:
+                prepared_text = self._prepared_speech_text(source_text, language)
+            except Exception as exc:  # noqa: BLE001
+                QMessageBox.warning(
+                    self,
+                    "Não foi possível preparar o texto",
+                    f"Revise as opções de pronúncia antes de comparar o desempenho.\\n\\n{exc}",
+                )
+                return
+            chunks = split_text_into_chunks(prepared_text, max_chars=280)
+            sample_text = chunks[0] if chunks else ""
+        else:
+            sample_text = (
+                "Este é um teste repetido do Pocket TTS para comparar "
+                "FP32 IEEE com multiplicações TF32 na GPU NVIDIA."
+            )
+
+        def benchmark() -> str:
+            results = self.tts.benchmark_cuda_tf32(
+                sample_text,
+                language,
+                selected_voice,
+                model_variant,
+                cpu_threads=cpu_threads,
+                warmup_runs=2,
+                measured_runs=measured_runs,
+            )
+            return format_cuda_tf32_benchmark_report(results)
+
+        def completed(report: object) -> None:
+            QMessageBox.information(
+                self,
+                "Medições CUDA — FP32 IEEE × TF32",
+                str(report),
+            )
+
+        self._run_task(
+            f"Medindo CUDA FP32 IEEE e TF32: 2 aquecimentos + "
+            f"{measured_runs} gerações por modo…",
+            benchmark,
+            completed,
+        )
+
+    def _benchmark_tts_cuda_profile(self) -> None:
+        if (
+            self.active_worker is not None
+            or self.active_generation_worker is not None
+            or self.clipboard_generation_worker is not None
+        ):
+            QMessageBox.information(
+                self,
+                "Joe ocupado",
+                "Aguarde a tarefa atual terminar antes de iniciar o diagnóstico CUDA.",
+            )
+            return
+        if not torch.cuda.is_available():
+            QMessageBox.information(
+                self,
+                "CUDA indisponível",
+                "Ative a GPU NVIDIA e confirme que o PyTorch reconhece CUDA antes de diagnosticar.",
+            )
+            return
+
+        language = str(self.tts_language.currentData() or "portuguese")
+        model_variant = str(self.tts_model_variant.currentData() or language)
+        cpu_threads = int(self.tts_cpu_threads.value())
+        measured_runs = int(self.tts_cuda_quant_benchmark_runs.value())
+        selected_voice = self.voice_path.text().strip() or None
+        source_text = self.tts_text.toPlainText().strip()
+        if source_text:
+            try:
+                prepared_text = self._prepared_speech_text(source_text, language)
+            except Exception as exc:  # noqa: BLE001
+                QMessageBox.warning(
+                    self,
+                    "Não foi possível preparar o texto",
+                    f"Revise as opções de pronúncia antes do diagnóstico.\n\n{exc}",
+                )
+                return
+            chunks = split_text_into_chunks(prepared_text, max_chars=280)
+            sample_text = chunks[0] if chunks else ""
+        else:
+            sample_text = (
+                "Este é um diagnóstico de desempenho do Pocket TTS para separar "
+                "o custo da geração de latentes e da decodificação do áudio."
+            )
+
+        def benchmark() -> str:
+            results = self.tts.benchmark_cuda_profile(
+                sample_text,
+                language,
+                selected_voice,
+                model_variant,
+                cpu_threads=cpu_threads,
+                warmup_runs=2,
+                measured_runs=measured_runs,
+            )
+            return format_cuda_profile_benchmark_report(results)
+
+        def completed(report: object) -> None:
+            QMessageBox.information(
+                self,
+                "Diagnóstico CUDA — Flow LM × Mimi",
+                str(report),
+            )
+
+        self._run_task(
+            f"Diagnosticando CUDA FP32: 2 aquecimentos + "
+            f"{measured_runs} gerações medidas…",
+            benchmark,
+            completed,
+        )
 
     def _save_tts_output_settings(self, *_args) -> None:
         if not hasattr(self, "tts_output_directory"):
@@ -4247,7 +4897,7 @@ class JoeWindow(QMainWindow):
                 model_variant,
                 device_preference=str(self.tts_device.currentData() or "cpu"),
                 cpu_threads=int(self.tts_cpu_threads.value()),
-                quantize=bool(self.tts_quantization.isChecked()),
+                quantize=self._tts_quantization_enabled_for_device(),
             )
 
         def completed(result: object) -> None:
@@ -4660,7 +5310,12 @@ class JoeWindow(QMainWindow):
 
         tts_device = str(self.tts_device.currentData() or "cpu")
         cpu_threads = int(self.tts_cpu_threads.value())
-        tts_quantization = bool(self.tts_quantization.isChecked())
+        tts_quantization = (
+            bool(self.colab_tts_quantize_int8.isChecked())
+            if remote is not None
+            else self._tts_quantization_enabled_for_device(tts_device)
+        )
+        tts_generation_parameters = self._tts_generation_parameters()
         generation_settings = build_generation_settings(
             device=tts_device,
             cpu_threads=cpu_threads,
@@ -4668,6 +5323,7 @@ class JoeWindow(QMainWindow):
             profile=str(self.tts_performance_profile.currentData() or "custom"),
             remote=remote is not None,
         )
+        generation_settings.update(tts_generation_parameters)
 
         remote_voice_session = (
             ColabVoiceSession(
@@ -4687,7 +5343,9 @@ class JoeWindow(QMainWindow):
 
         if remote_voice_session is not None:
             def generate_clipboard_chunk(chunk_text: str, output_path: Path) -> Path:
-                audio_data = remote_voice_session.generate_audio(chunk_text)
+                audio_data = remote_voice_session.generate_audio(
+                    chunk_text, **tts_generation_parameters
+                )
                 write_bytes_atomically(output_path, audio_data)
                 return output_path
         else:
@@ -4700,7 +5358,8 @@ class JoeWindow(QMainWindow):
                     model_variant,
                     device_preference=tts_device,
                     cpu_threads=cpu_threads,
-                    quantize=tts_quantization,
+                    quantize=self._tts_quantization_enabled_for_device(tts_device),
+                    **tts_generation_parameters,
                 )
 
         if shortcut_action == "replace":
@@ -4935,13 +5594,20 @@ class JoeWindow(QMainWindow):
                 model_variant=model_variant,
                 tts_device=str(self.tts_device.currentData() or "cpu"),
                 cpu_threads=int(self.tts_cpu_threads.value()),
-                tts_quantization=bool(self.tts_quantization.isChecked()),
+                tts_quantization=(
+                    bool(self.colab_tts_quantize_int8.isChecked())
+                    if remote
+                    else self._tts_quantization_enabled_for_device(
+                        str(self.tts_device.currentData() or "cpu")
+                    )
+                ),
                 tts_profile=str(self.tts_performance_profile.currentData() or "custom"),
                 voice_path=selected_voice,
                 voice_alias=selected_voice_alias,
                 remote=remote,
                 remote_url=remote_url,
                 remote_token=remote_token,
+                **self._tts_generation_parameters(),
             )
         except ValueError as exc:
             QMessageBox.information(self, "Tarefa inválida", str(exc))
@@ -5435,7 +6101,22 @@ class JoeWindow(QMainWindow):
             self.tts_cpu_threads,
             self.tts_performance_profile,
             self.tts_quantization,
+            self.tts_cuda_quantization,
+            self.tts_sampler_override,
+            self.tts_sampler_value,
+            self.tts_temperature_override,
+            self.tts_temperature_value,
+            self.tts_eos_threshold_override,
+            self.tts_eos_threshold_value,
+            self.tts_frames_after_eos,
+            self.tts_max_tokens,
+            self.tts_teacher_force_previous_chunk,
             self.tts_benchmark_button,
+            self.tts_cuda_quant_benchmark_runs,
+            self.tts_cuda_quant_benchmark_button,
+            self.tts_cuda_fp16_benchmark_button,
+            self.tts_cuda_tf32_benchmark_button,
+            self.tts_cuda_profile_button,
             self.tts_language,
             self.tts_model_variant,
             self.clipboard_chunk_size,

@@ -45,6 +45,7 @@ from drive_assets import (
     voice_state_for_safetensors_export,
 )
 from tts_runtime import (
+    apply_tts_int8_quantization,
     available_cpu_count,
     configure_torch_threads,
     ensure_supported_torch,
@@ -70,6 +71,9 @@ MAX_VOICE_ASSET_BYTES = 80 * 1024 * 1024
 # Pocket TTS remains CPU-first, but this Colab worker can explicitly move the
 # nn.Module to CUDA. Auto prefers CUDA when available and safely falls back.
 TTS_DEVICE_MODE = os.environ.get("JOE_TTS_DEVICE", "auto").strip().lower()
+TTS_QUANTIZE_INT8_REQUESTED = os.environ.get(
+    "JOE_TTS_QUANTIZE_INT8", "0"
+).strip().lower() in {"1", "true", "yes", "on"}
 TTS_SAMPLER_ERROR: str | None = None
 try:
     TTS_SAMPLER_DECODE_STEPS = int(
@@ -112,7 +116,11 @@ app = FastAPI(
 _tts_lock = threading.Lock()
 _asr_lock = threading.Lock()
 _tts_models: dict[str, Any] = {}
+_tts_model_settings: dict[
+    str, tuple[int, float | None, float | None, bool]
+] = {}
 _tts_loaded_devices: dict[str, str] = {}
+_tts_quantization_status: dict[str, dict[str, Any]] = {}
 _tts_device_fallback_reason: str | None = None
 _last_tts_metrics: dict[str, Any] | None = None
 _tts_voice_states: dict[tuple[str, str], Any] = {}
@@ -228,13 +236,45 @@ def _tts_model_diagnostics(model: Any) -> dict[str, Any]:
     }
 
 
-def _get_tts_model(language: str, model_variant: str) -> Any:
+def _get_tts_model(
+    language: str,
+    model_variant: str,
+    sampler_decode_steps: int | None = None,
+    temperature: float | None = None,
+    eos_threshold: float | None = None,
+) -> Any:
+    effective_steps = (
+        int(sampler_decode_steps)
+        if sampler_decode_steps is not None
+        else TTS_SAMPLER_DECODE_STEPS
+    )
+    settings_key = (
+        effective_steps,
+        temperature,
+        eos_threshold,
+        bool(TTS_QUANTIZE_INT8_REQUESTED),
+    )
     model = _tts_models.get(model_variant)
+    if model is not None and _tts_model_settings.get(model_variant) != settings_key:
+        _tts_voice_states.clear()
+        _tts_models.clear()
+        _tts_model_settings.clear()
+        _tts_loaded_devices.clear()
+        _tts_quantization_status.clear()
+        model = None
     if model is None:
         # The worker is sequential; retain only the selected variant in memory.
         _tts_voice_states.clear()
         _tts_models.clear()
         _tts_loaded_devices.clear()
+        _tts_model_settings.clear()
+        _tts_quantization_status.clear()
+
+        model_load_options: dict[str, Any] = {}
+        if temperature is not None:
+            model_load_options["temp"] = float(temperature)
+        if eos_threshold is not None:
+            model_load_options["eos_threshold"] = float(eos_threshold)
 
         if DIRECT_DRIVE_ASSETS:
             drive_config = DRIVE_ASSETS_ROOT / "models" / model_variant / "config.yaml"
@@ -246,7 +286,8 @@ def _get_tts_model(language: str, model_variant: str) -> Any:
             loader = lambda: TTSModel.load_model(
                 config=str(drive_config),
                 quantize=False,
-                sampler_decode_steps=TTS_SAMPLER_DECODE_STEPS,
+                sampler_decode_steps=effective_steps,
+                **model_load_options,
             )
         else:
             local_config = os.environ.get("JOE_TTS_CONFIG_PATH")
@@ -280,7 +321,8 @@ def _get_tts_model(language: str, model_variant: str) -> Any:
                 loader = lambda: TTSModel.load_model(
                     config=str(config_path),
                     quantize=False,
-                    sampler_decode_steps=TTS_SAMPLER_DECODE_STEPS,
+                    sampler_decode_steps=effective_steps,
+                    **model_load_options,
                 )
             else:
                 loader = lambda: load_tts_model(
@@ -288,11 +330,39 @@ def _get_tts_model(language: str, model_variant: str) -> Any:
                     language,
                     model_variant,
                     quantize=False,
-                    sampler_decode_steps=TTS_SAMPLER_DECODE_STEPS,
+                    sampler_decode_steps=effective_steps,
+                    temp=temperature,
+                    eos_threshold=eos_threshold,
                 )
 
         model = _load_tts_model_for_inference(loader, model_variant)
+        actual_device = _tts_loaded_devices.get(model_variant, TTS_DEVICE_SELECTED)
+        try:
+            backend = apply_tts_int8_quantization(
+                model,
+                actual_device,
+                requested=TTS_QUANTIZE_INT8_REQUESTED,
+            )
+        except Exception:
+            _tts_models.clear()
+            _tts_model_settings.clear()
+            _tts_loaded_devices.clear()
+            _tts_quantization_status.clear()
+            _tts_voice_states.clear()
+            del model
+            gc.collect()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+            raise
+        quantization_active = backend is not None
+        _tts_quantization_status[model_variant] = {
+            "requested": TTS_QUANTIZE_INT8_REQUESTED,
+            "active": quantization_active,
+            "backend": backend or "none",
+            "device": actual_device,
+        }
         _tts_models[model_variant] = model
+        _tts_model_settings[model_variant] = settings_key
     return model
 
 def _generate_tts(
@@ -302,6 +372,12 @@ def _generate_tts(
     voice_file: str | None,
     voice_name: str | None = None,
     voice_id: str | None = None,
+    sampler_decode_steps: int | None = None,
+    temperature: float | None = None,
+    eos_threshold: float | None = None,
+    frames_after_eos: int | None = None,
+    max_tokens: int | None = None,
+    teacher_force_previous_chunk: bool = False,
 ) -> bytes:
     if voice_id:
         if not DIRECT_DRIVE_ASSETS:
@@ -342,7 +418,23 @@ def _generate_tts(
     )
     with _tts_lock:
         try:
-            model = _get_tts_model(language, model_variant)
+            if sampler_decode_steps is not None and not 1 <= int(sampler_decode_steps) <= 16:
+                raise ValueError("sampler_decode_steps deve ficar entre 1 e 16.")
+            if temperature is not None and not 0.05 <= float(temperature) <= 2.0:
+                raise ValueError("temperature deve ficar entre 0,05 e 2,0.")
+            if eos_threshold is not None and not -20.0 <= float(eos_threshold) <= 20.0:
+                raise ValueError("eos_threshold deve ficar entre -20 e 20.")
+            if frames_after_eos is not None and not 1 <= int(frames_after_eos) <= 20:
+                raise ValueError("frames_after_eos deve ficar entre 1 e 20.")
+            if max_tokens is not None and not 1 <= int(max_tokens) <= 10_000:
+                raise ValueError("max_tokens deve ficar entre 1 e 10.000.")
+            model = _get_tts_model(
+                language,
+                model_variant,
+                sampler_decode_steps,
+                temperature,
+                eos_threshold,
+            )
         except Exception as exc:
             raise RuntimeError(
                 "Falha ao carregar o checkpoint/configuração do modelo Pocket TTS "
@@ -392,7 +484,14 @@ def _generate_tts(
         generation_started = time.perf_counter()
         try:
             # generate_audio() already uses torch.no_grad() in Pocket TTS.
-            audio = model.generate_audio(voice_state, text)
+            generation_options: dict[str, Any] = {}
+            if frames_after_eos is not None:
+                generation_options["frames_after_eos"] = int(frames_after_eos)
+            if max_tokens is not None:
+                generation_options["max_tokens"] = int(max_tokens)
+            if teacher_force_previous_chunk:
+                generation_options["teacher_force_previous_chunk"] = True
+            audio = model.generate_audio(voice_state, text, **generation_options)
             if effective_device == "cuda":
                 torch.cuda.synchronize()
         except Exception as exc:
@@ -419,6 +518,18 @@ def _generate_tts(
             "text_characters": len(text),
             "sample_rate": sample_rate,
             "torch_version": str(torch.__version__),
+            "generation_parameters": {
+                "sampler_decode_steps": (
+                    int(sampler_decode_steps)
+                    if sampler_decode_steps is not None
+                    else TTS_SAMPLER_DECODE_STEPS
+                ),
+                "temperature": temperature if temperature is not None else "model_default",
+                "eos_threshold": eos_threshold if eos_threshold is not None else "model_default",
+                "frames_after_eos": frames_after_eos if frames_after_eos is not None else "automatic",
+                "max_tokens": max_tokens if max_tokens is not None else "model_default",
+                "teacher_force_previous_chunk": bool(teacher_force_previous_chunk),
+            },
         }
         print(
             "[JOE_TTS] "
@@ -773,7 +884,8 @@ def commit_asset_upload(upload_id: str) -> dict[str, Any]:
             validation_model = TTSModel.load_model(
                 config=str(validation_config),
                 quantize=False,
-                sampler_decode_steps=TTS_SAMPLER_DECODE_STEPS,
+                sampler_decode_steps=effective_steps,
+                **model_load_options,
             )
             if not getattr(validation_model, "has_voice_cloning", True):
                 raise ValueError(
@@ -995,6 +1107,15 @@ def health(_: None = Depends(require_token)) -> dict[str, Any]:
         "tts_device_mode": TTS_DEVICE_MODE,
         "tts_device_selected": TTS_DEVICE_SELECTED,
         "tts_loaded_devices": dict(_tts_loaded_devices),
+        "tts_quantize_int8_requested": TTS_QUANTIZE_INT8_REQUESTED,
+        "tts_quantization_status": {
+            variant: dict(status)
+            for variant, status in _tts_quantization_status.items()
+        },
+        "tts_quantize_int8_active": any(
+            bool(status.get("active"))
+            for status in _tts_quantization_status.values()
+        ),
         "tts_cpu_threads": TTS_CPU_THREADS,
         "tts_sampler_decode_steps": TTS_SAMPLER_DECODE_STEPS,
         "tts_sampler_error": TTS_SAMPLER_ERROR,
@@ -1010,7 +1131,7 @@ def health(_: None = Depends(require_token)) -> dict[str, Any]:
 @app.post("/v1/settings/tts", dependencies=[Depends(require_token)])
 def update_tts_settings(payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
     """Apply Colab TTS settings without restarting the API process."""
-    global TTS_CPU_THREADS, TTS_SAMPLER_DECODE_STEPS
+    global TTS_CPU_THREADS, TTS_SAMPLER_DECODE_STEPS, TTS_QUANTIZE_INT8_REQUESTED
     global TTS_THREADS_ERROR, TTS_SAMPLER_ERROR
 
     try:
@@ -1034,6 +1155,14 @@ def update_tts_settings(payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
             status_code=422,
             detail="Qualidade deve ficar entre 1 e 16.",
         )
+    requested_quantization = payload.get(
+        "quantize_int8", TTS_QUANTIZE_INT8_REQUESTED
+    )
+    if not isinstance(requested_quantization, bool):
+        raise HTTPException(
+            status_code=422,
+            detail="quantize_int8 precisa ser verdadeiro ou falso.",
+        )
 
     # Serialize with both TTS and ASR inference because torch.set_num_threads()
     # affects PyTorch process-wide. Jobs submitted after this section will wait
@@ -1054,6 +1183,7 @@ def update_tts_settings(payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
                 )
 
             previous_steps = TTS_SAMPLER_DECODE_STEPS
+            previous_quantization = TTS_QUANTIZE_INT8_REQUESTED
             try:
                 applied_threads = configure_torch_threads(torch, requested_threads)
             except (TypeError, ValueError, RuntimeError) as exc:
@@ -1066,18 +1196,24 @@ def update_tts_settings(payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
             TTS_THREADS_ERROR = None
             TTS_SAMPLER_DECODE_STEPS = requested_steps
             TTS_SAMPLER_ERROR = None
+            TTS_QUANTIZE_INT8_REQUESTED = requested_quantization
             os.environ["JOE_TTS_CPU_THREADS"] = str(applied_threads)
             os.environ["JOE_TTS_SAMPLER_DECODE_STEPS"] = str(requested_steps)
+            os.environ["JOE_TTS_QUANTIZE_INT8"] = "1" if requested_quantization else "0"
 
             sampler_changed = requested_steps != previous_steps
-            if sampler_changed:
+            quantization_changed = requested_quantization != previous_quantization
+            model_settings_changed = sampler_changed or quantization_changed
+            if model_settings_changed:
                 # These are process-memory caches only. Drive models and voice
                 # assets remain untouched and will be loaded on the next request.
                 _tts_models.clear()
+                _tts_model_settings.clear()
                 _tts_loaded_devices.clear()
+                _tts_quantization_status.clear()
                 _tts_voice_states.clear()
 
-    if sampler_changed:
+    if model_settings_changed:
         gc.collect()
         if torch.cuda.is_available():
             try:
@@ -1091,7 +1227,9 @@ def update_tts_settings(payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
         "tts_requested_cpu_threads": requested_threads,
         "tts_available_cpu_threads": available_cpu_count(),
         "tts_sampler_decode_steps": TTS_SAMPLER_DECODE_STEPS,
-        "tts_model_reloaded_on_next_generation": sampler_changed,
+        "tts_quantize_int8_requested": TTS_QUANTIZE_INT8_REQUESTED,
+        "tts_quantize_int8_changed": quantization_changed,
+        "tts_model_reloaded_on_next_generation": model_settings_changed,
         "tts_loaded_model_variants": sorted(_tts_models),
     }
 
@@ -1178,6 +1316,12 @@ def _generate_tts_job(
     voice_suffix: str,
     voice_filename: str | None,
     voice_id: str | None,
+    sampler_decode_steps: int | None,
+    temperature: float | None,
+    eos_threshold: float | None,
+    frames_after_eos: int | None,
+    max_tokens: int | None,
+    teacher_force_previous_chunk: bool,
 ) -> bytes:
     with tempfile.TemporaryDirectory(prefix="joe-tts-job-") as temp_dir:
         voice_path = None
@@ -1191,6 +1335,12 @@ def _generate_tts_job(
             voice_path,
             voice_name=voice_filename,
             voice_id=voice_id,
+            sampler_decode_steps=sampler_decode_steps,
+            temperature=temperature,
+            eos_threshold=eos_threshold,
+            frames_after_eos=frames_after_eos,
+            max_tokens=max_tokens,
+            teacher_force_previous_chunk=teacher_force_previous_chunk,
         )
 
 
@@ -1208,6 +1358,12 @@ async def submit_tts_job(
     model_variant: str | None = Form(default=None),
     voice: UploadFile | None = File(default=None),
     voice_id: str | None = Form(default=None),
+    sampler_decode_steps: int | None = Form(default=None),
+    temperature: float | None = Form(default=None),
+    eos_threshold: float | None = Form(default=None),
+    frames_after_eos: int | None = Form(default=None),
+    max_tokens: int | None = Form(default=None),
+    teacher_force_previous_chunk: bool = Form(default=False),
 ) -> dict[str, str]:
     text = text.strip()
     if not text:
@@ -1222,6 +1378,16 @@ async def submit_tts_job(
             status_code=422,
             detail="A versão selecionada não está disponível para o idioma informado.",
         )
+    if sampler_decode_steps is not None and not 1 <= sampler_decode_steps <= 16:
+        raise HTTPException(status_code=422, detail="sampler_decode_steps deve ficar entre 1 e 16.")
+    if temperature is not None and not 0.05 <= temperature <= 2.0:
+        raise HTTPException(status_code=422, detail="temperature deve ficar entre 0,05 e 2,0.")
+    if eos_threshold is not None and not -20.0 <= eos_threshold <= 20.0:
+        raise HTTPException(status_code=422, detail="eos_threshold deve ficar entre -20 e 20.")
+    if frames_after_eos is not None and not 1 <= frames_after_eos <= 20:
+        raise HTTPException(status_code=422, detail="frames_after_eos deve ficar entre 1 e 20.")
+    if max_tokens is not None and not 1 <= max_tokens <= 10_000:
+        raise HTTPException(status_code=422, detail="max_tokens deve ficar entre 1 e 10.000.")
     if voice is not None and voice_id:
         raise HTTPException(status_code=422, detail="Envie o arquivo de voz ou voice_id, não ambos.")
     if DIRECT_DRIVE_ASSETS and voice is not None:
@@ -1246,6 +1412,12 @@ async def submit_tts_job(
         suffix,
         voice_filename,
         voice_id,
+        sampler_decode_steps,
+        temperature,
+        eos_threshold,
+        frames_after_eos,
+        max_tokens,
+        teacher_force_previous_chunk,
     )
     return {"job_id": job_id, "status": "queued"}
 

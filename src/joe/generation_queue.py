@@ -19,6 +19,12 @@ class GenerationTask:
     cpu_threads: int = 2
     tts_quantization: bool = True
     tts_profile: str = "custom"
+    sampler_decode_steps: int | None = None
+    temperature: float | None = None
+    eos_threshold: float | None = None
+    frames_after_eos: int | None = None
+    max_tokens: int | None = None
+    teacher_force_previous_chunk: bool = False
     voice_path: str | None = None
     voice_alias: str = ""
     remote: bool = False
@@ -60,6 +66,12 @@ class GenerationQueue:
         cpu_threads: int = 2,
         tts_quantization: bool = True,
         tts_profile: str = "custom",
+        sampler_decode_steps: int | None = None,
+        temperature: float | None = None,
+        eos_threshold: float | None = None,
+        frames_after_eos: int | None = None,
+        max_tokens: int | None = None,
+        teacher_force_previous_chunk: bool = False,
         voice_path: str | None = None,
         voice_alias: str = "",
         remote: bool = False,
@@ -75,6 +87,16 @@ class GenerationQueue:
             raise ValueError("Dispositivo TTS inválido. Escolha cpu ou cuda.")
         if int(cpu_threads) < 1:
             raise ValueError("A quantidade de threads da CPU precisa ser maior que zero.")
+        if sampler_decode_steps is not None and not 1 <= int(sampler_decode_steps) <= 16:
+            raise ValueError("sampler_decode_steps deve ficar entre 1 e 16.")
+        if temperature is not None and not 0.05 <= float(temperature) <= 2.0:
+            raise ValueError("temperature deve ficar entre 0,05 e 2,0.")
+        if eos_threshold is not None and not -20.0 <= float(eos_threshold) <= 20.0:
+            raise ValueError("eos_threshold deve ficar entre -20 e 20.")
+        if frames_after_eos is not None and not 1 <= int(frames_after_eos) <= 20:
+            raise ValueError("frames_after_eos deve ficar entre 1 e 20; use None para automático.")
+        if max_tokens is not None and not 1 <= int(max_tokens) <= 10_000:
+            raise ValueError("max_tokens deve ficar entre 1 e 10.000.")
         task = GenerationTask(
             text=text,
             speech_text=speech_text,
@@ -85,6 +107,12 @@ class GenerationQueue:
             cpu_threads=int(cpu_threads),
             tts_quantization=bool(tts_quantization),
             tts_profile=str(tts_profile or "custom"),
+            sampler_decode_steps=int(sampler_decode_steps) if sampler_decode_steps is not None else None,
+            temperature=float(temperature) if temperature is not None else None,
+            eos_threshold=float(eos_threshold) if eos_threshold is not None else None,
+            frames_after_eos=int(frames_after_eos) if frames_after_eos is not None else None,
+            max_tokens=int(max_tokens) if max_tokens is not None else None,
+            teacher_force_previous_chunk=bool(teacher_force_previous_chunk),
             voice_path=voice_path,
             voice_alias=voice_alias,
             remote=remote,

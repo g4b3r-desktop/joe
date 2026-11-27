@@ -197,14 +197,16 @@ class ColabAPIClient:
         self,
         cpu_threads: int,
         sampler_decode_steps: int,
+        quantize_int8: bool = False,
     ) -> dict[str, Any]:
-        """Apply Pocket TTS CPU and quality settings in the active Colab runtime."""
+        """Apply Pocket TTS CPU, quality and INT8 quantization settings in Colab."""
         return self._request(
             "POST",
             "/v1/settings/tts",
             json={
                 "cpu_threads": int(cpu_threads),
                 "sampler_decode_steps": int(sampler_decode_steps),
+                "quantize_int8": bool(quantize_int8),
             },
         ).json()
 
@@ -460,6 +462,12 @@ class ColabAPIClient:
         cancel_event: Event | None = None,
         model_variant: str | None = None,
         voice_id: str | None = None,
+        sampler_decode_steps: int | None = None,
+        temperature: float | None = None,
+        eos_threshold: float | None = None,
+        frames_after_eos: int | None = None,
+        max_tokens: int | None = None,
+        teacher_force_previous_chunk: bool = False,
     ) -> bytes:
         data = {
             "text": text,
@@ -468,6 +476,19 @@ class ColabAPIClient:
         }
         if voice_id:
             data["voice_id"] = voice_id
+        optional_parameters = {
+            "sampler_decode_steps": sampler_decode_steps,
+            "temperature": temperature,
+            "eos_threshold": eos_threshold,
+            "frames_after_eos": frames_after_eos,
+            "max_tokens": max_tokens,
+        }
+        data.update({
+            key: value for key, value in optional_parameters.items()
+            if value is not None
+        })
+        if teacher_force_previous_chunk:
+            data["teacher_force_previous_chunk"] = True
         files: list[Any] = []
         opened = None
         try:
@@ -568,9 +589,29 @@ class ColabVoiceSession:
         self,
         text: str,
         cancel_event: Event | None = None,
+        *,
+        sampler_decode_steps: int | None = None,
+        temperature: float | None = None,
+        eos_threshold: float | None = None,
+        frames_after_eos: int | None = None,
+        max_tokens: int | None = None,
+        teacher_force_previous_chunk: bool = False,
     ) -> bytes:
         """Generate one chunk using the already prepared Drive voice, never multipart."""
         self.prepare()
+        generation_options = {
+            "sampler_decode_steps": sampler_decode_steps,
+            "temperature": temperature,
+            "eos_threshold": eos_threshold,
+            "frames_after_eos": frames_after_eos,
+            "max_tokens": max_tokens,
+        }
+        generation_options = {
+            key: value for key, value in generation_options.items()
+            if value is not None
+        }
+        if teacher_force_previous_chunk:
+            generation_options["teacher_force_previous_chunk"] = True
         return self.client.generate_audio(
             text,
             self.language,
@@ -578,4 +619,5 @@ class ColabVoiceSession:
             cancel_event=cancel_event,
             model_variant=self.model_variant,
             voice_id=self._voice_id,
+            **generation_options,
         )

@@ -15,6 +15,7 @@ on:
       - feature/clipboard-dialog-compact-ui
       - feature/clipboard-dialog-redesign
       - feature/clipboard-dialog-appearance-settings
+      - feature/pocket-tts-generation-controls
       - fix/colab-safetensors-voice-state
       - feat/colab-drive-model-autosync
       - fix/colab-tts-safetensors-diagnostics

@@ -146,6 +146,91 @@ def test_generate_uses_the_selected_model_variant(monkeypatch, tmp_path):
     assert loaded == [("portuguese_24l", False)]
     assert destination.read_bytes() == b"fake wav"
 
+def test_generate_forwards_optional_model_and_chunk_parameters(monkeypatch, tmp_path):
+    import sys
+    from types import SimpleNamespace
+
+    from joe.services.pocket_tts import PocketTTSService
+
+    loaded = []
+    generated = []
+
+    class FakeAudio:
+        def detach(self):
+            return self
+
+        def cpu(self):
+            return self
+
+        def numpy(self):
+            return [0.0, 0.1, -0.1]
+
+    class FakeModel:
+        sample_rate = 24_000
+
+        def get_state_for_audio_prompt(self, _voice):
+            return object()
+
+        def generate_audio(self, _state, _text, **kwargs):
+            generated.append(kwargs)
+            return FakeAudio()
+
+    class FakeTTSModel:
+        @staticmethod
+        def load_model(**kwargs):
+            loaded.append(kwargs)
+            return FakeModel()
+
+    class FakeSoundFile:
+        @staticmethod
+        def write(path, _samples, _rate, subtype):
+            assert subtype == "PCM_16"
+            Path(path).write_bytes(b"fake wav")
+
+        @staticmethod
+        def info(_path):
+            return SimpleNamespace(frames=3, samplerate=24_000)
+
+    monkeypatch.setitem(
+        sys.modules, "torch", SimpleNamespace(set_num_threads=lambda _n: None)
+    )
+    monkeypatch.setitem(sys.modules, "soundfile", FakeSoundFile)
+    monkeypatch.setitem(
+        sys.modules, "pocket_tts", SimpleNamespace(TTSModel=FakeTTSModel)
+    )
+
+    destination = tmp_path / "advanced.wav"
+    PocketTTSService().generate(
+        "Olá",
+        "portuguese",
+        destination,
+        sampler_decode_steps=4,
+        temperature=0.8,
+        eos_threshold=-2.5,
+        frames_after_eos=2,
+        max_tokens=72,
+        teacher_force_previous_chunk=True,
+    )
+
+    assert loaded == [
+        {
+            "language": "portuguese",
+            "quantize": True,
+            "sampler_decode_steps": 4,
+            "temp": 0.8,
+            "eos_threshold": -2.5,
+        }
+    ]
+    assert generated == [
+        {
+            "frames_after_eos": 2,
+            "max_tokens": 72,
+            "teacher_force_previous_chunk": True,
+        }
+    ]
+    assert destination.read_bytes() == b"fake wav"
+
+
 def test_generate_japanese_uses_compact_config_and_japanese_voice(monkeypatch, tmp_path):
     import sys
     from types import SimpleNamespace
@@ -313,7 +398,6 @@ def test_generate_cuda_fails_clearly_when_torch_cuda_is_unavailable(monkeypatch,
 
 def test_benchmark_reports_cpu_and_cuda_availability(monkeypatch):
     import sys
-    from contextlib import nullcontext
     from types import SimpleNamespace
 
     from joe.services.pocket_tts import PocketTTSService
@@ -347,7 +431,7 @@ def test_benchmark_reports_cpu_and_cuda_availability(monkeypatch):
 
     fake_torch = SimpleNamespace(
         set_num_threads=lambda _value: None,
-        inference_mode=nullcontext,
+        inference_mode=lambda: pytest.fail("benchmark must not enable inference_mode"),
         cuda=SimpleNamespace(is_available=lambda: False),
     )
     monkeypatch.setitem(sys.modules, "torch", fake_torch)
@@ -370,3 +454,664 @@ def test_benchmark_reports_cpu_and_cuda_availability(monkeypatch):
     assert results[0].quantized
     assert results[1].device == "cuda"
     assert "CUDA não está disponível" in results[1].error
+
+
+def test_generate_cuda_int8_is_opt_in_and_uses_torchao(monkeypatch, tmp_path):
+    import sys
+    from types import ModuleType, SimpleNamespace
+
+    from joe.services.pocket_tts import PocketTTSService
+
+    quantized = []
+    moved = []
+    loaded = []
+
+    class FakeAudio:
+        def detach(self):
+            return self
+
+        def cpu(self):
+            return self
+
+        def numpy(self):
+            return [0.0, 0.1, -0.1]
+
+    class FakeModel:
+        sample_rate = 24_000
+        flow_lm = object()
+
+        def to(self, device):
+            moved.append(device)
+            return self
+
+        def get_state_for_audio_prompt(self, _voice):
+            return object()
+
+        def generate_audio(self, _state, _text):
+            return FakeAudio()
+
+    class FakeTTSModel:
+        @staticmethod
+        def load_model(*, language, quantize):
+            loaded.append((language, quantize))
+            return FakeModel()
+
+    class FakeSoundFile:
+        @staticmethod
+        def write(path, _samples, _rate, subtype):
+            assert subtype == "PCM_16"
+            Path(path).write_bytes(b"fake wav")
+
+        @staticmethod
+        def info(_path):
+            return SimpleNamespace(frames=3, samplerate=24_000)
+
+    fake_pocket_tts = ModuleType("pocket_tts")
+    fake_pocket_tts.TTSModel = FakeTTSModel
+    fake_quantization = ModuleType("pocket_tts.quantization")
+    fake_quantization.RECOMMENDED_CONFIG = {"attention", "ffn"}
+    fake_quantization._get_backend = lambda: "torchao"
+    fake_quantization.apply_dynamic_int8 = (
+        lambda module, groups: quantized.append((module, groups))
+    )
+
+    fake_torch = SimpleNamespace(
+        set_num_threads=lambda _value: None,
+        cuda=SimpleNamespace(is_available=lambda: True, empty_cache=lambda: None),
+    )
+    monkeypatch.setitem(sys.modules, "torch", fake_torch)
+    monkeypatch.setitem(sys.modules, "soundfile", FakeSoundFile)
+    monkeypatch.setitem(sys.modules, "pocket_tts", fake_pocket_tts)
+    monkeypatch.setitem(sys.modules, "pocket_tts.quantization", fake_quantization)
+
+    destination = tmp_path / "cuda-int8.wav"
+    PocketTTSService().generate(
+        "Olá",
+        "portuguese",
+        destination,
+        model_variant="portuguese",
+        device_preference="cuda",
+        quantize=True,
+    )
+
+    assert loaded == [("portuguese", False)]
+    assert moved == ["cuda"]
+    assert quantized == [(FakeModel.flow_lm, {"attention", "ffn"})]
+    assert destination.read_bytes() == b"fake wav"
+
+
+def test_generate_cuda_without_int8_does_not_import_or_apply_torchao(
+    monkeypatch, tmp_path
+):
+    import sys
+    from types import ModuleType, SimpleNamespace
+
+    from joe.services.pocket_tts import PocketTTSService
+
+    loaded = []
+    moved = []
+
+    class FakeAudio:
+        def detach(self):
+            return self
+
+        def cpu(self):
+            return self
+
+        def numpy(self):
+            return [0.0, 0.1, -0.1]
+
+    class FakeModel:
+        sample_rate = 24_000
+
+        def to(self, device):
+            moved.append(device)
+            return self
+
+        def get_state_for_audio_prompt(self, _voice):
+            return object()
+
+        def generate_audio(self, _state, _text):
+            return FakeAudio()
+
+    class FakeTTSModel:
+        @staticmethod
+        def load_model(*, language, quantize):
+            loaded.append((language, quantize))
+            return FakeModel()
+
+    class FakeSoundFile:
+        @staticmethod
+        def write(path, _samples, _rate, subtype):
+            assert subtype == "PCM_16"
+            Path(path).write_bytes(b"fake wav")
+
+        @staticmethod
+        def info(_path):
+            return SimpleNamespace(frames=3, samplerate=24_000)
+
+    fake_pocket_tts = ModuleType("pocket_tts")
+    fake_pocket_tts.TTSModel = FakeTTSModel
+    fake_torch = SimpleNamespace(
+        set_num_threads=lambda _value: None,
+        cuda=SimpleNamespace(is_available=lambda: True, empty_cache=lambda: None),
+    )
+    monkeypatch.setitem(sys.modules, "torch", fake_torch)
+    monkeypatch.setitem(sys.modules, "soundfile", FakeSoundFile)
+    monkeypatch.setitem(sys.modules, "pocket_tts", fake_pocket_tts)
+    monkeypatch.delitem(sys.modules, "pocket_tts.quantization", raising=False)
+
+    destination = tmp_path / "cuda-no-int8.wav"
+    PocketTTSService().generate(
+        "Olá",
+        "portuguese",
+        destination,
+        model_variant="portuguese",
+        device_preference="cuda",
+        # None uses the safe device-specific default: no INT8 on CUDA.
+    )
+
+    assert loaded == [("portuguese", False)]
+    assert moved == ["cuda"]
+    assert "pocket_tts.quantization" not in sys.modules
+    assert destination.read_bytes() == b"fake wav"
+
+
+def test_cuda_quantization_benchmark_excludes_warmups_and_measures_both_modes(
+    monkeypatch,
+):
+    import sys
+    from types import ModuleType, SimpleNamespace
+
+    from joe.services.pocket_tts import PocketTTSService
+
+    loaded = []
+    generated = {False: 0, True: 0}
+    quantized_modules = []
+    prompts = []
+
+    class FakeAudio:
+        def detach(self):
+            return self
+
+        def cpu(self):
+            return self
+
+        def numpy(self):
+            return np.zeros((1, 12_000), dtype=np.float32)
+
+    class FakeModel:
+        sample_rate = 24_000
+
+        def __init__(self):
+            self.flow_lm = SimpleNamespace(quantized=False)
+
+        def to(self, device):
+            assert device == "cuda"
+            return self
+
+        def get_state_for_audio_prompt(self, voice):
+            prompts.append(voice)
+            return object()
+
+        def generate_audio(self, _state, _text, *, copy_state=True):
+            assert copy_state is True
+            generated[self.flow_lm.quantized] += 1
+            return FakeAudio()
+
+    class FakeTTSModel:
+        @staticmethod
+        def load_model(**kwargs):
+            loaded.append(kwargs)
+            return FakeModel()
+
+    fake_pocket_tts = ModuleType("pocket_tts")
+    fake_pocket_tts.TTSModel = FakeTTSModel
+    fake_quantization = ModuleType("pocket_tts.quantization")
+    fake_quantization.RECOMMENDED_CONFIG = {"attention", "ffn"}
+    fake_quantization._get_backend = lambda: "torchao"
+
+    def apply_dynamic_int8(flow_lm, groups):
+        assert groups == {"attention", "ffn"}
+        flow_lm.quantized = True
+        quantized_modules.append(flow_lm)
+
+    fake_quantization.apply_dynamic_int8 = apply_dynamic_int8
+    fake_torch = SimpleNamespace(
+        set_num_threads=lambda _value: None,
+        inference_mode=lambda: pytest.fail("benchmark must not enable inference_mode"),
+        cuda=SimpleNamespace(
+            is_available=lambda: True,
+            empty_cache=lambda: None,
+            reset_peak_memory_stats=lambda: None,
+            synchronize=lambda: None,
+            max_memory_allocated=lambda: 256 * 1024 * 1024,
+            max_memory_reserved=lambda: 384 * 1024 * 1024,
+        ),
+    )
+    monkeypatch.setitem(sys.modules, "torch", fake_torch)
+    monkeypatch.setitem(sys.modules, "pocket_tts", fake_pocket_tts)
+    monkeypatch.setitem(sys.modules, "pocket_tts.quantization", fake_quantization)
+
+    results = PocketTTSService().benchmark_cuda_quantization(
+        "Texto idêntico para os dois modos.",
+        "portuguese",
+        model_variant="portuguese",
+        warmup_runs=2,
+        measured_runs=3,
+    )
+
+    assert [result.quantized for result in results] == [False, True]
+    assert all(not result.error for result in results)
+    assert all(result.warmup_runs == 2 for result in results)
+    assert all(len(result.generation_times) == 3 for result in results)
+    assert all(len(result.audio_durations_seconds) == 3 for result in results)
+    assert all(result.audio_durations_seconds == (0.5, 0.5, 0.5) for result in results)
+    assert all(result.peak_vram_mb == 256 for result in results)
+    assert all(result.peak_vram_reserved_mb == 384 for result in results)
+    assert generated == {False: 5, True: 5}
+    assert len(loaded) == 2
+    assert all(kwargs["quantize"] is False for kwargs in loaded)
+    assert len(quantized_modules) == 1
+    assert len(prompts) == 2
+
+
+def test_cuda_fp16_benchmark_wraps_each_pocket_tts_worker_in_autocast(monkeypatch):
+    import sys
+    from contextlib import contextmanager
+    from types import ModuleType, SimpleNamespace
+
+    from joe.services.pocket_tts import PocketTTSService
+
+    autocast_depth = {"value": 0}
+    autocast_entries = []
+    model_instances = []
+
+    @contextmanager
+    def fake_autocast(*, device_type, dtype):
+        assert device_type == "cuda"
+        assert dtype == "float16"
+        autocast_depth["value"] += 1
+        autocast_entries.append((device_type, dtype))
+        try:
+            yield
+        finally:
+            autocast_depth["value"] -= 1
+
+    class FakeAudio:
+        def detach(self):
+            return self
+
+        def cpu(self):
+            return self
+
+        def numpy(self):
+            return np.full((1, 12_000), 0.2, dtype=np.float32)
+
+    class FakeModel:
+        sample_rate = 24_000
+
+        def __init__(self):
+            self.worker_contexts = []
+            model_instances.append(self)
+
+        def to(self, device):
+            assert device == "cuda"
+            return self
+
+        def get_state_for_audio_prompt(self, _voice):
+            return object()
+
+        def _generate(self):
+            self.worker_contexts.append(autocast_depth["value"] > 0)
+
+        def _autoregressive_generation(self):
+            self.worker_contexts.append(autocast_depth["value"] > 0)
+
+        def _decode_audio_worker(self):
+            self.worker_contexts.append(autocast_depth["value"] > 0)
+
+        def generate_audio(self, _state, _text, *, copy_state=True):
+            assert copy_state is True
+            self._generate()
+            self._autoregressive_generation()
+            self._decode_audio_worker()
+            return FakeAudio()
+
+    class FakeTTSModel:
+        @staticmethod
+        def load_model(**kwargs):
+            assert kwargs["quantize"] is False
+            return FakeModel()
+
+    fake_pocket_tts = ModuleType("pocket_tts")
+    fake_pocket_tts.TTSModel = FakeTTSModel
+    fake_torch = SimpleNamespace(
+        float16="float16",
+        autocast=fake_autocast,
+        set_num_threads=lambda _value: None,
+        cuda=SimpleNamespace(
+            is_available=lambda: True,
+            empty_cache=lambda: None,
+            reset_peak_memory_stats=lambda: None,
+            synchronize=lambda: None,
+            max_memory_allocated=lambda: 128 * 1024 * 1024,
+            max_memory_reserved=lambda: 192 * 1024 * 1024,
+        ),
+    )
+    monkeypatch.setitem(sys.modules, "torch", fake_torch)
+    monkeypatch.setitem(sys.modules, "pocket_tts", fake_pocket_tts)
+
+    results = PocketTTSService().benchmark_cuda_precision(
+        "Texto de teste para FP32 e FP16.",
+        "portuguese",
+        model_variant="portuguese",
+        warmup_runs=2,
+        measured_runs=3,
+    )
+
+    assert [result.precision for result in results] == ["FP32", "FP16 autocast"]
+    assert all(not result.error for result in results)
+    assert all(len(result.generation_times) == 3 for result in results)
+    assert all(result.audio_durations_seconds == (0.5, 0.5, 0.5) for result in results)
+    assert all(result.audio_peak_amplitudes == pytest.approx((0.2, 0.2, 0.2)) for result in results)
+    assert all(result.audio_rms_levels == pytest.approx((0.2, 0.2, 0.2)) for result in results)
+    assert len(model_instances) == 2
+    assert all(context is False for context in model_instances[0].worker_contexts)
+    assert all(context is True for context in model_instances[1].worker_contexts)
+    assert len(model_instances[0].worker_contexts) == 15
+    assert len(model_instances[1].worker_contexts) == 15
+    assert len(autocast_entries) == 15
+    assert autocast_depth["value"] == 0
+
+
+
+def test_cuda_tf32_benchmark_switches_matmul_precision_and_restores_original(
+    monkeypatch,
+):
+    import sys
+    from types import ModuleType, SimpleNamespace
+
+    from joe.services.pocket_tts import PocketTTSService
+
+    observed = []
+
+    class FakeAudio:
+        def detach(self):
+            return self
+
+        def cpu(self):
+            return self
+
+        def numpy(self):
+            return np.full((1, 12_000), 0.2, dtype=np.float32)
+
+    matmul = SimpleNamespace(fp32_precision="ieee")
+
+    class FakeModel:
+        sample_rate = 24_000
+
+        def to(self, device):
+            assert device == "cuda"
+            return self
+
+        def get_state_for_audio_prompt(self, _voice):
+            return object()
+
+        def generate_audio(self, _state, _text, *, copy_state=True):
+            assert copy_state is True
+            observed.append(matmul.fp32_precision)
+            return FakeAudio()
+
+    class FakeTTSModel:
+        @staticmethod
+        def load_model(**kwargs):
+            assert kwargs["quantize"] is False
+            return FakeModel()
+
+    fake_pocket_tts = ModuleType("pocket_tts")
+    fake_pocket_tts.TTSModel = FakeTTSModel
+    fake_torch = SimpleNamespace(
+        set_num_threads=lambda _value: None,
+        backends=SimpleNamespace(cuda=SimpleNamespace(matmul=matmul)),
+        cuda=SimpleNamespace(
+            is_available=lambda: True,
+            get_device_capability=lambda: (8, 6),
+            empty_cache=lambda: None,
+            reset_peak_memory_stats=lambda: None,
+            synchronize=lambda: None,
+            max_memory_allocated=lambda: 256 * 1024 * 1024,
+            max_memory_reserved=lambda: 384 * 1024 * 1024,
+        ),
+    )
+    monkeypatch.setitem(sys.modules, "torch", fake_torch)
+    monkeypatch.setitem(sys.modules, "pocket_tts", fake_pocket_tts)
+
+    results = PocketTTSService().benchmark_cuda_tf32(
+        "Texto idêntico para testar IEEE FP32 e TF32.",
+        "portuguese",
+        model_variant="portuguese",
+        warmup_runs=2,
+        measured_runs=3,
+    )
+
+    assert [result.precision for result in results] == ["FP32 IEEE", "FP32 TF32"]
+    assert all(not result.error for result in results)
+    assert all(len(result.generation_times) == 3 for result in results)
+    assert all(result.audio_durations_seconds == (0.5, 0.5, 0.5) for result in results)
+    assert observed == ["ieee"] * 5 + ["tf32"] * 5
+    assert matmul.fp32_precision == "ieee"
+
+def test_cuda_fp16_autocast_refuses_unknown_pocket_tts_thread_layout():
+    from types import SimpleNamespace
+
+    from joe.services.pocket_tts import PocketTTSService
+
+    class UnsupportedModel:
+        def _generate(self):
+            pass
+
+    torch = SimpleNamespace(
+        float16="float16",
+        autocast=lambda **_kwargs: None,
+    )
+
+    with pytest.raises(RuntimeError, match="não expõe os pontos internos"):
+        PocketTTSService._apply_cuda_fp16_autocast(UnsupportedModel(), torch)
+
+
+def test_cuda_profile_measures_flow_mimi_and_latent_queue_on_worker_thread(monkeypatch):
+    import sys
+    import threading
+    from types import ModuleType, SimpleNamespace
+
+    from joe.services.pocket_tts import PocketTTSService
+
+    class FakeEvent:
+        def __init__(self, enable_timing=False):
+            assert enable_timing is True
+
+        def record(self):
+            pass
+
+        def elapsed_time(self, _other):
+            return 1.0
+
+    class FakeAudio:
+        def detach(self):
+            return self
+
+        def cpu(self):
+            return self
+
+        def numpy(self):
+            return np.zeros((1, 12_000), dtype=np.float32)
+
+    class FakeTokens:
+        shape = (1, 4)
+
+    class FakeQueue:
+        def get(self):
+            return None
+
+    class FakeMimi:
+        def decode_from_latent(self, _latents, _state):
+            return None
+
+    class FakeTransformerLayer:
+        def _sa_block(self, *_args, **_kwargs):
+            return None
+
+        def _ff_block(self, *_args, **_kwargs):
+            return None
+
+    class FakeFlowNet:
+        def forward(self, *_args, **_kwargs):
+            return None
+
+    class FakeModel:
+        sample_rate = 24_000
+
+        def __init__(self):
+            self.mimi = FakeMimi()
+            self.flow_lm = SimpleNamespace(
+                transformer=SimpleNamespace(layers=[FakeTransformerLayer()]),
+                flow_net=FakeFlowNet(),
+            )
+            self.generation_calls = 0
+
+        def to(self, device):
+            assert device == "cuda"
+            return self
+
+        def get_state_for_audio_prompt(self, _voice):
+            return object()
+
+        def _run_flow_lm_and_increment_step(self, **kwargs):
+            if kwargs.get("text_tokens") is None:
+                layer = self.flow_lm.transformer.layers[0]
+                layer._sa_block()
+                layer._ff_block()
+                self.flow_lm.flow_net.forward()
+            return None
+
+        def _decode_audio_worker(self, latents_queue, *_args):
+            latents_queue.get()
+            self.mimi.decode_from_latent(None, None)
+
+        def generate_audio(self, _state, _text, *, copy_state=True):
+            assert copy_state is True
+            self.generation_calls += 1
+            self._run_flow_lm_and_increment_step(text_tokens=FakeTokens())
+            self._run_flow_lm_and_increment_step(backbone_input_latents=object())
+            self._run_flow_lm_and_increment_step(backbone_input_latents=object())
+            worker = threading.Thread(
+                target=self._decode_audio_worker,
+                args=(FakeQueue(), None, 0, 0),
+            )
+            worker.start()
+            worker.join()
+            return FakeAudio()
+
+    models = []
+
+    class FakeTTSModel:
+        @staticmethod
+        def load_model(**kwargs):
+            assert kwargs["quantize"] is False
+            model = FakeModel()
+            models.append(model)
+            return model
+
+    fake_pocket_tts = ModuleType("pocket_tts")
+    fake_pocket_tts.TTSModel = FakeTTSModel
+    fake_torch = SimpleNamespace(
+        set_num_threads=lambda _value: None,
+        cuda=SimpleNamespace(
+            is_available=lambda: True,
+            empty_cache=lambda: None,
+            reset_peak_memory_stats=lambda: None,
+            synchronize=lambda: None,
+            Event=FakeEvent,
+            max_memory_allocated=lambda: 256 * 1024 * 1024,
+            max_memory_reserved=lambda: 384 * 1024 * 1024,
+        ),
+    )
+    monkeypatch.setitem(sys.modules, "torch", fake_torch)
+    monkeypatch.setitem(sys.modules, "pocket_tts", fake_pocket_tts)
+
+    results = PocketTTSService().benchmark_cuda_profile(
+        "Texto de diagnóstico por fases.",
+        "portuguese",
+        model_variant="portuguese",
+        warmup_runs=2,
+        measured_runs=3,
+    )
+
+    assert len(results) == 1
+    result = results[0]
+    assert not result.error
+    assert len(result.generation_times) == 3
+    assert result.audio_durations_seconds == (0.5, 0.5, 0.5)
+    assert result.flow_step_counts == (2, 2, 2)
+    assert result.flow_prefill_gpu_seconds == (0.001, 0.001, 0.001)
+    assert result.flow_autoregressive_gpu_seconds == (0.002, 0.002, 0.002)
+    assert result.flow_attention_gpu_seconds == (0.002, 0.002, 0.002)
+    assert result.flow_ffn_gpu_seconds == (0.002, 0.002, 0.002)
+    assert result.flow_net_gpu_seconds == (0.002, 0.002, 0.002)
+    assert result.flow_attention_calls == (2, 2, 2)
+    assert result.flow_ffn_calls == (2, 2, 2)
+    assert result.flow_net_calls == (2, 2, 2)
+    assert result.mimi_decode_calls == (1, 1, 1)
+    assert result.mimi_decode_gpu_seconds == (0.001, 0.001, 0.001)
+    assert result.latent_queue_get_calls == (1, 1, 1)
+    assert result.peak_vram_mb == 256
+    assert result.peak_vram_reserved_mb == 384
+    assert models[0].generation_calls == 5
+
+
+def test_cuda_profile_refuses_unknown_pocket_tts_internal_methods(monkeypatch):
+    import sys
+    from types import ModuleType, SimpleNamespace
+
+    from joe.services.pocket_tts import PocketTTSService
+
+    class UnsupportedModel:
+        sample_rate = 24_000
+
+        def to(self, _device):
+            return self
+
+        def get_state_for_audio_prompt(self, _voice):
+            return object()
+
+    class FakeTTSModel:
+        @staticmethod
+        def load_model(**_kwargs):
+            return UnsupportedModel()
+
+    fake_pocket_tts = ModuleType("pocket_tts")
+    fake_pocket_tts.TTSModel = FakeTTSModel
+    fake_torch = SimpleNamespace(
+        set_num_threads=lambda _value: None,
+        cuda=SimpleNamespace(
+            is_available=lambda: True,
+            empty_cache=lambda: None,
+            reset_peak_memory_stats=lambda: None,
+            synchronize=lambda: None,
+        ),
+    )
+    monkeypatch.setitem(sys.modules, "torch", fake_torch)
+    monkeypatch.setitem(sys.modules, "pocket_tts", fake_pocket_tts)
+
+    results = PocketTTSService().benchmark_cuda_profile(
+        "Texto de teste.",
+        "portuguese",
+        model_variant="portuguese",
+        warmup_runs=1,
+        measured_runs=3,
+    )
+
+    assert len(results) == 1
+    assert "não expõe os métodos internos" in results[0].error
+

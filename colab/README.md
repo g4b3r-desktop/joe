@@ -28,6 +28,14 @@ A inferência é carregada sob demanda. Use o header:
 Authorization: Bearer <JOE_API_TOKEN>
 ~~~
 
+## Quantização INT8 opcional
+
+A API inicia com `JOE_TTS_QUANTIZE_INT8=0`: a inferência do Pocket TTS continua sem quantização, sem chamar TorchAO. Para ativar INT8, marque **Ativar quantização INT8 no Pocket TTS do Colab** na aba Google Colab / API do Joe e clique em **Aplicar configurações no Colab**. A mudança limpa somente o cache do modelo em memória; a próxima geração recarrega o modelo e aplica os grupos recomendados de atenção e FFN.
+
+Na CUDA, a quantização exige o backend TorchAO com extensões nativas disponíveis. Se o runtime estiver em CPU, o Pocket TTS usa o backend TorchAO ou o fallback `torch.ao`, conforme a instalação. Se CUDA foi selecionada e TorchAO não estiver disponível, a API retorna um erro explícito: não faz fallback silencioso para inferência sem quantização. O estado solicitado e o estado realmente aplicado aparecem em `/health`.
+
+A quantização não é prometida como ganho de velocidade em GPU; compare tempo de geração, VRAM e qualidade no hardware real. Desmarcar a opção restaura o carregamento normal sem INT8 na próxima geração.
+
 ## Rotas
 
 - GET /health: status do servidor, GPU e estado dos modelos.
@@ -72,6 +80,20 @@ A célula **Configurar desempenho e qualidade do Pocket TTS** controla a inferê
 As opções são aplicadas na próxima inicialização do servidor. Depois de alterá-las, execute novamente a célula **Iniciar a API do Joe e publicar o túnel**. O modo Automático só faz fallback para CPU quando o carregamento/movimentação para CUDA falhar; os modos explícitos não trocam silenciosamente de dispositivo.
 
 O endpoint `/health` informa versão do PyTorch, dispositivo selecionado e realmente carregado, threads, passos e métricas da última síntese (tempo, duração, RTF, pico e RMS). Os logs do servidor também imprimem uma linha `[JOE_TTS]` por geração.
+
+### Parâmetros avançados por geração
+
+A aba de configurações do Joe permite definir parâmetros opcionais para cada geração, tanto local quanto pelo Colab. As opções desativadas são omitidas da chamada, preservando os padrões vigentes do backend (incluindo os passos de qualidade configurados no runtime do Colab):
+
+- `sampler_decode_steps`: substitui o número de passos do sampler ao carregar o modelo.
+- `temperature` (argumento `temp` na biblioteca) e `eos_threshold`: também são opções de carregamento do modelo; mudanças provocam recarga do modelo em memória.
+- `frames_after_eos`: número manual de frames extras depois do EOS. O valor automático é preservado quando o campo fica em 0.
+- `max_tokens`: limite opcional de tokens por bloco; 0 mantém o padrão da biblioteca.
+- `teacher_force_previous_chunk`: permanece desligado por padrão. Ativá-lo acrescenta prefill do bloco anterior e pode aumentar a latência.
+
+Esses parâmetros são enviados como campos opcionais do endpoint `POST /v1/jobs/tts`. O Colab mantém a fila de inferência sequencial: não aumente o número de workers para tentar acelerar o Pocket TTS, pois a inferência não é thread-safe e a biblioteca não oferece batching atualmente. Reduzir frames ou tokens pode truncar a fala; temperature e eos_threshold não são controles diretos de velocidade.
+
+
 
 Na instalação de um modelo no Drive, além de conferir Safetensors e JSON, o backend carrega o checkpoint e o tokenizer pelo próprio `TTSModel.load_model()` usando o YAML da variante. O upload é recusado se o checkpoint não for compatível com a arquitetura ou não oferecer clonagem de voz. Isso verifica a compatibilidade estrutural, mas não substitui uma audição humana para avaliar pronúncia.
 
