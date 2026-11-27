@@ -616,3 +616,103 @@ def test_generate_cuda_without_int8_does_not_import_or_apply_torchao(
     assert moved == ["cuda"]
     assert "pocket_tts.quantization" not in sys.modules
     assert destination.read_bytes() == b"fake wav"
+
+
+def test_cuda_quantization_benchmark_excludes_warmups_and_measures_both_modes(
+    monkeypatch,
+):
+    import sys
+    from contextlib import nullcontext
+    from types import ModuleType, SimpleNamespace
+
+    from joe.services.pocket_tts import PocketTTSService
+
+    loaded = []
+    generated = {False: 0, True: 0}
+    quantized_modules = []
+    prompts = []
+
+    class FakeAudio:
+        def detach(self):
+            return self
+
+        def cpu(self):
+            return self
+
+        def numpy(self):
+            return np.zeros((1, 12_000), dtype=np.float32)
+
+    class FakeModel:
+        sample_rate = 24_000
+
+        def __init__(self):
+            self.flow_lm = SimpleNamespace(quantized=False)
+
+        def to(self, device):
+            assert device == "cuda"
+            return self
+
+        def get_state_for_audio_prompt(self, voice):
+            prompts.append(voice)
+            return object()
+
+        def generate_audio(self, _state, _text, *, copy_state=True):
+            assert copy_state is True
+            generated[self.flow_lm.quantized] += 1
+            return FakeAudio()
+
+    class FakeTTSModel:
+        @staticmethod
+        def load_model(**kwargs):
+            loaded.append(kwargs)
+            return FakeModel()
+
+    fake_pocket_tts = ModuleType("pocket_tts")
+    fake_pocket_tts.TTSModel = FakeTTSModel
+    fake_quantization = ModuleType("pocket_tts.quantization")
+    fake_quantization.RECOMMENDED_CONFIG = {"attention", "ffn"}
+    fake_quantization._get_backend = lambda: "torchao"
+
+    def apply_dynamic_int8(flow_lm, groups):
+        assert groups == {"attention", "ffn"}
+        flow_lm.quantized = True
+        quantized_modules.append(flow_lm)
+
+    fake_quantization.apply_dynamic_int8 = apply_dynamic_int8
+    fake_torch = SimpleNamespace(
+        set_num_threads=lambda _value: None,
+        inference_mode=nullcontext,
+        cuda=SimpleNamespace(
+            is_available=lambda: True,
+            empty_cache=lambda: None,
+            reset_peak_memory_stats=lambda: None,
+            synchronize=lambda: None,
+            max_memory_allocated=lambda: 256 * 1024 * 1024,
+            max_memory_reserved=lambda: 384 * 1024 * 1024,
+        ),
+    )
+    monkeypatch.setitem(sys.modules, "torch", fake_torch)
+    monkeypatch.setitem(sys.modules, "pocket_tts", fake_pocket_tts)
+    monkeypatch.setitem(sys.modules, "pocket_tts.quantization", fake_quantization)
+
+    results = PocketTTSService().benchmark_cuda_quantization(
+        "Texto idêntico para os dois modos.",
+        "portuguese",
+        model_variant="portuguese",
+        warmup_runs=2,
+        measured_runs=3,
+    )
+
+    assert [result.quantized for result in results] == [False, True]
+    assert all(not result.error for result in results)
+    assert all(result.warmup_runs == 2 for result in results)
+    assert all(len(result.generation_times) == 3 for result in results)
+    assert all(len(result.audio_durations_seconds) == 3 for result in results)
+    assert all(result.audio_durations_seconds == (0.5, 0.5, 0.5) for result in results)
+    assert all(result.peak_vram_mb == 256 for result in results)
+    assert all(result.peak_vram_reserved_mb == 384 for result in results)
+    assert generated == {False: 5, True: 5}
+    assert len(loaded) == 2
+    assert all(kwargs["quantize"] is False for kwargs in loaded)
+    assert len(quantized_modules) == 1
+    assert len(prompts) == 2
