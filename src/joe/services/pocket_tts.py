@@ -1231,6 +1231,7 @@ class PocketTTSService:
                 )
 
             def timed_component(original, key: str):
+                """Measure a coarse block with CUDA Events and host wall time."""
                 def wrapped(*args, **kwargs):
                     started = time.perf_counter()
                     start_event = cuda_event()
@@ -1243,6 +1244,20 @@ class PocketTTSService:
                             started,
                             start_event,
                             end_event,
+                            autoregressive_only=True,
+                        )
+                return wrapped
+
+            def timed_component_wall(original, key: str):
+                """Measure a fine-grained call on the host without event overhead."""
+                def wrapped(*args, **kwargs):
+                    started = time.perf_counter()
+                    try:
+                        return original(*args, **kwargs)
+                    finally:
+                        record_value(
+                            f"{key}_wall",
+                            time.perf_counter() - started,
                             autoregressive_only=True,
                         )
                 return wrapped
@@ -1261,7 +1276,7 @@ class PocketTTSService:
                     raise RuntimeError(
                         f"Componente {key} não expõe forward() para microprofiling."
                     )
-                patch_attribute(module, "forward", timed_component(original, key))
+                patch_attribute(module, "forward", timed_component_wall(original, key))
                 patched_module_ids.add(module_id)
 
             try:
@@ -1298,17 +1313,17 @@ class PocketTTSService:
                 patch_attribute(
                     attention_module,
                     "complete_kv",
-                    timed_component(original_complete_kv, "kv_cache_write"),
+                    timed_component_wall(original_complete_kv, "kv_cache_write"),
                 )
                 patch_attribute(
                     attention_functional,
                     "scaled_dot_product_attention",
-                    timed_component(original_sdpa, "attention_sdpa"),
+                    timed_component_wall(original_sdpa, "attention_sdpa"),
                 )
                 patch_attribute(
                     transformer_functional,
                     "gelu",
-                    timed_component(original_gelu, "ffn_gelu"),
+                    timed_component_wall(original_gelu, "ffn_gelu"),
                 )
 
                 patch_module_forward(flow_lm.input_linear, "flow_lm_input_proj")
