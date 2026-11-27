@@ -195,21 +195,25 @@ class PocketTTSRopeCache:
         self._model = model
         self._closed = False
         self._original_expand = getattr(model, "_expand_kv_cache", None)
+        if not callable(self._original_expand):
+            for cache in reversed(self._caches):
+                cache.close()
+            raise RuntimeError(
+                "A versão instalada do Pocket TTS não expõe _expand_kv_cache; "
+                "não é seguro usar o cache RoPE sem garantir a capacidade das posições."
+            )
         self._had_instance_expand = "_expand_kv_cache" in vars(model)
         self._original_instance_expand = vars(model).get("_expand_kv_cache")
-        if callable(self._original_expand):
-            original_expand = self._original_expand
+        original_expand = self._original_expand
 
-            @wraps(original_expand)
-            def expand_with_rope_cache(model_state, sequence_length: int):
-                for cache in self._caches:
-                    cache.ensure_capacity(int(sequence_length))
-                return original_expand(model_state, sequence_length)
+        @wraps(original_expand)
+        def expand_with_rope_cache(model_state, sequence_length: int):
+            for cache in self._caches:
+                cache.ensure_capacity(int(sequence_length))
+            return original_expand(model_state, sequence_length)
 
-            self._patched_expand = expand_with_rope_cache
-            setattr(model, "_expand_kv_cache", expand_with_rope_cache)
-        else:
-            self._patched_expand = None
+        self._patched_expand = expand_with_rope_cache
+        setattr(model, "_expand_kv_cache", expand_with_rope_cache)
 
     @property
     def calls(self) -> int:
