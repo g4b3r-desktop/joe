@@ -501,3 +501,122 @@ def test_generate_passes_sampler_decode_steps_to_model_loader(monkeypatch, tmp_p
     )
 
     assert loaded == [{"language": "portuguese", "sampler_decode_steps": 3, "quantize": True}]
+
+
+
+def test_streaming_wav_writer_writes_chunks_incrementally_and_atomically(tmp_path):
+    import soundfile as sf
+
+    from joe.services.pocket_tts import _write_wav_stream_atomically
+
+    class Chunk:
+        def __init__(self, values):
+            self.values = np.asarray(values, dtype=np.float32)
+
+        def detach(self):
+            return self
+
+        def cpu(self):
+            return self
+
+        def numpy(self):
+            return self.values
+
+    destination = tmp_path / "streamed.wav"
+    destination.write_bytes(b"previous audio")
+    chunks = iter([Chunk([0.0, 0.1]), Chunk([-0.1, 0.2, 0.0])])
+
+    result = _write_wav_stream_atomically(sf, chunks, 24_000, destination)
+
+    assert result == destination
+    info = sf.info(destination)
+    assert info.frames == 5
+    assert info.samplerate == 24_000
+    assert destination.read_bytes().startswith(b"RIFF")
+    assert [path.name for path in tmp_path.iterdir()] == ["streamed.wav"]
+
+
+def test_streaming_wav_writer_preserves_previous_file_when_generation_fails(tmp_path):
+    import soundfile as sf
+
+    from joe.services.pocket_tts import _write_wav_stream_atomically
+
+    class Chunk:
+        def detach(self):
+            return self
+
+        def cpu(self):
+            return self
+
+        def numpy(self):
+            return np.zeros(8, dtype=np.float32)
+
+    def broken_stream():
+        yield Chunk()
+        raise RuntimeError("stream generation failed")
+
+    destination = tmp_path / "streamed.wav"
+    destination.write_bytes(b"previous audio")
+
+    with pytest.raises(RuntimeError, match="stream generation failed"):
+        _write_wav_stream_atomically(sf, broken_stream(), 24_000, destination)
+
+    assert destination.read_bytes() == b"previous audio"
+    assert [path.name for path in tmp_path.iterdir()] == ["streamed.wav"]
+
+
+def test_generate_prefers_streaming_api_and_writes_chunks(monkeypatch, tmp_path):
+    import sys
+    from types import SimpleNamespace
+
+    import soundfile as real_soundfile
+
+    from joe.services.pocket_tts import PocketTTSService
+
+    calls = []
+
+    class FakeChunk:
+        def __init__(self, values):
+            self.values = np.asarray(values, dtype=np.float32)
+
+        def detach(self):
+            return self
+
+        def cpu(self):
+            return self
+
+        def numpy(self):
+            return self.values
+
+    class FakeModel:
+        sample_rate = 24_000
+
+        def get_state_for_audio_prompt(self, _voice):
+            return object()
+
+        def generate_audio_stream(self, *, model_state, text_to_generate):
+            calls.append((model_state is not None, text_to_generate))
+            yield FakeChunk([0.0, 0.1])
+            yield FakeChunk([-0.1, 0.2])
+
+        def generate_audio(self, *_args):
+            raise AssertionError("The full-tensor API must not be used when streaming exists.")
+
+    class FakeTTSModel:
+        @staticmethod
+        def load_model(**_kwargs):
+            return FakeModel()
+
+    monkeypatch.setitem(
+        sys.modules,
+        "torch",
+        SimpleNamespace(set_num_threads=lambda _value: None),
+    )
+    monkeypatch.setitem(sys.modules, "soundfile", real_soundfile)
+    monkeypatch.setitem(sys.modules, "pocket_tts", SimpleNamespace(TTSModel=FakeTTSModel))
+
+    destination = tmp_path / "streamed.wav"
+    PocketTTSService().generate("Olá mundo", "portuguese", destination)
+
+    assert calls == [(True, "Olá mundo")]
+    assert real_soundfile.info(destination).frames == 4
