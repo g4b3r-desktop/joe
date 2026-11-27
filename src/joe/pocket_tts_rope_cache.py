@@ -109,7 +109,7 @@ class _SingleRotaryCache:
             self.fallbacks += 1
             return self._original_forward(q, k, offset)
 
-        key, (cos_table, sin_table) = self._tables_for(q)
+        _, (cos_table, sin_table) = self._tables_for(q)
         # _expand_kv_cache is patched at the model boundary to grow the tables
         # before each generation chunk. This keeps CUDA offsets on-device and
         # avoids a .item() synchronization on every autoregressive attention call.
