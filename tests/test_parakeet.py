@@ -81,3 +81,48 @@ def test_transformers_transcription_runs_inside_inference_mode(monkeypatch, tmp_
     result = service.transcribe(audio_path, device_preference="cpu")
 
     assert result["text"] == "Transcrição de teste"
+
+
+
+def test_cuda_preference_uses_photon_cuda_before_transformers(monkeypatch, tmp_path):
+    import sys
+    from contextlib import contextmanager
+    from types import ModuleType, SimpleNamespace
+    from unittest.mock import Mock
+
+    from joe.services.parakeet import ParakeetReduxService
+
+    transcribe = Mock(return_value={"text": "Photon acelerado", "segments": []})
+
+    class FakeContext:
+        def __enter__(self):
+            return SimpleNamespace(transcribe=transcribe)
+
+        def __exit__(self, *_args):
+            return False
+
+    photon = Mock(return_value=FakeContext())
+    moondream = ModuleType("moondream")
+    moondream.photon = photon
+    fake_torch = SimpleNamespace(
+        cuda=SimpleNamespace(is_available=lambda: True),
+        inference_mode=lambda: contextmanager(lambda: (yield))(),
+    )
+    monkeypatch.setitem(sys.modules, "moondream", moondream)
+    monkeypatch.setitem(sys.modules, "torch", fake_torch)
+
+    audio_path = tmp_path / "input.wav"
+    audio_path.write_bytes(b"fake audio")
+    service = ParakeetReduxService()
+    monkeypatch.setattr(
+        service,
+        "_load_transformers",
+        Mock(side_effect=AssertionError("Transformers should not be loaded")),
+    )
+
+    result = service.transcribe(audio_path, device_preference="cuda")
+
+    photon.assert_called_once_with("moondream/parakeet-redux", device="cuda")
+    transcribe.assert_called_once_with(audio=str(audio_path))
+    assert result["text"] == "Photon acelerado"
+    assert result["backend"] == "Photon CUDA"
