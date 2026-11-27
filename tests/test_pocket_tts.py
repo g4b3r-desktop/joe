@@ -370,3 +370,74 @@ def test_benchmark_reports_cpu_and_cuda_availability(monkeypatch):
     assert results[0].quantized
     assert results[1].device == "cuda"
     assert "CUDA não está disponível" in results[1].error
+
+
+
+def test_generate_runs_voice_encoding_and_synthesis_in_inference_mode(monkeypatch, tmp_path):
+    import sys
+    from contextlib import contextmanager
+    from types import SimpleNamespace
+
+    from joe.services.pocket_tts import PocketTTSService
+
+    state = {"active": False, "calls": []}
+
+    @contextmanager
+    def inference_mode():
+        state["active"] = True
+        state["calls"].append("enter")
+        try:
+            yield
+        finally:
+            state["active"] = False
+            state["calls"].append("exit")
+
+    class FakeAudio:
+        def detach(self):
+            return self
+
+        def cpu(self):
+            return self
+
+        def numpy(self):
+            return [0.0, 0.1, -0.1]
+
+    class FakeModel:
+        sample_rate = 24_000
+
+        def get_state_for_audio_prompt(self, _voice):
+            assert state["active"]
+            return object()
+
+        def generate_audio(self, _state, _text):
+            assert state["active"]
+            return FakeAudio()
+
+    class FakeTTSModel:
+        @staticmethod
+        def load_model(*, language, quantize):
+            return FakeModel()
+
+    class FakeSoundFile:
+        @staticmethod
+        def write(path, _samples, _rate, subtype):
+            assert subtype == "PCM_16"
+            Path(path).write_bytes(b"fake wav")
+
+        @staticmethod
+        def info(_path):
+            return SimpleNamespace(frames=3, samplerate=24_000)
+
+    fake_torch = SimpleNamespace(
+        set_num_threads=lambda _value: None,
+        inference_mode=inference_mode,
+    )
+    monkeypatch.setitem(sys.modules, "torch", fake_torch)
+    monkeypatch.setitem(sys.modules, "soundfile", FakeSoundFile)
+    monkeypatch.setitem(sys.modules, "pocket_tts", SimpleNamespace(TTSModel=FakeTTSModel))
+
+    destination = tmp_path / "inference-mode.wav"
+    PocketTTSService().generate("Olá", "portuguese", destination)
+
+    assert state["calls"] == ["enter", "exit"]
+    assert destination.read_bytes() == b"fake wav"
