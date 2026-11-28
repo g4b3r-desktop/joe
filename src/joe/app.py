@@ -3385,6 +3385,7 @@ class JoeWindow(QMainWindow):
                     quantization=task.tts_quantization,
                     profile=task.tts_profile,
                     remote=task.remote,
+                    use_cuda_rope_cache=task.use_cuda_rope_cache,
                 ),
                 "sampler_decode_steps": task.sampler_decode_steps,
                 "temperature": task.temperature,
@@ -5464,6 +5465,7 @@ class JoeWindow(QMainWindow):
             quantization=tts_quantization,
             profile=str(self.tts_performance_profile.currentData() or "custom"),
             remote=remote is not None,
+            use_cuda_rope_cache=use_cuda_rope_cache,
         )
         generation_settings.update(tts_generation_parameters)
 
