@@ -33,6 +33,32 @@ class PocketTTSService:
             tuple[str, str, bool, int | None, float | None, float | None], object
         ] = {}
         self._voice_states: dict[tuple[str, str, bool, str], object] = {}
+        self._rope_cache = None
+        self._rope_cache_model = None
+
+    def _close_cuda_rope_cache(self) -> None:
+        """Restore the Pocket TTS methods and release cached trigonometric tables."""
+        cache = self._rope_cache
+        self._rope_cache = None
+        self._rope_cache_model = None
+        if cache is not None:
+            cache.close()
+
+    def _configure_cuda_rope_cache(self, model, torch, *, enabled: bool) -> None:
+        """Keep one opt-in cache attached to the currently loaded CUDA model."""
+        if not enabled:
+            self._close_cuda_rope_cache()
+            return
+        if self._rope_cache is not None and self._rope_cache_model is model:
+            self._rope_cache.set_enabled(True)
+            return
+        self._close_cuda_rope_cache()
+        self._rope_cache = install_cuda_rope_cache(
+            model,
+            torch,
+            initial_positions=8192,
+        )
+        self._rope_cache_model = model
 
     @staticmethod
     def _configure_torch(torch, cpu_threads: int) -> None:
@@ -153,6 +179,7 @@ class PocketTTSService:
             return model
 
         # Keep a single model/device active to avoid retaining duplicate weights in RAM/VRAM.
+        self._close_cuda_rope_cache()
         self._voice_states.clear()
         self._models.clear()
         model_load_options = {}
@@ -194,6 +221,7 @@ class PocketTTSService:
         device_preference: str = "cpu",
         cpu_threads: int = 2,
         quantize: bool | None = None,
+        use_cuda_rope_cache: bool = False,
         sampler_decode_steps: int | None = None,
         temperature: float | None = None,
         eos_threshold: float | None = None,
@@ -265,6 +293,15 @@ class PocketTTSService:
             generation_options["max_tokens"] = int(max_tokens)
         if teacher_force_previous_chunk:
             generation_options["teacher_force_previous_chunk"] = True
+        self._configure_cuda_rope_cache(
+            model,
+            torch,
+            enabled=(
+                device_preference == "cuda"
+                and bool(use_cuda_rope_cache)
+                and not effective_quantize
+            ),
+        )
         audio = model.generate_audio(voice_state, text.strip(), **generation_options)
         samples = audio.detach().cpu().numpy()
         destination = Path(output_path).expanduser()
@@ -1886,6 +1923,7 @@ class PocketTTSService:
         ]
 
     def close(self) -> None:
+        self._close_cuda_rope_cache()
         self._voice_states.clear()
         self._models.clear()
         gc.collect()
