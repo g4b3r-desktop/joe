@@ -203,19 +203,6 @@ def test_queue_snapshots_advanced_pocket_tts_generation_options():
     assert task.teacher_force_previous_chunk is True
 
 
-@pytest.mark.parametrize(
-    ("option", "value"),
-    [
-        ("sampler_decode_steps", 0),
-        ("temperature", 0.0),
-        ("temperature", 2.1),
-        ("eos_threshold", 21.0),
-        ("frames_after_eos", 0),
-        ("frames_after_eos", 21),
-        ("max_tokens", 10_001),
-    ],
-)
-
 def test_queue_snapshots_cuda_rope_cache_only_when_explicitly_enabled_for_local_fp32():
     queue = GenerationQueue()
     default_task = queue.enqueue(
@@ -258,6 +245,19 @@ def test_queue_snapshots_cuda_rope_cache_only_when_explicitly_enabled_for_local_
     assert int8_task.use_cuda_rope_cache is False
     assert remote_task.use_cuda_rope_cache is False
 
+
+@pytest.mark.parametrize(
+    ("option", "value"),
+    [
+        ("sampler_decode_steps", 0),
+        ("temperature", 0.0),
+        ("temperature", 2.1),
+        ("eos_threshold", 21.0),
+        ("frames_after_eos", 0),
+        ("frames_after_eos", 21),
+        ("max_tokens", 10_001),
+    ],
+)
 
 def test_queue_rejects_invalid_advanced_tts_options(option, value):
     with pytest.raises(ValueError):
