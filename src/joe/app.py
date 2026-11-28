@@ -88,6 +88,7 @@ from joe.audio_performance import (
     format_cuda_precision_benchmark_report,
     format_cuda_tf32_benchmark_report,
     format_cuda_profile_benchmark_report,
+    format_cuda_rope_cache_benchmark_report,
     wav_duration_seconds,
 )
 from joe.local_ipc import LocalCommandServer, send_local_command
@@ -379,6 +380,7 @@ class TTSGenerationWorker(QRunnable):
                                     device_preference=self.task.tts_device,
                                     cpu_threads=self.task.cpu_threads,
                                     quantize=self.task.tts_quantization,
+                                    use_cuda_rope_cache=self.task.use_cuda_rope_cache,
                                     sampler_decode_steps=self.task.sampler_decode_steps,
                                     temperature=self.task.temperature,
                                     eos_threshold=self.task.eos_threshold,
@@ -2625,6 +2627,19 @@ class JoeWindow(QMainWindow):
             "Desmarcada por padrão: a inferência GPU continua exatamente sem quantização."
         )
 
+        self.tts_cuda_rope_cache = QCheckBox(
+            "Ativar cache RoPE FP32 (experimental) nas gerações CUDA"
+        )
+        self.tts_cuda_rope_cache.setChecked(
+            self.app_settings.value("tts_cuda_rope_cache_enabled", False, type=bool)
+        )
+        self.tts_cuda_rope_cache.setToolTip(
+            "Opção experimental e desativada por padrão. Reutiliza tabelas FP32 de "
+            "seno/cosseno do RoPE nas gerações locais em CUDA FP32. O cache não é usado "
+            "na CPU, no Google Colab ou junto com INT8 na GPU. O consumo adicional esperado "
+            "é de aproximadamente 2 MB; desmarque para voltar ao RoPE original."
+        )
+
         self.tts_hardware_info = QLabel()
         self.tts_hardware_info.setObjectName("muted")
         self.tts_hardware_info.setWordWrap(True)
@@ -2632,6 +2647,7 @@ class JoeWindow(QMainWindow):
         self.tts_cpu_threads.valueChanged.connect(self._save_tts_hardware_settings)
         self.tts_quantization.toggled.connect(self._save_tts_hardware_settings)
         self.tts_cuda_quantization.toggled.connect(self._save_tts_hardware_settings)
+        self.tts_cuda_rope_cache.toggled.connect(self._save_tts_hardware_settings)
         self.tts_performance_profile.currentIndexChanged.connect(
             self._apply_tts_performance_profile
         )
@@ -2698,6 +2714,19 @@ class JoeWindow(QMainWindow):
             self._benchmark_tts_cuda_profile
         )
 
+
+        self.tts_cuda_rope_cache_benchmark_button = QPushButton(
+            "Comparar CUDA: RoPE original × cache"
+        )
+        self.tts_cuda_rope_cache_benchmark_button.setToolTip(
+            "Compara o RoPE FP32 original com tabelas FP32 de seno/cosseno pré-computadas. "
+            "Usa as mesmas sementes, intercala a ordem original/cache e cache/original, descarta aquecimentos e compara também as amostras de áudio. "
+            "O benchmark é isolado; as gerações normais só usam o cache quando a opção correspondente está ativada nas configurações."
+        )
+        self.tts_cuda_rope_cache_benchmark_button.clicked.connect(
+            self._benchmark_tts_cuda_rope_cache
+        )
+
         hardware_actions = QHBoxLayout()
         hardware_actions.addWidget(self.tts_benchmark_button)
         hardware_actions.addWidget(QLabel("Gerações medidas por modo:"))
@@ -2710,11 +2739,16 @@ class JoeWindow(QMainWindow):
         profile_actions.addWidget(self.tts_cuda_profile_button)
         profile_actions.addStretch(1)
         hardware_form.addRow("Diagnóstico de gargalos", profile_actions)
+        rope_cache_actions = QHBoxLayout()
+        rope_cache_actions.addWidget(self.tts_cuda_rope_cache_benchmark_button)
+        rope_cache_actions.addStretch(1)
+        hardware_form.addRow("Otimização experimental", rope_cache_actions)
         hardware_form.addRow("Perfil de desempenho", self.tts_performance_profile)
         hardware_form.addRow("Dispositivo para geração local", self.tts_device)
         hardware_form.addRow("Threads da CPU", self.tts_cpu_threads)
         hardware_form.addRow("Quantização na CPU", self.tts_quantization)
         hardware_form.addRow("Quantização na GPU", self.tts_cuda_quantization)
+        hardware_form.addRow("Otimização CUDA FP32", self.tts_cuda_rope_cache)
         hardware_form.addRow("Estado do hardware", self.tts_hardware_info)
         hardware_form.addRow("", hardware_actions)
         settings_layout.addWidget(hardware_group)
@@ -3351,6 +3385,7 @@ class JoeWindow(QMainWindow):
                     quantization=task.tts_quantization,
                     profile=task.tts_profile,
                     remote=task.remote,
+                    use_cuda_rope_cache=task.use_cuda_rope_cache,
                 ),
                 "sampler_decode_steps": task.sampler_decode_steps,
                 "temperature": task.temperature,
@@ -4238,6 +4273,7 @@ class JoeWindow(QMainWindow):
                 "tts_cpu_threads",
                 "tts_quantization",
                 "tts_cuda_quantization",
+                "tts_cuda_rope_cache",
             )
         ):
             return
@@ -4256,6 +4292,10 @@ class JoeWindow(QMainWindow):
         self.app_settings.setValue(
             "tts_cuda_quantization", bool(self.tts_cuda_quantization.isChecked())
         )
+        self.app_settings.setValue(
+            "tts_cuda_rope_cache_enabled",
+            bool(self.tts_cuda_rope_cache.isChecked()),
+        )
         self._refresh_tts_hardware_info()
 
     def _tts_quantization_enabled_for_device(self, device: str | None = None) -> bool:
@@ -4264,6 +4304,15 @@ class JoeWindow(QMainWindow):
         if selected == "cuda":
             return bool(self.tts_cuda_quantization.isChecked())
         return bool(self.tts_quantization.isChecked())
+
+    def _tts_cuda_rope_cache_enabled_for_device(self, device: str | None = None) -> bool:
+        """Use the experimental cache only for explicitly selected CUDA FP32."""
+        selected = device or str(self.tts_device.currentData() or "cpu")
+        return (
+            selected == "cuda"
+            and bool(self.tts_cuda_rope_cache.isChecked())
+            and not bool(self.tts_cuda_quantization.isChecked())
+        )
 
     def _tts_generation_parameters(self) -> dict[str, object]:
         """Return optional overrides; None preserves the Pocket TTS model defaults."""
@@ -4346,6 +4395,12 @@ class JoeWindow(QMainWindow):
         use_cpu = str(self.tts_device.currentData() or "cpu") == "cpu"
         self.tts_quantization.setEnabled(use_cpu)
         self.tts_cuda_quantization.setEnabled(not use_cpu and cuda_available)
+        rope_cache_available = (
+            not use_cpu
+            and cuda_available
+            and not self.tts_cuda_quantization.isChecked()
+        )
+        self.tts_cuda_rope_cache.setEnabled(rope_cache_available)
         if use_cpu:
             quantization_status = (
                 "CPU: INT8 ativada."
@@ -4372,9 +4427,21 @@ class JoeWindow(QMainWindow):
             self.tts_cuda_quantization.setToolTip(
                 "Ative uma build CUDA do PyTorch para habilitar INT8 na GPU."
             )
+        if use_cpu:
+            rope_cache_status = "Cache RoPE FP32: disponível somente em CUDA."
+        elif not cuda_available:
+            rope_cache_status = "Cache RoPE FP32: requer CUDA disponível."
+        elif self.tts_cuda_quantization.isChecked():
+            rope_cache_status = "Cache RoPE FP32: incompatível com INT8 na GPU."
+        else:
+            rope_cache_status = (
+                "Cache RoPE FP32 experimental ativado."
+                if self.tts_cuda_rope_cache.isChecked()
+                else "Cache RoPE FP32 experimental desativado."
+            )
         self.tts_hardware_info.setText(
             f"CPU: {logical_cpus} processador(es) lógico(s). {cuda_status} "
-            f"{quantization_status}"
+            f"{quantization_status} {rope_cache_status}"
         )
 
     def _refresh_hardware_metrics(self) -> None:
@@ -4702,6 +4769,77 @@ class JoeWindow(QMainWindow):
         self._run_task(
             f"Medindo CUDA FP32 IEEE e TF32: 2 aquecimentos + "
             f"{measured_runs} gerações por modo…",
+            benchmark,
+            completed,
+        )
+
+
+    def _benchmark_tts_cuda_rope_cache(self) -> None:
+        if (
+            self.active_worker is not None
+            or self.active_generation_worker is not None
+            or self.clipboard_generation_worker is not None
+        ):
+            QMessageBox.information(
+                self,
+                "Joe ocupado",
+                "Aguarde a tarefa atual terminar antes de comparar o cache de RoPE.",
+            )
+            return
+        if not torch.cuda.is_available():
+            QMessageBox.information(
+                self,
+                "CUDA indisponível",
+                "Ative a GPU NVIDIA e confirme que o PyTorch reconhece CUDA antes de medir.",
+            )
+            return
+
+        language = str(self.tts_language.currentData() or "portuguese")
+        model_variant = str(self.tts_model_variant.currentData() or language)
+        cpu_threads = int(self.tts_cpu_threads.value())
+        measured_runs = int(self.tts_cuda_quant_benchmark_runs.value())
+        selected_voice = self.voice_path.text().strip() or None
+        source_text = self.tts_text.toPlainText().strip()
+        if source_text:
+            try:
+                prepared_text = self._prepared_speech_text(source_text, language)
+            except Exception as exc:  # noqa: BLE001
+                QMessageBox.warning(
+                    self,
+                    "Não foi possível preparar o texto",
+                    f"Revise as opções de pronúncia antes de comparar o RoPE.\\n\\n{exc}",
+                )
+                return
+            sample_text = prepared_text.strip()
+        else:
+            sample_text = (
+                "Este é um teste de desempenho do Pocket TTS para comparar "
+                "o cálculo original do RoPE com tabelas de seno e cosseno em cache."
+            )
+
+        def benchmark() -> str:
+            result = self.tts.benchmark_cuda_rope_cache(
+                sample_text,
+                language,
+                selected_voice,
+                model_variant,
+                cpu_threads=cpu_threads,
+                warmup_runs=2,
+                measured_runs=measured_runs,
+            )
+            return format_cuda_rope_cache_benchmark_report(result)
+
+        def completed(report: object) -> None:
+            QMessageBox.information(
+                self,
+                "Medições CUDA — RoPE original × cache",
+                str(report),
+            )
+
+        self._run_task(
+            "Comparando RoPE FP32 original com cache usando o texto completo: "
+            f"{len(sample_text):,} caracteres; 2 pares de aquecimento + "
+            f"{measured_runs} pares medidos, ordem A/B e B/A alternada…",
             benchmark,
             completed,
         )
@@ -5316,6 +5454,10 @@ class JoeWindow(QMainWindow):
             if remote is not None
             else self._tts_quantization_enabled_for_device(tts_device)
         )
+        use_cuda_rope_cache = (
+            remote is None
+            and self._tts_cuda_rope_cache_enabled_for_device(tts_device)
+        )
         tts_generation_parameters = self._tts_generation_parameters()
         generation_settings = build_generation_settings(
             device=tts_device,
@@ -5323,6 +5465,7 @@ class JoeWindow(QMainWindow):
             quantization=tts_quantization,
             profile=str(self.tts_performance_profile.currentData() or "custom"),
             remote=remote is not None,
+            use_cuda_rope_cache=use_cuda_rope_cache,
         )
         generation_settings.update(tts_generation_parameters)
 
@@ -5360,6 +5503,7 @@ class JoeWindow(QMainWindow):
                     device_preference=tts_device,
                     cpu_threads=cpu_threads,
                     quantize=self._tts_quantization_enabled_for_device(tts_device),
+                    use_cuda_rope_cache=use_cuda_rope_cache,
                     **tts_generation_parameters,
                 )
 
@@ -5599,6 +5743,12 @@ class JoeWindow(QMainWindow):
                     bool(self.colab_tts_quantize_int8.isChecked())
                     if remote
                     else self._tts_quantization_enabled_for_device(
+                        str(self.tts_device.currentData() or "cpu")
+                    )
+                ),
+                use_cuda_rope_cache=(
+                    not remote
+                    and self._tts_cuda_rope_cache_enabled_for_device(
                         str(self.tts_device.currentData() or "cpu")
                     )
                 ),

@@ -46,6 +46,41 @@ def test_history_settings_record_effective_quantization_only():
     assert settings["local_settings_applied"] is True
 
 
+
+def test_history_only_records_rope_cache_for_local_cuda_fp32():
+    enabled = build_generation_settings(
+        device="cuda",
+        cpu_threads=4,
+        quantization=False,
+        profile="performance",
+        use_cuda_rope_cache=True,
+    )
+    cpu = build_generation_settings(
+        device="cpu",
+        cpu_threads=4,
+        quantization=False,
+        use_cuda_rope_cache=True,
+    )
+    int8 = build_generation_settings(
+        device="cuda",
+        cpu_threads=4,
+        quantization=True,
+        use_cuda_rope_cache=True,
+    )
+    remote = build_generation_settings(
+        device="cuda",
+        cpu_threads=4,
+        quantization=False,
+        remote=True,
+        use_cuda_rope_cache=True,
+    )
+
+    assert enabled["cuda_rope_cache"] is True
+    assert cpu["cuda_rope_cache"] is False
+    assert int8["cuda_rope_cache"] is False
+    assert remote["cuda_rope_cache"] is False
+
+
 def test_remote_settings_are_marked_as_not_applied_locally():
     settings = build_generation_settings(
         device="cuda",

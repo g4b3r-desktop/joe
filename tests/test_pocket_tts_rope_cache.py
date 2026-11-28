@@ -1,0 +1,337 @@
+from __future__ import annotations
+
+from types import SimpleNamespace
+
+import pytest
+
+
+def _fake_model_with_shared_rope(rope):
+    class FakeModel:
+        def __init__(self):
+            self.expansions = []
+
+            def expand_kv_cache(model_state, sequence_length):
+                self.expansions.append((model_state, sequence_length))
+                return "expanded"
+
+            self._expand_kv_cache = expand_kv_cache
+            self.flow_lm = SimpleNamespace(
+                transformer=SimpleNamespace(
+                    rope=rope,
+                    layers=[
+                        SimpleNamespace(self_attn=SimpleNamespace(rope=rope))
+                        for _ in range(24)
+                    ],
+                )
+            )
+
+    return FakeModel()
+
+
+def test_cached_rope_matches_pocket_tts_reference_and_deduplicates_shared_module():
+    torch = pytest.importorskip("torch")
+    pytest.importorskip("pocket_tts")
+    from pocket_tts.modules.rope import RotaryEmbedding, apply_rope
+
+    from joe.pocket_tts_rope_cache import install_cuda_rope_cache
+
+    torch.manual_seed(41)
+    rope = RotaryEmbedding(max_period=10_000.0)
+    original_forward = rope.forward
+    model = _fake_model_with_shared_rope(rope)
+    cache = install_cuda_rope_cache(model, torch, initial_positions=32)
+
+    q = torch.randn(2, 7, 4, 8)
+    k = torch.randn(2, 7, 2, 8)
+    for offset in (0, 5, torch.tensor(9, dtype=torch.long)):
+        expected_q, expected_k = apply_rope(q, k, offset, max_period=10_000.0)
+        actual_q, actual_k = rope(q, k, offset=offset)
+        torch.testing.assert_close(actual_q, expected_q, rtol=0, atol=0)
+        torch.testing.assert_close(actual_k, expected_k, rtol=0, atol=0)
+
+    # Pocket TTS 4.0.1 shares one RotaryEmbedding among all 24 layers.
+    assert len(cache._caches) == 1
+    assert cache.calls == 3
+    assert cache.fallbacks == 0
+    assert cache.capacity_positions == 32
+    assert cache.allocated_bytes > 0
+
+    cache.close()
+    assert rope.forward == original_forward
+    assert model._expand_kv_cache is not None
+
+
+def test_rope_cache_can_toggle_reference_mode_and_restore_all_methods():
+    torch = pytest.importorskip("torch")
+    pytest.importorskip("pocket_tts")
+    from pocket_tts.modules.rope import RotaryEmbedding
+
+    from joe.pocket_tts_rope_cache import install_cuda_rope_cache
+
+    rope = RotaryEmbedding(max_period=10_000.0)
+    original_forward = rope.forward
+    model = _fake_model_with_shared_rope(rope)
+    original_expand = model._expand_kv_cache
+    cache = install_cuda_rope_cache(model, torch, initial_positions=16)
+    cached_forward = rope.forward
+    cached_expand = model._expand_kv_cache
+
+    assert cached_forward is not original_forward
+    assert cached_expand is not original_expand
+
+    cache.set_enabled(False)
+    assert rope.forward == original_forward
+    assert model._expand_kv_cache == original_expand
+
+    q = torch.randn(1, 2, 2, 8)
+    k = torch.randn(1, 2, 2, 8)
+    rope(q, k, offset=0)
+    assert cache.calls == 0
+
+    cache.set_enabled(True)
+    assert rope.forward is cached_forward
+    assert model._expand_kv_cache is cached_expand
+    rope(q, k, offset=0)
+    assert cache.calls == 1
+
+    cache.close()
+    assert rope.forward == original_forward
+    assert model._expand_kv_cache == original_expand
+
+
+def test_cached_rope_grows_with_kv_cache_and_restores_model_method():
+    torch = pytest.importorskip("torch")
+    pytest.importorskip("pocket_tts")
+    from pocket_tts.modules.rope import RotaryEmbedding, apply_rope
+
+    from joe.pocket_tts_rope_cache import install_cuda_rope_cache
+
+    rope = RotaryEmbedding(max_period=10_000.0)
+    original_forward = rope.forward
+    model = _fake_model_with_shared_rope(rope)
+    original_expand = model._expand_kv_cache
+    cache = install_cuda_rope_cache(model, torch, initial_positions=8)
+
+    q = torch.randn(1, 3, 2, 8)
+    k = torch.randn(1, 3, 2, 8)
+    rope(q, k, offset=0)
+    assert cache.capacity_positions == 8
+
+    state = object()
+    assert model._expand_kv_cache(state, 40) == "expanded"
+    assert model.expansions == [(state, 40)]
+    assert cache.capacity_positions == 40
+
+    offset = torch.tensor(37, dtype=torch.long)
+    expected_q, expected_k = apply_rope(q, k, offset, max_period=10_000.0)
+    actual_q, actual_k = rope(q, k, offset=offset)
+    torch.testing.assert_close(actual_q, expected_q, rtol=0, atol=0)
+    torch.testing.assert_close(actual_k, expected_k, rtol=0, atol=0)
+    assert cache.calls == 2
+    assert cache.fallbacks == 0
+
+    cache.close()
+    assert rope.forward == original_forward
+    assert model._expand_kv_cache == original_expand
+
+
+def test_cached_rope_uses_original_implementation_for_out_of_range_python_offset():
+    torch = pytest.importorskip("torch")
+    pytest.importorskip("pocket_tts")
+    from pocket_tts.modules.rope import RotaryEmbedding, apply_rope
+
+    from joe.pocket_tts_rope_cache import install_cuda_rope_cache
+
+    rope = RotaryEmbedding(max_period=10_000.0)
+    model = _fake_model_with_shared_rope(rope)
+    cache = install_cuda_rope_cache(model, torch, initial_positions=8)
+    q = torch.randn(1, 2, 2, 8)
+    k = torch.randn(1, 2, 2, 8)
+
+    expected_q, expected_k = apply_rope(q, k, offset=20, max_period=10_000.0)
+    actual_q, actual_k = rope(q, k, offset=20)
+    torch.testing.assert_close(actual_q, expected_q, rtol=0, atol=0)
+    torch.testing.assert_close(actual_k, expected_k, rtol=0, atol=0)
+    assert cache.calls == 0
+    assert cache.fallbacks == 1
+
+    cache.close()
+
+
+def test_rope_cache_benchmark_report_mentions_speed_audio_and_cache_metrics():
+    from joe.audio_performance import (
+        TTSCudaRopeCacheBenchmarkResult,
+        format_cuda_rope_cache_benchmark_report,
+    )
+
+    result = TTSCudaRopeCacheBenchmarkResult(
+        model_load_seconds=4.2,
+        voice_prepare_seconds=0.1,
+        baseline_generation_times=(6.0, 5.9, 6.1),
+        cached_generation_times=(5.3, 5.2, 5.4),
+        baseline_audio_durations_seconds=(6.8, 6.8, 6.8),
+        cached_audio_durations_seconds=(6.8, 6.8, 6.8),
+        audio_shapes_match=True,
+        audio_max_abs_difference=1e-7,
+        audio_mean_abs_difference=1e-8,
+        audio_rms_difference=2e-8,
+        baseline_peak_vram_mb=1454,
+        cached_peak_vram_mb=1458,
+        warmup_runs=2,
+        cache_positions=8192,
+        cache_calls=255,
+        cache_fallbacks=0,
+        cache_bytes=4 * 1024 * 1024,
+        text_characters=42,
+    )
+
+    report = format_cuda_rope_cache_benchmark_report(result)
+
+    assert "RoPE original" in report
+    assert "RoPE com cache" in report
+    assert "Diferença absoluta máxima" in report
+    assert "Chamadas atendidas pelo cache: 255" in report
+    assert "Fallbacks para implementação original: 0" in report
+    assert "4,00 MB" in report
+    assert "Texto completo avaliado: 42 caracteres." in report
+
+
+
+def test_cuda_rope_cache_benchmark_alternates_paired_fp32_modes(monkeypatch):
+    import sys
+    from contextlib import nullcontext
+    from types import ModuleType, SimpleNamespace
+
+    import numpy as np
+
+    import joe.services.pocket_tts as service_module
+    from joe.audio_performance import TTSCudaRopeCacheBenchmarkResult
+    from joe.services.pocket_tts import PocketTTSService
+
+    seed_state = {"value": 0}
+    mode_state = {"cached": False}
+    generated = []
+    handles = []
+
+    class FakeAudio:
+        def __init__(self, seed):
+            self.samples = np.full((1, 12_000), (seed % 97) / 100.0, dtype=np.float32)
+
+        def detach(self):
+            return self
+
+        def cpu(self):
+            return self
+
+        def numpy(self):
+            return self.samples
+
+    class FakeModel:
+        sample_rate = 24_000
+
+        def to(self, device):
+            assert device == "cuda"
+            return self
+
+        def get_state_for_audio_prompt(self, voice):
+            assert voice
+            return object()
+
+        def generate_audio(self, state, text, *, copy_state):
+            assert state is not None
+            assert text == "Teste pareado do cache RoPE."
+            assert copy_state is True
+            generated.append((seed_state["value"], mode_state["cached"]))
+            return FakeAudio(seed_state["value"])
+
+    class FakeTTSModel:
+        @staticmethod
+        def load_model(**kwargs):
+            assert kwargs["quantize"] is False
+            return FakeModel()
+
+    class FakeCacheHandle:
+        capacity_positions = 8192
+        calls = 123
+        fallbacks = 0
+        allocated_bytes = 4 * 1024 * 1024
+
+        def __init__(self):
+            self.enabled = True
+            self.closed = False
+
+        def set_enabled(self, enabled):
+            self.enabled = bool(enabled)
+            mode_state["cached"] = self.enabled
+
+        def close(self):
+            self.set_enabled(False)
+            self.closed = True
+            self.allocated_bytes = 0
+
+    def install_cache(model, torch, *, initial_positions):
+        assert initial_positions == 8192
+        handle = FakeCacheHandle()
+        handles.append(handle)
+        return handle
+
+    fake_cuda = SimpleNamespace(
+        is_available=lambda: True,
+        empty_cache=lambda: None,
+        reset_peak_memory_stats=lambda: None,
+        synchronize=lambda: None,
+        current_device=lambda: 0,
+        manual_seed_all=lambda seed: seed_state.update(value=seed),
+        max_memory_allocated=lambda: 256 * 1024 * 1024,
+        max_memory_reserved=lambda: 384 * 1024 * 1024,
+    )
+    fake_torch = SimpleNamespace(
+        set_num_threads=lambda _value: None,
+        manual_seed=lambda seed: seed_state.update(value=seed),
+        cuda=fake_cuda,
+        random=SimpleNamespace(fork_rng=lambda **_kwargs: nullcontext()),
+    )
+    fake_pocket_tts = ModuleType("pocket_tts")
+    fake_pocket_tts.TTSModel = FakeTTSModel
+    monkeypatch.setitem(sys.modules, "torch", fake_torch)
+    monkeypatch.setitem(sys.modules, "pocket_tts", fake_pocket_tts)
+    monkeypatch.setattr(service_module, "install_cuda_rope_cache", install_cache)
+
+    result = PocketTTSService().benchmark_cuda_rope_cache(
+        "Teste pareado do cache RoPE.",
+        "portuguese",
+        model_variant="portuguese",
+        warmup_runs=2,
+        measured_runs=3,
+    )
+
+    assert isinstance(result, TTSCudaRopeCacheBenchmarkResult)
+    assert not result.error
+    assert len(result.baseline_generation_times) == 3
+    assert len(result.cached_generation_times) == 3
+    assert result.baseline_audio_durations_seconds == (0.5, 0.5, 0.5)
+    assert result.cached_audio_durations_seconds == (0.5, 0.5, 0.5)
+    assert result.audio_shapes_match is True
+    assert result.audio_max_abs_difference == 0
+    assert result.audio_mean_abs_difference == 0
+    assert result.audio_rms_difference == 0
+    assert result.cache_positions == 8192
+    assert result.cache_calls == 123
+    assert result.cache_fallbacks == 0
+    assert result.cache_bytes == 4 * 1024 * 1024
+    assert result.text_characters == len("Teste pareado do cache RoPE.")
+    assert len(generated) == 10
+
+    # The same seed is used for both modes; the first mode alternates A/B, B/A.
+    expected_events = []
+    for pair_index in range(5):
+        seed = 1729 + pair_index
+        expected_events.extend(
+            [(seed, False), (seed, True)]
+            if pair_index % 2 == 0
+            else [(seed, True), (seed, False)]
+        )
+    assert generated == expected_events
+    assert handles[0].closed is True
+    assert handles[0].enabled is False
+

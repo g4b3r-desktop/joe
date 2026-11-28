@@ -19,10 +19,27 @@ def get_project_root() -> Path:
     return module_path.parents[2]
 
 
-def configure_model_cache(project_root: str | Path | None = None) -> Path:
-    """Point Hugging Face/Pocket TTS caches to .models inside the Joe project."""
-    root = Path(project_root).expanduser().resolve() if project_root else get_project_root()
-    cache_root = root / ".models" / "huggingface"
+def configure_model_cache(
+    project_root: str | Path | None = None,
+    *,
+    cache_directory: str | Path | None = None,
+) -> Path:
+    """Configure Hugging Face/Pocket TTS caches.
+
+    By default, use .models/huggingface inside the Joe checkout. A caller that
+    needs a stable external location may pass cache_directory explicitly.
+    """
+    if project_root is not None and cache_directory is not None:
+        raise ValueError("Informe project_root ou cache_directory, não ambos.")
+    if cache_directory is not None:
+        cache_root = Path(cache_directory).expanduser().resolve()
+    else:
+        root = (
+            Path(project_root).expanduser().resolve()
+            if project_root
+            else get_project_root()
+        )
+        cache_root = root / ".models" / "huggingface"
     hub_cache = cache_root / "hub"
     hub_cache.mkdir(parents=True, exist_ok=True)
 

@@ -19,3 +19,4 @@ dist/
 outputs/
 .cache/
 .models/
+reports/rope-cache-scaling-*/

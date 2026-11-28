@@ -18,6 +18,7 @@ class GenerationTask:
     tts_device: str = "cpu"
     cpu_threads: int = 2
     tts_quantization: bool = True
+    use_cuda_rope_cache: bool = False
     tts_profile: str = "custom"
     sampler_decode_steps: int | None = None
     temperature: float | None = None
@@ -65,6 +66,7 @@ class GenerationQueue:
         tts_device: str = "cpu",
         cpu_threads: int = 2,
         tts_quantization: bool = True,
+        use_cuda_rope_cache: bool = False,
         tts_profile: str = "custom",
         sampler_decode_steps: int | None = None,
         temperature: float | None = None,
@@ -106,6 +108,12 @@ class GenerationQueue:
             tts_device=tts_device,
             cpu_threads=int(cpu_threads),
             tts_quantization=bool(tts_quantization),
+            use_cuda_rope_cache=(
+                bool(use_cuda_rope_cache)
+                and tts_device == "cuda"
+                and not bool(tts_quantization)
+                and not remote
+            ),
             tts_profile=str(tts_profile or "custom"),
             sampler_decode_steps=int(sampler_decode_steps) if sampler_decode_steps is not None else None,
             temperature=float(temperature) if temperature is not None else None,

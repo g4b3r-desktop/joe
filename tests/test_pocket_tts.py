@@ -146,6 +146,137 @@ def test_generate_uses_the_selected_model_variant(monkeypatch, tmp_path):
     assert loaded == [("portuguese_24l", False)]
     assert destination.read_bytes() == b"fake wav"
 
+
+def test_generate_reuses_opt_in_cuda_rope_cache_and_restores_it_when_disabled(
+    monkeypatch, tmp_path
+):
+    import sys
+    from types import SimpleNamespace
+
+    import joe.services.pocket_tts as pocket_tts_module
+    from joe.services.pocket_tts import PocketTTSService
+
+    installed = []
+    generated = []
+
+    class FakeAudio:
+        def detach(self):
+            return self
+
+        def cpu(self):
+            return self
+
+        def numpy(self):
+            return [0.0, 0.1, -0.1]
+
+    class FakeModel:
+        sample_rate = 24_000
+
+        def to(self, device):
+            assert device == "cuda"
+            return self
+
+        def get_state_for_audio_prompt(self, _voice):
+            return object()
+
+        def generate_audio(self, _state, text):
+            generated.append(text)
+            return FakeAudio()
+
+    model = FakeModel()
+
+    class FakeTTSModel:
+        @staticmethod
+        def load_model(**_kwargs):
+            return model
+
+    class FakeCache:
+        def __init__(self):
+            self.enabled = True
+            self.closed = False
+
+        def set_enabled(self, enabled):
+            self.enabled = bool(enabled)
+
+        def close(self):
+            self.enabled = False
+            self.closed = True
+
+    def install_cache(actual_model, _torch, *, initial_positions):
+        assert actual_model is model
+        assert initial_positions == 8192
+        handle = FakeCache()
+        installed.append(handle)
+        return handle
+
+    class FakeSoundFile:
+        @staticmethod
+        def write(path, _samples, _rate, subtype):
+            assert subtype == "PCM_16"
+            Path(path).write_bytes(b"fake wav")
+
+        @staticmethod
+        def info(_path):
+            return SimpleNamespace(frames=3, samplerate=24_000)
+
+    fake_torch = SimpleNamespace(
+        set_num_threads=lambda _count: None,
+        cuda=SimpleNamespace(
+            is_available=lambda: True,
+            empty_cache=lambda: None,
+        ),
+    )
+    monkeypatch.setitem(sys.modules, "torch", fake_torch)
+    monkeypatch.setitem(sys.modules, "soundfile", FakeSoundFile)
+    monkeypatch.setitem(
+        sys.modules, "pocket_tts", SimpleNamespace(TTSModel=FakeTTSModel)
+    )
+    monkeypatch.setattr(pocket_tts_module, "install_cuda_rope_cache", install_cache)
+
+    service = PocketTTSService()
+    options = {
+        "language": "portuguese",
+        "device_preference": "cuda",
+        "quantize": False,
+        "use_cuda_rope_cache": True,
+    }
+    service.generate("Primeiro", "portuguese", tmp_path / "first.wav", **{
+        key: value for key, value in options.items() if key != "language"
+    })
+    service.generate("Segundo", "portuguese", tmp_path / "second.wav", **{
+        key: value for key, value in options.items() if key != "language"
+    })
+
+    assert len(installed) == 1
+    assert installed[0].enabled is True
+    assert generated == ["Primeiro", "Segundo"]
+
+    service.generate(
+        "Terceiro",
+        "portuguese",
+        tmp_path / "third.wav",
+        device_preference="cuda",
+        quantize=False,
+        use_cuda_rope_cache=False,
+    )
+
+    assert installed[0].closed is True
+    assert service._rope_cache is None
+    assert service._rope_cache_model is None
+
+    # Even an explicit request is ignored for CPU generation.
+    service.generate(
+        "CPU",
+        "portuguese",
+        tmp_path / "cpu.wav",
+        device_preference="cpu",
+        quantize=False,
+        use_cuda_rope_cache=True,
+    )
+    assert len(installed) == 1
+    service.close()
+
+
 def test_generate_forwards_optional_model_and_chunk_parameters(monkeypatch, tmp_path):
     import sys
     from types import SimpleNamespace

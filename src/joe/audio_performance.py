@@ -50,6 +50,34 @@ class TTSCudaPrecisionBenchmarkResult:
     error: str = ""
 
 
+
+@dataclass(frozen=True, slots=True)
+class TTSCudaRopeCacheBenchmarkResult:
+    """Paired CUDA FP32 benchmark for original and cached Pocket TTS RoPE."""
+
+    model_load_seconds: float = 0.0
+    voice_prepare_seconds: float = 0.0
+    baseline_generation_times: tuple[float, ...] = ()
+    cached_generation_times: tuple[float, ...] = ()
+    baseline_audio_durations_seconds: tuple[float, ...] = ()
+    cached_audio_durations_seconds: tuple[float, ...] = ()
+    audio_shapes_match: bool = False
+    audio_max_abs_difference: float = 0.0
+    audio_mean_abs_difference: float = 0.0
+    audio_rms_difference: float = 0.0
+    baseline_peak_vram_mb: float = 0.0
+    baseline_peak_vram_reserved_mb: float = 0.0
+    cached_peak_vram_mb: float = 0.0
+    cached_peak_vram_reserved_mb: float = 0.0
+    warmup_runs: int = 0
+    cache_positions: int = 0
+    cache_calls: int = 0
+    cache_fallbacks: int = 0
+    cache_bytes: int = 0
+    text_characters: int = 0
+    error: str = ""
+
+
 @dataclass(frozen=True, slots=True)
 class TTSCudaProfileBenchmarkResult:
     """Per-generation CUDA phase timings collected from Pocket TTS worker threads."""
@@ -764,3 +792,124 @@ def format_cuda_tf32_benchmark_report(
         ]
     )
     return "\n".join(lines)
+
+
+
+def format_cuda_rope_cache_benchmark_report(
+    result: TTSCudaRopeCacheBenchmarkResult,
+) -> str:
+    """Report paired FP32 RoPE timings and numerical audio differences."""
+    lines = [
+        "Comparação CUDA — Pocket TTS: RoPE original × cache FP32",
+        "Mesmo modelo, voz e texto completo fornecido. Pesos, projeções, SDPA, FlowNet e Mimi permanecem FP32.",
+        (
+            "O modo com cache reutiliza tabelas FP32 de seno/cosseno por posição; "
+            "o aquecimento de cada modo é descartado."
+        ),
+        "Cada par usa a mesma semente; a ordem alterna A/B e B/A para reduzir viés térmico, de clock e de execução.",
+        "",
+    ]
+    if result.error:
+        lines.append(f"Não foi possível concluir a comparação: {result.error}")
+        return "\n".join(lines)
+
+    def add_mode(label: str, timings: tuple[float, ...], durations: tuple[float, ...],
+                 vram: float, reserved: float) -> float:
+        lines.append(label)
+        if not timings:
+            lines.append("  Nenhuma geração medida.")
+            lines.append("")
+            return 0.0
+        average = statistics.mean(timings)
+        median = statistics.median(timings)
+        deviation = statistics.stdev(timings) if len(timings) > 1 else 0.0
+        audio_average = statistics.mean(durations) if durations else 0.0
+        speed = audio_average / average if average > 0 else 0.0
+        lines.extend(
+            [
+                f"  Gerações medidas: {len(timings)}",
+                "  Tempos individuais: "
+                + ", ".join(format_duration(value) for value in timings),
+                f"  Média: {format_duration(average)}",
+                f"  Mediana: {format_duration(median)}",
+                f"  Desvio padrão: {format_duration(deviation)}",
+                f"  Áudio médio: {format_duration(audio_average)}",
+                f"  Velocidade: {_format_number(speed, 2)}× tempo real",
+                f"  Pico VRAM alocada: {_format_number(vram, 0)} MB",
+                f"  Pico VRAM reservada: {_format_number(reserved, 0)} MB",
+                "",
+            ]
+        )
+        return average
+
+    lines.append(
+        f"Aquecimento descartado por modo: {result.warmup_runs} geração(ões)."
+    )
+    lines.append(
+        f"Texto completo avaliado: {result.text_characters:,} caracteres.".replace(",", ".")
+    )
+    lines.append(
+        f"Carregamento + transferência do modelo: {format_duration(result.model_load_seconds)}"
+    )
+    lines.append(f"Preparação da voz: {format_duration(result.voice_prepare_seconds)}")
+    lines.append("")
+    baseline_average = add_mode(
+        "CUDA FP32 — RoPE original",
+        result.baseline_generation_times,
+        result.baseline_audio_durations_seconds,
+        result.baseline_peak_vram_mb,
+        result.baseline_peak_vram_reserved_mb,
+    )
+    cached_average = add_mode(
+        "CUDA FP32 — RoPE com cache",
+        result.cached_generation_times,
+        result.cached_audio_durations_seconds,
+        result.cached_peak_vram_mb,
+        result.cached_peak_vram_reserved_mb,
+    )
+    if baseline_average > 0 and cached_average > 0:
+        ratio = cached_average / baseline_average
+        if ratio < 0.98:
+            lines.append(
+                "Resultado: cache foi "
+                f"{_format_number(1.0 / ratio, 2)}× mais rápido "
+                f"({_format_number((1.0 - ratio) * 100.0, 1)}% menos tempo)."
+            )
+        elif ratio > 1.02:
+            lines.append(
+                "Resultado: cache ficou "
+                f"{_format_number(ratio, 2)}× mais lento "
+                f"({_format_number((ratio - 1.0) * 100.0, 1)}% mais tempo)."
+            )
+        else:
+            lines.append("Resultado: desempenho semelhante dentro de 2%.")
+
+    lines.extend(
+        [
+            "",
+            "Comparação numérica do áudio:",
+            f"  Formatos/durações iguais: {'sim' if result.audio_shapes_match else 'não'}",
+            (
+                "  Diferença absoluta máxima: "
+                f"{_format_number(result.audio_max_abs_difference, 8)}"
+            ),
+            (
+                "  Diferença absoluta média: "
+                f"{_format_number(result.audio_mean_abs_difference, 8)}"
+            ),
+            f"  RMS da diferença: {_format_number(result.audio_rms_difference, 8)}",
+            "",
+            "Cache RoPE:",
+            f"  Posições pré-computadas: {result.cache_positions:,}".replace(",", "."),
+            f"  Chamadas atendidas pelo cache: {result.cache_calls:,}".replace(",", "."),
+            f"  Fallbacks para implementação original: {result.cache_fallbacks}",
+            f"  Memória das tabelas: {_format_number(result.cache_bytes / (1024**2), 2)} MB",
+            "",
+            "O teste não altera as gerações normais. Diferenças numéricas pequenas devem "
+            "ser avaliadas junto com a audição do áudio; a comparação não substitui "
+            "uma avaliação perceptiva.",
+        ]
+    )
+    return "\n".join(lines)
+
+
