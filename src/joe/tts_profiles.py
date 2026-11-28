@@ -41,6 +41,7 @@ def build_generation_settings(
     quantization: bool,
     profile: str = "custom",
     remote: bool = False,
+    use_cuda_rope_cache: bool = False,
 ) -> dict[str, object]:
     """Create reproducible, non-sensitive settings metadata for audio history."""
     local_device = device if device in {"cpu", "cuda"} else "cpu"
@@ -50,5 +51,11 @@ def build_generation_settings(
         "device": "não aplicado (remoto)" if remote else local_device,
         "cpu_threads": max(1, int(cpu_threads)),
         "quantization": bool(quantization) and local_device == "cpu" and not remote,
+        "cuda_rope_cache": (
+            bool(use_cuda_rope_cache)
+            and local_device == "cuda"
+            and not bool(quantization)
+            and not remote
+        ),
         "profile": str(profile or "custom"),
     }
