@@ -380,6 +380,7 @@ class TTSGenerationWorker(QRunnable):
                                     device_preference=self.task.tts_device,
                                     cpu_threads=self.task.cpu_threads,
                                     quantize=self.task.tts_quantization,
+                                    use_cuda_rope_cache=self.task.use_cuda_rope_cache,
                                     sampler_decode_steps=self.task.sampler_decode_steps,
                                     temperature=self.task.temperature,
                                     eos_threshold=self.task.eos_threshold,
@@ -2626,6 +2627,19 @@ class JoeWindow(QMainWindow):
             "Desmarcada por padrão: a inferência GPU continua exatamente sem quantização."
         )
 
+        self.tts_cuda_rope_cache = QCheckBox(
+            "Ativar cache RoPE FP32 (experimental) nas gerações CUDA"
+        )
+        self.tts_cuda_rope_cache.setChecked(
+            self.app_settings.value("tts_cuda_rope_cache_enabled", False, type=bool)
+        )
+        self.tts_cuda_rope_cache.setToolTip(
+            "Opção experimental e desativada por padrão. Reutiliza tabelas FP32 de "
+            "seno/cosseno do RoPE nas gerações locais em CUDA FP32. O cache não é usado "
+            "na CPU, no Google Colab ou junto com INT8 na GPU. O consumo adicional esperado "
+            "é de aproximadamente 2 MB; desmarque para voltar ao RoPE original."
+        )
+
         self.tts_hardware_info = QLabel()
         self.tts_hardware_info.setObjectName("muted")
         self.tts_hardware_info.setWordWrap(True)
@@ -2633,6 +2647,7 @@ class JoeWindow(QMainWindow):
         self.tts_cpu_threads.valueChanged.connect(self._save_tts_hardware_settings)
         self.tts_quantization.toggled.connect(self._save_tts_hardware_settings)
         self.tts_cuda_quantization.toggled.connect(self._save_tts_hardware_settings)
+        self.tts_cuda_rope_cache.toggled.connect(self._save_tts_hardware_settings)
         self.tts_performance_profile.currentIndexChanged.connect(
             self._apply_tts_performance_profile
         )
@@ -2733,6 +2748,7 @@ class JoeWindow(QMainWindow):
         hardware_form.addRow("Threads da CPU", self.tts_cpu_threads)
         hardware_form.addRow("Quantização na CPU", self.tts_quantization)
         hardware_form.addRow("Quantização na GPU", self.tts_cuda_quantization)
+        hardware_form.addRow("Otimização CUDA FP32", self.tts_cuda_rope_cache)
         hardware_form.addRow("Estado do hardware", self.tts_hardware_info)
         hardware_form.addRow("", hardware_actions)
         settings_layout.addWidget(hardware_group)
@@ -4256,6 +4272,7 @@ class JoeWindow(QMainWindow):
                 "tts_cpu_threads",
                 "tts_quantization",
                 "tts_cuda_quantization",
+                "tts_cuda_rope_cache",
             )
         ):
             return
@@ -4274,6 +4291,10 @@ class JoeWindow(QMainWindow):
         self.app_settings.setValue(
             "tts_cuda_quantization", bool(self.tts_cuda_quantization.isChecked())
         )
+        self.app_settings.setValue(
+            "tts_cuda_rope_cache_enabled",
+            bool(self.tts_cuda_rope_cache.isChecked()),
+        )
         self._refresh_tts_hardware_info()
 
     def _tts_quantization_enabled_for_device(self, device: str | None = None) -> bool:
@@ -4282,6 +4303,15 @@ class JoeWindow(QMainWindow):
         if selected == "cuda":
             return bool(self.tts_cuda_quantization.isChecked())
         return bool(self.tts_quantization.isChecked())
+
+    def _tts_cuda_rope_cache_enabled_for_device(self, device: str | None = None) -> bool:
+        """Use the experimental cache only for explicitly selected CUDA FP32."""
+        selected = device or str(self.tts_device.currentData() or "cpu")
+        return (
+            selected == "cuda"
+            and bool(self.tts_cuda_rope_cache.isChecked())
+            and not bool(self.tts_cuda_quantization.isChecked())
+        )
 
     def _tts_generation_parameters(self) -> dict[str, object]:
         """Return optional overrides; None preserves the Pocket TTS model defaults."""
@@ -4364,6 +4394,12 @@ class JoeWindow(QMainWindow):
         use_cpu = str(self.tts_device.currentData() or "cpu") == "cpu"
         self.tts_quantization.setEnabled(use_cpu)
         self.tts_cuda_quantization.setEnabled(not use_cpu and cuda_available)
+        rope_cache_available = (
+            not use_cpu
+            and cuda_available
+            and not self.tts_cuda_quantization.isChecked()
+        )
+        self.tts_cuda_rope_cache.setEnabled(rope_cache_available)
         if use_cpu:
             quantization_status = (
                 "CPU: INT8 ativada."
@@ -4390,9 +4426,21 @@ class JoeWindow(QMainWindow):
             self.tts_cuda_quantization.setToolTip(
                 "Ative uma build CUDA do PyTorch para habilitar INT8 na GPU."
             )
+        if use_cpu:
+            rope_cache_status = "Cache RoPE FP32: disponível somente em CUDA."
+        elif not cuda_available:
+            rope_cache_status = "Cache RoPE FP32: requer CUDA disponível."
+        elif self.tts_cuda_quantization.isChecked():
+            rope_cache_status = "Cache RoPE FP32: incompatível com INT8 na GPU."
+        else:
+            rope_cache_status = (
+                "Cache RoPE FP32 experimental ativado."
+                if self.tts_cuda_rope_cache.isChecked()
+                else "Cache RoPE FP32 experimental desativado."
+            )
         self.tts_hardware_info.setText(
             f"CPU: {logical_cpus} processador(es) lógico(s). {cuda_status} "
-            f"{quantization_status}"
+            f"{quantization_status} {rope_cache_status}"
         )
 
     def _refresh_hardware_metrics(self) -> None:
@@ -5405,6 +5453,10 @@ class JoeWindow(QMainWindow):
             if remote is not None
             else self._tts_quantization_enabled_for_device(tts_device)
         )
+        use_cuda_rope_cache = (
+            remote is None
+            and self._tts_cuda_rope_cache_enabled_for_device(tts_device)
+        )
         tts_generation_parameters = self._tts_generation_parameters()
         generation_settings = build_generation_settings(
             device=tts_device,
@@ -5449,6 +5501,7 @@ class JoeWindow(QMainWindow):
                     device_preference=tts_device,
                     cpu_threads=cpu_threads,
                     quantize=self._tts_quantization_enabled_for_device(tts_device),
+                    use_cuda_rope_cache=use_cuda_rope_cache,
                     **tts_generation_parameters,
                 )
 
@@ -5688,6 +5741,12 @@ class JoeWindow(QMainWindow):
                     bool(self.colab_tts_quantize_int8.isChecked())
                     if remote
                     else self._tts_quantization_enabled_for_device(
+                        str(self.tts_device.currentData() or "cpu")
+                    )
+                ),
+                use_cuda_rope_cache=(
+                    not remote
+                    and self._tts_cuda_rope_cache_enabled_for_device(
                         str(self.tts_device.currentData() or "cpu")
                     )
                 ),
