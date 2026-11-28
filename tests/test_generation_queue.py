@@ -215,6 +215,50 @@ def test_queue_snapshots_advanced_pocket_tts_generation_options():
         ("max_tokens", 10_001),
     ],
 )
+
+def test_queue_snapshots_cuda_rope_cache_only_when_explicitly_enabled_for_local_fp32():
+    queue = GenerationQueue()
+    default_task = queue.enqueue(
+        text="Padrão",
+        speech_text="Padrão",
+        language="portuguese",
+        output_path="/tmp/default.wav",
+    )
+    enabled_task = queue.enqueue(
+        text="Cache",
+        speech_text="Cache",
+        language="portuguese",
+        output_path="/tmp/cache.wav",
+        tts_device="cuda",
+        tts_quantization=False,
+        use_cuda_rope_cache=True,
+    )
+    int8_task = queue.enqueue(
+        text="INT8",
+        speech_text="INT8",
+        language="portuguese",
+        output_path="/tmp/int8.wav",
+        tts_device="cuda",
+        tts_quantization=True,
+        use_cuda_rope_cache=True,
+    )
+    remote_task = queue.enqueue(
+        text="Remoto",
+        speech_text="Remoto",
+        language="portuguese",
+        output_path="/tmp/remote.wav",
+        tts_device="cuda",
+        tts_quantization=False,
+        use_cuda_rope_cache=True,
+        remote=True,
+    )
+
+    assert default_task.use_cuda_rope_cache is False
+    assert enabled_task.use_cuda_rope_cache is True
+    assert int8_task.use_cuda_rope_cache is False
+    assert remote_task.use_cuda_rope_cache is False
+
+
 def test_queue_rejects_invalid_advanced_tts_options(option, value):
     with pytest.raises(ValueError):
         GenerationQueue().enqueue(
